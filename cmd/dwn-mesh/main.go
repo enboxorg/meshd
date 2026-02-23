@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/enboxorg/dwn-mesh/internal/did"
 	"github.com/enboxorg/dwn-mesh/internal/dwn"
+	"github.com/enboxorg/dwn-mesh/internal/engine"
 	"github.com/enboxorg/dwn-mesh/internal/state"
 )
 
@@ -80,6 +83,10 @@ func main() {
 		err = cmdPeerList(ctx, args)
 	case "status":
 		err = cmdStatus(ctx, args)
+	case "up":
+		err = cmdUp(ctx, args)
+	case "down":
+		err = cmdDown(ctx, args)
 	default:
 		fmt.Fprintf(os.Stderr, "dwn-mesh: unknown command %q\n", cmd)
 		fmt.Fprintf(os.Stderr, "Run 'dwn-mesh --help' for usage.\n")
@@ -440,6 +447,126 @@ func cmdStatus(ctx context.Context, args []string) error {
 		fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
 	}
 
+	return nil
+}
+
+// cmdUp starts the mesh agent daemon.
+//
+// This brings up the WireGuard tunnel by:
+//  1. Loading identity and network state
+//  2. Creating the engine (DWN client + meshnet backend)
+//  3. Starting the WireGuard tunnel
+//  4. Blocking until interrupted (Ctrl+C / SIGTERM)
+func cmdUp(ctx context.Context, args []string) error {
+	stateDir := state.DefaultStateDir()
+	identity, err := loadIdentity(stateDir)
+	if err != nil {
+		return err
+	}
+
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return fmt.Errorf("loading network state: %w", err)
+	}
+	if ns == nil {
+		return fmt.Errorf("not in a network. Use 'dwn-mesh network create' or 'network join' first.")
+	}
+
+	// Parse optional flags.
+	var listenPort uint16
+	var pollInterval time.Duration
+	verbose := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--port":
+			if i+1 < len(args) {
+				var p int
+				if _, err := fmt.Sscanf(args[i+1], "%d", &p); err == nil && p > 0 && p <= 65535 {
+					listenPort = uint16(p)
+				}
+				i++
+			}
+		case "--poll-interval":
+			if i+1 < len(args) {
+				if d, err := time.ParseDuration(args[i+1]); err == nil {
+					pollInterval = d
+				}
+				i++
+			}
+		case "-v", "--verbose":
+			verbose = true
+		}
+	}
+
+	// Set up logging.
+	logLevel := slog.LevelInfo
+	if verbose {
+		logLevel = slog.LevelDebug
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: logLevel,
+	}))
+
+	signer := &dwn.Signer{
+		DID:        identity.URI,
+		PrivateKey: identity.SigningKey,
+	}
+
+	fmt.Printf("Starting dwn-mesh...\n")
+	fmt.Printf("  Network: %s\n", ns.NetworkName)
+	fmt.Printf("  DID: %s\n", identity.URI)
+	fmt.Printf("  Anchor: %s\n", ns.AnchorEndpoint)
+
+	eng, err := engine.New(engine.Config{
+		AnchorEndpoint:  ns.AnchorEndpoint,
+		AnchorTenant:    ns.AnchorDID,
+		NetworkRecordID: ns.NetworkRecordID,
+		SelfDID:         identity.URI,
+		Signer:          signer,
+		Domain:          ns.NetworkName,
+		ListenPort:      listenPort,
+		PollInterval:    pollInterval,
+		Logger:          logger,
+	})
+	if err != nil {
+		return fmt.Errorf("creating engine: %w", err)
+	}
+
+	// Start the engine.
+	if err := eng.Start(ctx); err != nil {
+		return fmt.Errorf("starting engine: %w", err)
+	}
+
+	fmt.Printf("  Status: running\n")
+	if ns.MeshIP != "" {
+		fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
+	}
+	fmt.Printf("\nPress Ctrl+C to stop.\n")
+
+	// Block until interrupted.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+
+	fmt.Printf("\nShutting down...\n")
+	if err := eng.Stop(); err != nil {
+		return fmt.Errorf("stopping engine: %w", err)
+	}
+
+	fmt.Printf("Stopped.\n")
+	return nil
+}
+
+// cmdDown stops the mesh agent daemon.
+//
+// Currently this sends SIGTERM to a running `dwn-mesh up` process.
+// In the future, this will communicate with a proper daemon via Unix socket.
+func cmdDown(ctx context.Context, args []string) error {
+	// For now, `down` is a placeholder. The `up` command runs in the foreground
+	// and can be stopped with Ctrl+C. A proper daemon mode with `down` support
+	// will be added when we implement the IPN socket-based architecture.
+	fmt.Println("dwn-mesh down: not yet implemented for daemon mode.")
+	fmt.Println("Stop the running 'dwn-mesh up' process with Ctrl+C or SIGTERM.")
 	return nil
 }
 
