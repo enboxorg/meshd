@@ -2,7 +2,70 @@
 
 A private encrypted mesh for DWN infrastructure and collaboration.
 
-## The Product Problem
+## Two Audiences, One Product
+
+dwn-mesh serves two audiences that converge on the same product:
+
+### Audience 1: "I want a mesh VPN that nobody controls"
+
+These are developers, sysadmins, homelabbers, and privacy-conscious
+people who want WireGuard mesh networking without:
+
+- An account on a company's service (Tailscale)
+- A server to self-host and maintain (Headscale)
+- Manual key distribution and config management (raw WireGuard)
+
+They don't know what DIDs or DWNs are. They don't care. They want to
+run `dwn-mesh init` on two machines and have them connected.
+
+**For this audience, dwn-mesh is a zero-account, zero-server mesh VPN.**
+
+The DID is "your device identity." The DWN is "an embedded component that
+handles coordination." The user never types either acronym.
+
+```
+$ dwn-mesh init
+Device identity: did:dht:3fk8...xj2m
+WireGuard keys generated
+Coordination node started on port 8787
+Ready. Run 'dwn-mesh network create' to start a mesh.
+```
+
+### Audience 2: "I have DWNs and need private infrastructure"
+
+These are people already in the DWN ecosystem. They have DIDs, run DWNs,
+use protocols. They have a specific unmet need: private DWN replicas and
+encrypted cross-DWN collaboration.
+
+**For this audience, dwn-mesh is the private layer underneath their
+public DWN identity.**
+
+### Where They Converge
+
+The first audience comes for the mesh VPN and discovers they now have a
+DID and a DWN. The second audience comes for DWN infrastructure and gets
+a mesh VPN. Both end up in the same place: a private encrypted network
+coordinated by decentralized protocols.
+
+This is the strategic value: **dwn-mesh is a gateway into the DWN
+ecosystem.** People come for the mesh VPN. They stay because they now
+have a decentralized identity and personal data node that works with
+everything else in the ecosystem.
+
+```
+Tailscale user journey:
+  "I need a VPN" -> Tailscale -> locked into Tailscale's ecosystem
+
+dwn-mesh user journey:
+  "I need a mesh VPN" -> dwn-mesh -> they now have a DID and a DWN
+  -> "my device has a decentralized identity?"
+  -> "I can store data on this and share it with protocols?"
+  -> "other apps can use this identity too?"
+```
+
+The mesh VPN is the trojan horse. The DID/DWN is the payload.
+
+## The Product Problem (DWN-Native Audience)
 
 If you have a DID and a DWN today, you face several unsolved problems:
 
@@ -111,6 +174,10 @@ IPs. But they sync with her public DWN over the mesh, and Bob and Carol can
 reach them if Alice's ACLs allow it.
 
 ### Who This Is For
+
+**Anyone who wants a mesh VPN.** You don't need to know about DIDs or DWNs.
+Install dwn-mesh on your devices, create a network, add peers. It works like
+Tailscale but with no account, no server, and no company.
 
 **Individual DWN operators.** You run your own DWN infrastructure. You want
 private replicas, local-first access, and encrypted sync between your
@@ -388,6 +455,39 @@ When a member is removed:
 
 ## User Scenarios
 
+### Scenario 0: Just a Mesh VPN
+
+Dave is a developer. He has a laptop, a home server, and a VPS. He wants
+them all connected. He's used Tailscale but doesn't love depending on a
+company. He tried Headscale but doesn't want to maintain a server.
+
+```bash
+# On Dave's laptop
+dwn-mesh init
+dwn-mesh network create --name "dave-net"
+
+# On Dave's home server
+dwn-mesh init
+# prints: Device identity: did:dht:srv1...
+
+# On Dave's laptop
+dwn-mesh peer add did:dht:srv1...
+
+# On the home server
+dwn-mesh network join did:dht:dave... <network-id>
+dwn-mesh up
+
+# Same for the VPS. Now all three machines can reach each other
+# at 100.64.0.x over encrypted WireGuard tunnels.
+# No accounts. No servers. No firewall configuration.
+```
+
+Dave doesn't know he's using DIDs or DWNs. He just knows it works.
+
+Six months later, Dave sees a project that uses DIDs for authentication.
+He realizes his dwn-mesh identity works there too. He starts using his
+DWN for other things. The mesh was the entry point.
+
 ### Scenario 1: Personal DWN Infrastructure
 
 Alice runs a public DWN on a VPS. She wants a backup on her home NAS and
@@ -557,6 +657,73 @@ interactions. ACLs enforce who can reach what.
 - DNS integration (mesh-local hostnames)
 - systemd service files
 - Pre-auth keys for headless onboarding
+
+## Gateway to the DWN Ecosystem
+
+### The Onramp
+
+`dwn-mesh init` creates a DID and starts an embedded DWN. The user doesn't
+need to understand either concept. They see "device identity" and "the mesh
+works." But under the hood, they now have:
+
+- **A DID** that works with any DID-compatible system. Their mesh identity
+  is also their identity for any other decentralized application.
+
+- **A DWN** that can store any kind of data, follow any protocol, and sync
+  with any other DWN. The mesh is just one protocol running on it.
+
+- **Protocols** they can inspect, extend, and compose with. The mesh
+  protocol is a standard DWN protocol definition. Other protocols can
+  reference it via cross-protocol composition.
+
+### The Aha Moment
+
+The aha moment comes when the user realizes their dwn-mesh identity works
+outside of dwn-mesh:
+
+1. **"I can use my mesh identity to log into things."** DIDs work as
+   authentication. No passwords. No OAuth. The same keypair that
+   authenticates you to the mesh authenticates you everywhere.
+
+2. **"I can store other data on my node."** The embedded DWN isn't just
+   for mesh coordination. Install another protocol and it stores your
+   notes, your files, your app data. All encrypted. All yours.
+
+3. **"Other people can write to my node using protocols."** The same
+   permission model that controls mesh membership can control who writes
+   what data to your DWN. It's a personal API server you own.
+
+4. **"I can sync this with a bigger DWN."** The embedded DWN can sync
+   with a full DWN instance on a VPS. The user graduates from "mesh VPN
+   tool" to "decentralized identity + data infrastructure."
+
+### Product Expansion Path
+
+```
+Stage 1: Mesh VPN user
+  - Installs dwn-mesh for the VPN
+  - Gets a DID and embedded DWN (doesn't know/care)
+  - Uses it to connect their devices
+
+Stage 2: Identity-aware user
+  - Discovers their DID works as a universal identity
+  - Uses it to authenticate to other services
+  - Shares their DID with collaborators
+
+Stage 3: DWN-native user
+  - Installs additional protocols on their DWN
+  - Stores personal data, syncs across devices
+  - Participates in protocol-based collaboration
+
+Stage 4: Infrastructure operator
+  - Runs a full DWN, lists it in their DID document
+  - Uses dwn-mesh for private replication and collaboration
+  - Builds applications on DWN protocols
+```
+
+Not every user will progress through all stages. But the path exists, and
+each stage is a natural extension of the previous one. The mesh VPN is
+the foot in the door.
 
 ## Comparison with Alternatives
 
