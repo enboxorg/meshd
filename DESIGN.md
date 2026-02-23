@@ -610,6 +610,93 @@ interactions. ACLs enforce who can reach what.
 - DWN sync between replicas runs over mesh IPs transparently
 ```
 
+## Infrastructure Dependencies: STUN, DERP, and Why There's No Provider
+
+A common question: does dwn-mesh require someone to run relay
+infrastructure? The short answer is no. Here's the breakdown:
+
+### STUN: Fully Commoditized (No Action Needed)
+
+STUN servers are stateless -- they receive a UDP packet and reply with
+"here's the ip:port I saw your packet coming from." They handle no data,
+store nothing, and cost almost nothing to run. There are hundreds of free
+public STUN servers:
+
+- `stun.l.google.com:19302`
+- `stun.cloudflare.com:3478`
+- Many others maintained by the WebRTC/VoIP community
+
+dwn-mesh ships with a hardcoded list of well-known public STUN servers.
+Users can add their own. No dwn-mesh-specific STUN infrastructure is
+needed.
+
+### TURN: Not Needed
+
+TURN is the traditional relay protocol. dwn-mesh doesn't use it. DERP
+serves the same role but better: it works over HTTPS (gets through more
+restrictive networks) and routes by WireGuard public key instead of
+allocated ports.
+
+### DERP: Decentralized by Design
+
+DERP (Designated Encrypted Relay for Packets) is the only component where
+someone needs to run a server. When two peers can't establish a direct
+WireGuard tunnel (hard NATs, UDP blocked entirely), encrypted packets
+flow through a DERP relay.
+
+**But DERP servers don't need to be trusted.** They relay already-encrypted
+WireGuard packets. They can't read the content. The worst a rogue DERP
+server can do is drop packets (peers will try other relays or retry
+direct connections) or log connection metadata (who connected, when --
+but not what was said).
+
+**DERP is already commoditized:**
+
+1. **Tailscale's DERP server is open source** (Apache 2.0). About 2000
+   lines of Go. Anyone can run one on a $5/month VPS.
+
+2. **The Headscale community runs hundreds of independent DERP servers.**
+   There's a well-established culture of community-operated relays.
+
+3. **Any dwn-mesh node with a public IP can be a DERP relay.** An
+   embedded DERP server is part of the design. Running a relay is one
+   flag:
+
+   ```bash
+   dwn-mesh up --relay
+   ```
+
+   The node registers itself as a relay in the mesh protocol. Other
+   members discover it automatically.
+
+**How relay discovery works in dwn-mesh:**
+
+In Tailscale, the DERP server list is hardcoded and controlled by
+Tailscale Inc. In dwn-mesh, relays are `relay` records in the mesh
+protocol -- encrypted, signed, and discoverable by members:
+
+```
+network
+  +-- relay    (any member can register; encrypted records)
+```
+
+When a member starts a relay, they write a `relay` record with the
+server's URL, geographic region, and STUN port. All members see it via
+their subscription to the anchor DWN and can use it for relay fallback.
+
+**The result: no dwn-mesh service provider is needed.** The combination
+of free public STUN servers, open-source DERP, and the ability for any
+mesh node to become a relay means the infrastructure is fully
+self-sustaining. This is a concrete difference from Tailscale, where
+Tailscale Inc. operates all relay infrastructure.
+
+| Component | Tailscale                     | dwn-mesh                           |
+| --------- | ----------------------------- | ---------------------------------- |
+| STUN      | Tailscale-operated            | Public servers (Google, CF, etc.)  |
+| TURN      | Not used                      | Not used                           |
+| DERP      | Tailscale-operated (12+ PoPs) | Self-hosted / community / embedded |
+| Discovery | Hardcoded by Tailscale        | DWN protocol records (decentralized)|
+
 ## Implementation Plan
 
 ### Phase 0: Foundation (Weeks 1-2)
