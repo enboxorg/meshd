@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://enbox.org/schemas/wireguard-mesh/event",
+  "type": "object",
+  "required": ["eventType", "timestamp"],
+  "additionalProperties": false,
+  "properties": {
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "member.joined",
+        "member.left",
+        "member.suspended",
+        "node.online",
+        "node.offline",
+        "endpoint.changed",
+        "acl.updated",
+        "relay.added",
+        "relay.removed",
+        "key.rotated"
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sourceDid": {
+      "type": "string",
+      "description": "The DID of the entity that triggered this event"
+    },
+    "details": {
+      "type": "object",
+      "description": "Event-specific details"
+    }
+  }
+}

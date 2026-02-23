@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://enbox.org/schemas/wireguard-mesh/pre-auth-key",
+  "type": "object",
+  "required": ["key", "createdAt"],
+  "additionalProperties": false,
+  "properties": {
+    "key": {
+      "type": "string",
+      "description": "The pre-authentication key (encrypted at rest via DWN encryption)"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this pre-auth key expires"
+    },
+    "reusable": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether this key can be used multiple times"
+    },
+    "ephemeral": {
+      "type": "boolean",
+      "default": false,
+      "description": "If true, nodes using this key are automatically removed when they go offline"
+    },
+    "label": {
+      "type": "string",
+      "maxLength": 128,
+      "description": "Human-readable label"
+    },
+    "usedBy": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "DIDs that have used this key"
+    }
+  }
+}

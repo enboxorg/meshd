@@ -1,0 +1,47 @@
+{
+  "protocol": "https://enbox.org/protocols/wireguard-node",
+  "published": true,
+  "types": {
+    "nodeInfo": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/node-info",
+      "dataFormats": ["application/json"],
+      "encryptionRequired": true
+    },
+    "endpoint": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/endpoint",
+      "dataFormats": ["application/json"],
+      "encryptionRequired": true
+    },
+    "peerAuth": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/peer-auth",
+      "dataFormats": ["application/json"]
+    }
+  },
+  "structure": {
+    "peerAuth": {
+      "$role": true,
+      "$actions": [
+        { "who": "anyone", "can": ["read"] }
+      ]
+    },
+    "nodeInfo": {
+      "$encryption": {
+        "rootKeyId": "#dwn-enc",
+        "publicKeyJwk": {}
+      },
+      "$actions": [
+        { "role": "peerAuth", "can": ["read"] }
+      ],
+      "endpoint": {
+        "$encryption": {
+          "rootKeyId": "#dwn-enc",
+          "publicKeyJwk": {}
+        },
+        "$recordLimit": { "max": 1, "strategy": "purgeOldest" },
+        "$actions": [
+          { "role": "peerAuth", "can": ["read"] }
+        ]
+      }
+    }
+  }
+}

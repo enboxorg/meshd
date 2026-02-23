@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://enbox.org/schemas/wireguard-mesh/endpoint",
+  "type": "object",
+  "required": ["updatedAt"],
+  "additionalProperties": false,
+  "properties": {
+    "publicEndpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["address", "port"],
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string",
+            "description": "Public IP address"
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535,
+            "description": "Public UDP port"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Lower is preferred"
+          },
+          "source": {
+            "type": "string",
+            "enum": ["stun", "upnp", "natpmp", "pcp", "static", "local"],
+            "description": "How this endpoint was discovered"
+          }
+        }
+      },
+      "description": "Public-facing endpoints discovered via STUN/UPnP/etc."
+    },
+    "localEndpoints": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "LAN-local ip:port pairs for same-network peers"
+    },
+    "preferredDERP": {
+      "type": "integer",
+      "description": "ID of the preferred DERP relay region"
+    },
+    "natType": {
+      "type": "string",
+      "enum": ["endpoint-independent", "endpoint-dependent", "unknown"],
+      "description": "Detected NAT mapping behavior"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this endpoint data was last refreshed"
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://enbox.org/schemas/wireguard-mesh/network",
+  "type": "object",
+  "required": ["name", "meshCIDR"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "maxLength": 64,
+      "description": "Human-readable name for this mesh network"
+    },
+    "meshCIDR": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/[0-9]+$",
+      "description": "The IP range for mesh-internal addresses, e.g. 100.64.0.0/10"
+    },
+    "defaultRelays": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uri"
+      },
+      "description": "Default DERP relay URLs for the network"
+    },
+    "dnsServers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "DNS servers available within the mesh"
+    },
+    "magicDNSSuffix": {
+      "type": "string",
+      "description": "DNS suffix for mesh-local hostname resolution, e.g. 'mesh.local'"
+    },
+    "listenPort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "default": 51820,
+      "description": "Default WireGuard listen port for nodes"
+    }
+  }
+}

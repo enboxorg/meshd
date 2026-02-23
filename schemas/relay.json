@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://enbox.org/schemas/wireguard-mesh/relay",
+  "type": "object",
+  "required": ["url", "region"],
+  "additionalProperties": false,
+  "properties": {
+    "url": {
+      "type": "string",
+      "format": "uri",
+      "description": "DERP relay URL (HTTPS)"
+    },
+    "region": {
+      "type": "string",
+      "description": "Geographic region identifier, e.g. 'us-east', 'eu-west'"
+    },
+    "regionName": {
+      "type": "string",
+      "description": "Human-readable region name, e.g. 'US East (New York)'"
+    },
+    "latitude": {
+      "type": "number",
+      "minimum": -90,
+      "maximum": 90
+    },
+    "longitude": {
+      "type": "number",
+      "minimum": -180,
+      "maximum": 180
+    },
+    "stunPort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "default": 3478,
+      "description": "STUN port on this relay"
+    },
+    "stunOnly": {
+      "type": "boolean",
+      "default": false,
+      "description": "If true, this server provides STUN but not DERP relay"
+    }
+  }
+}

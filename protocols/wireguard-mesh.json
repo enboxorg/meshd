@@ -1,0 +1,209 @@
+{
+  "protocol": "https://enbox.org/protocols/wireguard-mesh",
+  "published": true,
+  "types": {
+    "network": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/network",
+      "dataFormats": ["application/json"]
+    },
+    "member": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/member",
+      "dataFormats": ["application/json"],
+      "encryptionRequired": true
+    },
+    "admin": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/admin",
+      "dataFormats": ["application/json"],
+      "encryptionRequired": true
+    },
+    "nodeInfo": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/node-info",
+      "dataFormats": ["application/json"],
+      "encryptionRequired": true
+    },
+    "endpoint": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/endpoint",
+      "dataFormats": ["application/json"],
+      "encryptionRequired": true
+    },
+    "aclPolicy": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/acl-policy",
+      "dataFormats": ["application/json"],
+      "encryptionRequired": true
+    },
+    "relay": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/relay",
+      "dataFormats": ["application/json"],
+      "encryptionRequired": true
+    },
+    "preAuthKey": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/pre-auth-key",
+      "dataFormats": ["application/json"],
+      "encryptionRequired": true
+    },
+    "event": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/event",
+      "dataFormats": ["application/json"],
+      "encryptionRequired": true
+    }
+  },
+  "structure": {
+    "network": {
+      "$encryption": {
+        "rootKeyId": "#dwn-enc",
+        "publicKeyJwk": {}
+      },
+      "$actions": [
+        { "who": "anyone", "can": ["read"] }
+      ],
+
+      "admin": {
+        "$role": true,
+        "$encryption": {
+          "rootKeyId": "#dwn-enc",
+          "publicKeyJwk": {}
+        },
+        "$actions": [
+          { "who": "author", "of": "network", "can": ["create", "delete"] },
+          { "role": "network/admin", "can": ["read"] }
+        ]
+      },
+
+      "member": {
+        "$role": true,
+        "$encryption": {
+          "rootKeyId": "#dwn-enc",
+          "publicKeyJwk": {}
+        },
+        "$tags": {
+          "$requiredTags": ["status"],
+          "$allowUndefinedTags": false,
+          "status": {
+            "type": "string",
+            "enum": ["active", "suspended", "expired"]
+          },
+          "hostname": {
+            "type": "string"
+          }
+        },
+        "$actions": [
+          { "who": "author", "of": "network", "can": ["create", "update", "delete"] },
+          { "role": "network/admin", "can": ["create", "update", "delete"] },
+          { "role": "network/member", "can": ["read"] }
+        ]
+      },
+
+      "nodeInfo": {
+        "$size": { "max": 10000 },
+        "$encryption": {
+          "rootKeyId": "#dwn-enc",
+          "publicKeyJwk": {}
+        },
+        "$tags": {
+          "$requiredTags": ["did"],
+          "$allowUndefinedTags": false,
+          "did": { "type": "string" },
+          "hostname": { "type": "string" },
+          "os": {
+            "type": "string",
+            "enum": ["linux", "darwin", "windows", "freebsd", "android", "ios"]
+          }
+        },
+        "$actions": [
+          { "role": "network/member", "can": ["create", "update", "read"] }
+        ],
+
+        "endpoint": {
+          "$size": { "max": 2000 },
+          "$encryption": {
+            "rootKeyId": "#dwn-enc",
+            "publicKeyJwk": {}
+          },
+          "$recordLimit": { "max": 1, "strategy": "purgeOldest" },
+          "$actions": [
+            { "who": "author", "of": "network/nodeInfo", "can": ["create", "update"] },
+            { "role": "network/member", "can": ["read"] }
+          ]
+        }
+      },
+
+      "aclPolicy": {
+        "$size": { "max": 100000 },
+        "$encryption": {
+          "rootKeyId": "#dwn-enc",
+          "publicKeyJwk": {}
+        },
+        "$recordLimit": { "max": 1, "strategy": "purgeOldest" },
+        "$actions": [
+          { "who": "author", "of": "network", "can": ["create", "update"] },
+          { "role": "network/admin", "can": ["create", "co-update"] },
+          { "role": "network/member", "can": ["read"] }
+        ]
+      },
+
+      "relay": {
+        "$encryption": {
+          "rootKeyId": "#dwn-enc",
+          "publicKeyJwk": {}
+        },
+        "$tags": {
+          "$requiredTags": ["region"],
+          "$allowUndefinedTags": true,
+          "region": { "type": "string" },
+          "provider": { "type": "string" }
+        },
+        "$actions": [
+          { "role": "network/member", "can": ["create", "update", "delete", "read"] },
+          { "who": "author", "of": "network", "can": ["co-delete"] }
+        ]
+      },
+
+      "preAuthKey": {
+        "$encryption": {
+          "rootKeyId": "#dwn-enc",
+          "publicKeyJwk": {}
+        },
+        "$recordLimit": { "max": 100, "strategy": "reject" },
+        "$actions": [
+          { "who": "author", "of": "network", "can": ["create", "delete"] },
+          { "role": "network/admin", "can": ["create", "delete", "read"] }
+        ]
+      },
+
+      "event": {
+        "$immutable": true,
+        "$squash": true,
+        "$encryption": {
+          "rootKeyId": "#dwn-enc",
+          "publicKeyJwk": {}
+        },
+        "$recordLimit": { "max": 10000, "strategy": "reject" },
+        "$tags": {
+          "$requiredTags": ["eventType"],
+          "$allowUndefinedTags": true,
+          "eventType": {
+            "type": "string",
+            "enum": [
+              "member.joined",
+              "member.left",
+              "member.suspended",
+              "node.online",
+              "node.offline",
+              "endpoint.changed",
+              "acl.updated",
+              "relay.added",
+              "relay.removed",
+              "key.rotated"
+            ]
+          },
+          "sourceDid": { "type": "string" },
+          "timestamp": { "type": "string" }
+        },
+        "$actions": [
+          { "role": "network/member", "can": ["create", "read"] },
+          { "role": "network/admin", "can": ["squash"] }
+        ]
+      }
+    }
+  }
+}

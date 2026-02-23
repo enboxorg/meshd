@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://enbox.org/schemas/wireguard-mesh/acl-policy",
+  "type": "object",
+  "required": ["version", "rules"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Policy version number, monotonically increasing"
+    },
+    "defaultAction": {
+      "type": "string",
+      "enum": ["accept", "drop"],
+      "default": "drop",
+      "description": "Default action when no rule matches"
+    },
+    "groups": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "description": "Named groups of DIDs, e.g. { 'developers': ['did:dht:abc', 'did:dht:def'] }"
+    },
+    "tagOwners": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" }
+      },
+      "description": "Which DIDs can assign which tags to their nodes"
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["action", "src", "dst"],
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["accept", "drop"]
+          },
+          "src": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Source matchers: DID, group:name, tag:name, or '*'"
+          },
+          "dst": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Destination matchers: DID, group:name, tag:name, meshIP, or '*'"
+          },
+          "proto": {
+            "type": "string",
+            "enum": ["tcp", "udp", "icmp", "*"],
+            "description": "Protocol filter"
+          },
+          "srcPorts": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Source port ranges, e.g. ['1024-65535', '80']"
+          },
+          "dstPorts": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Destination port ranges, e.g. ['22', '443', '8000-9000']"
+          }
+        }
+      }
+    }
+  }
+}

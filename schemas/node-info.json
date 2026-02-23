@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://enbox.org/schemas/wireguard-mesh/node-info",
+  "type": "object",
+  "required": ["wireguardPublicKey", "meshIP"],
+  "additionalProperties": false,
+  "properties": {
+    "wireguardPublicKey": {
+      "type": "string",
+      "description": "Base64-encoded WireGuard public key (Curve25519)"
+    },
+    "meshIP": {
+      "type": "string",
+      "description": "Allocated IP within the meshCIDR, e.g. 100.64.0.5"
+    },
+    "hostname": {
+      "type": "string",
+      "maxLength": 253,
+      "description": "Machine hostname"
+    },
+    "os": {
+      "type": "string",
+      "enum": ["linux", "darwin", "windows", "freebsd", "android", "ios"],
+      "description": "Operating system"
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["subnet-router", "exit-node", "relay", "dns"]
+      },
+      "description": "Capabilities this node advertises"
+    },
+    "allowedIPs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "CIDRs this node advertises (for subnet routing)"
+    },
+    "keyExpiry": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the WireGuard key expires and should be rotated"
+    }
+  }
+}
