@@ -8,6 +8,7 @@ require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/coder/websocket v1.8.14
 	github.com/fxamacker/cbor/v2 v2.9.0
+	github.com/google/uuid v1.6.0
 	github.com/ipfs/go-cid v0.6.0
 	github.com/multiformats/go-multihash v0.2.3
 	github.com/tv42/zbase32 v0.0.0-20220222190657-f76a9fc892fa

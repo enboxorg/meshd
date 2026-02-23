@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  GOPRIVATE: github.com/enboxorg/*
+  GONOSUMCHECK: github.com/enboxorg/*
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Configure private modules
+        run: git config --global url."https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit Tests
+        run: go test ./... -count=1 -race
+
+  integration:
+    runs-on: ubuntu-latest
+    # Only run integration tests on push to main (not on PRs from forks).
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Configure private modules
+        run: git config --global url."https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+      - name: Integration Tests
+        env:
+          DWN_ENDPOINT: ${{ secrets.DWN_ENDPOINT }}
+        run: |
+          if [ -z "$DWN_ENDPOINT" ]; then
+            echo "DWN_ENDPOINT not configured, skipping integration tests"
+            exit 0
+          fi
+          go test ./internal/dwn/ -run TestIntegration -v -count=1 -timeout 120s

@@ -113,12 +113,17 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading network: %w", err)
 	}
-	if netResp.Status.Code != 200 {
-		return nil, fmt.Errorf("%w: %d %s", ErrNoNetwork, netResp.Status.Code, netResp.Status.Detail)
+	if netResp.Reply == nil || netResp.Reply.Status.Code != 200 {
+		code, detail := 0, "nil reply"
+		if netResp.Reply != nil {
+			code = netResp.Reply.Status.Code
+			detail = netResp.Reply.Status.Detail
+		}
+		return nil, fmt.Errorf("%w: %d %s", ErrNoNetwork, code, detail)
 	}
 
 	var network NetworkConfig
-	if err := parseEntryData(netResp.Entry, &network); err != nil {
+	if err := parseEntryData(netResp.Reply.Entry, &network); err != nil {
 		return nil, fmt.Errorf("parsing network: %w", err)
 	}
 

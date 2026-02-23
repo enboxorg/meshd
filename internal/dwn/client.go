@@ -1,19 +1,6 @@
-// Package dwn provides an HTTP client for interacting with Decentralized Web Nodes.
-//
-// The client supports the core DWN interfaces needed for mesh coordination:
-//   - RecordsWrite: create/update records
-//   - RecordsRead: read a single record
-//   - RecordsQuery: query records with filters
-//   - RecordsDelete: delete records
-//   - RecordsSubscribe: real-time subscriptions (see subscribe.go)
-//   - ProtocolsConfigure: install protocols on a DWN
-//   - ProtocolsQuery: check which protocols are installed
-//
-// All messages are signed with the caller's DID key before sending.
 package dwn
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -37,11 +24,20 @@ func WithHTTPClient(c *http.Client) ClientOption {
 	}
 }
 
-// Client is an HTTP client for a DWN instance.
+// Client is a high-level client for a DWN instance.
+//
+// It wraps the HTTP transport layer and provides typed methods for each
+// DWN interface (RecordsWrite, RecordsRead, RecordsQuery, RecordsDelete,
+// ProtocolsConfigure, ProtocolsQuery).
+//
+// The wire protocol uses:
+//   - POST / for all requests (no tenant in URL)
+//   - dwn-request header for JSON-RPC 2.0 envelope
+//   - HTTP body for binary data (RecordsWrite payloads)
+//   - dwn-response header for RecordsRead responses with data
 type Client struct {
-	endpoint   string
-	signer     *Signer
-	httpClient *http.Client
+	transport *HTTPTransport
+	signer    *Signer
 }
 
 // NewClient creates a DWN client for the given endpoint.
@@ -54,112 +50,210 @@ func NewClient(endpoint string, signer *Signer, opts ...ClientOption) *Client {
 	}
 
 	return &Client{
-		endpoint:   endpoint,
-		signer:     signer,
-		httpClient: options.httpClient,
+		transport: NewHTTPTransport(endpoint, WithTransportHTTPClient(options.httpClient)),
+		signer:    signer,
 	}
 }
 
-// send sends a DWN message to the endpoint and returns the response.
-func (c *Client) send(ctx context.Context, tenant string, msg *Message) (*Response, error) {
-	body, err := json.Marshal(msg)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling message: %w", err)
-	}
-
-	url := c.endpoint
-	if tenant != "" {
-		url = c.endpoint + "/" + tenant
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("sending request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading response: %w", err)
-	}
-
-	var dwnResp Response
-	if err := json.Unmarshal(respBody, &dwnResp); err != nil {
-		return nil, fmt.Errorf("unmarshaling response (HTTP %d, body: %s): %w",
-			resp.StatusCode, string(respBody), err)
-	}
-
-	return &dwnResp, nil
+// RecordsWriteResult holds the response from a RecordsWrite.
+type RecordsWriteResult struct {
+	Reply    *DwnReply
+	RecordID string
 }
 
 // RecordsWrite creates or updates a record on the target DWN.
-// Returns the response and the record ID.
-func (c *Client) RecordsWrite(ctx context.Context, tenant string, opts RecordsWriteOptions) (*Response, string, error) {
+//
+// For data payloads:
+//   - Data ≤ 30KB is inlined as base64url encodedData in the message
+//   - Data > 30KB is sent as binary in the HTTP body
+//
+// The target parameter is the DID of the DWN owner.
+func (c *Client) RecordsWrite(ctx context.Context, target string, opts RecordsWriteOptions) (*RecordsWriteResult, error) {
 	msg, err := BuildRecordsWrite(c.signer, opts)
 	if err != nil {
-		return nil, "", fmt.Errorf("building RecordsWrite: %w", err)
+		return nil, fmt.Errorf("building RecordsWrite: %w", err)
 	}
 
-	resp, err := c.send(ctx, tenant, msg)
+	// Determine if data should go in the body (large payloads)
+	// or inline in the message (small payloads, already base64url encoded).
+	var bodyData []byte
+	if len(opts.Data) > maxInlineDataSize {
+		// Large data: send as binary body, clear inline encoding.
+		bodyData = opts.Data
+		msg.EncodedData = ""
+	}
+	// Small data: already base64url encoded in msg.EncodedData by BuildRecordsWrite.
+
+	result, err := c.transport.Send(ctx, target, msg, bodyData)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
-	return resp, msg.RecordID, nil
+	return &RecordsWriteResult{
+		Reply:    result.Reply,
+		RecordID: msg.RecordID,
+	}, nil
+}
+
+// maxInlineDataSize is the max data size that gets base64url-encoded inline.
+// Matches DwnConstant.maxDataSizeAllowedToBeEncoded in the SDK.
+const maxInlineDataSize = 30_000
+
+// RecordsReadResult holds the response from a RecordsRead.
+type RecordsReadResult struct {
+	Reply *DwnReply
+	// Data is the binary record data, if present.
+	// This comes from the HTTP body when the server uses dwn-response header.
+	Data []byte
 }
 
 // RecordsRead reads a single record from the target DWN.
-func (c *Client) RecordsRead(ctx context.Context, tenant string, filter RecordsFilter, protocolRole string) (*Response, error) {
+func (c *Client) RecordsRead(ctx context.Context, target string, filter RecordsFilter, protocolRole string) (*RecordsReadResult, error) {
 	msg, err := BuildRecordsRead(c.signer, filter, protocolRole)
 	if err != nil {
 		return nil, fmt.Errorf("building RecordsRead: %w", err)
 	}
 
-	return c.send(ctx, tenant, msg)
+	result, err := c.transport.Send(ctx, target, msg, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return &RecordsReadResult{
+		Reply: result.Reply,
+		Data:  result.Data,
+	}, nil
 }
 
 // RecordsQuery queries records on the target DWN.
-func (c *Client) RecordsQuery(ctx context.Context, tenant string, filter RecordsFilter, dateSort string, pagination *Pagination, protocolRole string) (*Response, error) {
+func (c *Client) RecordsQuery(ctx context.Context, target string, filter RecordsFilter, dateSort string, pagination *Pagination, protocolRole string) (*DwnReply, error) {
 	msg, err := BuildRecordsQuery(c.signer, filter, dateSort, pagination, protocolRole)
 	if err != nil {
 		return nil, fmt.Errorf("building RecordsQuery: %w", err)
 	}
 
-	return c.send(ctx, tenant, msg)
+	result, err := c.transport.Send(ctx, target, msg, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Reply, nil
 }
 
 // RecordsDelete deletes a record on the target DWN.
-func (c *Client) RecordsDelete(ctx context.Context, tenant string, recordID string, prune bool, protocolRole string) (*Response, error) {
+func (c *Client) RecordsDelete(ctx context.Context, target string, recordID string, prune bool, protocolRole string) (*DwnReply, error) {
 	msg, err := BuildRecordsDelete(c.signer, recordID, prune, protocolRole)
 	if err != nil {
 		return nil, fmt.Errorf("building RecordsDelete: %w", err)
 	}
 
-	return c.send(ctx, tenant, msg)
+	result, err := c.transport.Send(ctx, target, msg, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Reply, nil
 }
 
 // ProtocolsConfigure installs a protocol definition on the target DWN.
-func (c *Client) ProtocolsConfigure(ctx context.Context, tenant string, definition json.RawMessage) (*Response, error) {
+func (c *Client) ProtocolsConfigure(ctx context.Context, target string, definition json.RawMessage) (*DwnReply, error) {
 	msg, err := BuildProtocolsConfigure(c.signer, definition)
 	if err != nil {
 		return nil, fmt.Errorf("building ProtocolsConfigure: %w", err)
 	}
 
-	return c.send(ctx, tenant, msg)
+	result, err := c.transport.Send(ctx, target, msg, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Reply, nil
 }
 
 // ProtocolsQuery queries installed protocols on the target DWN.
-func (c *Client) ProtocolsQuery(ctx context.Context, tenant string, protocolURI string) (*Response, error) {
+func (c *Client) ProtocolsQuery(ctx context.Context, target string, protocolURI string) (*DwnReply, error) {
 	msg, err := BuildProtocolsQuery(c.signer, protocolURI)
 	if err != nil {
 		return nil, fmt.Errorf("building ProtocolsQuery: %w", err)
 	}
 
-	return c.send(ctx, tenant, msg)
+	result, err := c.transport.Send(ctx, target, msg, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Reply, nil
+}
+
+// QueryEntries extracts RecordsWrite entries from a query reply.
+func QueryEntries(reply *DwnReply) ([]json.RawMessage, error) {
+	if reply == nil {
+		return nil, fmt.Errorf("nil reply")
+	}
+	if reply.Status.Code != 200 {
+		return nil, fmt.Errorf("query failed: %d %s", reply.Status.Code, reply.Status.Detail)
+	}
+	if reply.Entries == nil {
+		return nil, nil
+	}
+
+	var entries []json.RawMessage
+	if err := json.Unmarshal(reply.Entries, &entries); err != nil {
+		return nil, fmt.Errorf("unmarshaling entries: %w", err)
+	}
+	return entries, nil
+}
+
+// ReadEntry extracts the entry from a read reply.
+func ReadEntry(reply *DwnReply) (json.RawMessage, error) {
+	if reply == nil {
+		return nil, fmt.Errorf("nil reply")
+	}
+	if reply.Status.Code != 200 {
+		return nil, fmt.Errorf("read failed: %d %s", reply.Status.Code, reply.Status.Detail)
+	}
+	return reply.Entry, nil
+}
+
+// ReadData is a convenience that extracts both the entry metadata and binary data
+// from a RecordsRead result. Returns (entry, data, error).
+func ReadData(result *RecordsReadResult) (json.RawMessage, io.Reader, error) {
+	if result.Reply == nil {
+		return nil, nil, fmt.Errorf("nil reply")
+	}
+	if result.Reply.Status.Code != 200 {
+		return nil, nil, fmt.Errorf("read failed: %d %s",
+			result.Reply.Status.Code, result.Reply.Status.Detail)
+	}
+
+	entry := result.Reply.Entry
+	if entry == nil {
+		entry = result.Reply.Record
+	}
+
+	var reader io.Reader
+	if len(result.Data) > 0 {
+		reader = io.NopCloser(newByteReader(result.Data))
+	}
+
+	return entry, reader, nil
+}
+
+// byteReader wraps []byte to satisfy io.Reader.
+type byteReader struct {
+	data []byte
+	pos  int
+}
+
+func newByteReader(data []byte) *byteReader {
+	return &byteReader{data: data}
+}
+
+func (r *byteReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
 }

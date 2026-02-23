@@ -1,8 +1,17 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
+	"time"
+
+	"github.com/enboxorg/dwn-mesh/internal/did"
+	"github.com/enboxorg/dwn-mesh/internal/dwn"
+	"github.com/enboxorg/dwn-mesh/internal/state"
 )
 
 const usage = `dwn-mesh - Decentralized WireGuard mesh networking via DWN
@@ -11,20 +20,21 @@ Usage:
   dwn-mesh <command> [arguments]
 
 Commands:
-  init              Generate DID, WireGuard keys, and start local DWN
-  network create    Create a new mesh network
+  init              Generate DID identity and initialize node
+  network create    Create a new mesh network on a DWN
   network join      Join an existing mesh network
   network leave     Leave the current mesh network
-  peer add          Add a peer to the mesh (admin)
-  peer remove       Remove a peer from the mesh (admin)
-  peer list         List all peers and their status
-  status            Show mesh status and active tunnels
+  peer list         List all peers in the mesh
+  status            Show mesh status and identity info
   up                Start the mesh agent daemon
   down              Stop the mesh agent daemon
 
 Flags:
   -h, --help        Show this help message
   -v, --version     Show version information
+
+Environment:
+  DWN_MESH_STATE_DIR    State directory (default: ~/.dwn-mesh)
 `
 
 var version = "dev"
@@ -35,14 +45,482 @@ func main() {
 		os.Exit(1)
 	}
 
-	switch os.Args[1] {
+	// Combine two-word commands.
+	cmd := os.Args[1]
+	args := os.Args[2:]
+	if len(os.Args) >= 3 {
+		combined := os.Args[1] + " " + os.Args[2]
+		switch combined {
+		case "network create", "network join", "network leave",
+			"peer list", "peer add", "peer remove":
+			cmd = combined
+			args = os.Args[3:]
+		}
+	}
+
+	ctx := context.Background()
+
+	var err error
+	switch cmd {
 	case "-h", "--help", "help":
 		fmt.Print(usage)
+		return
 	case "-v", "--version", "version":
 		fmt.Printf("dwn-mesh %s\n", version)
+		return
+	case "init":
+		err = cmdInit(ctx, args)
+	case "network create":
+		err = cmdNetworkCreate(ctx, args)
+	case "network join":
+		err = cmdNetworkJoin(ctx, args)
+	case "network leave":
+		err = cmdNetworkLeave(ctx, args)
+	case "peer list":
+		err = cmdPeerList(ctx, args)
+	case "status":
+		err = cmdStatus(ctx, args)
 	default:
-		fmt.Fprintf(os.Stderr, "dwn-mesh: unknown command %q\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "dwn-mesh: unknown command %q\n", cmd)
 		fmt.Fprintf(os.Stderr, "Run 'dwn-mesh --help' for usage.\n")
 		os.Exit(1)
 	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dwn-mesh: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// cmdInit generates a DID identity and initializes the node.
+func cmdInit(ctx context.Context, args []string) error {
+	stateDir := state.DefaultStateDir()
+
+	if did.Exists(stateDir) {
+		identity, err := did.Load(stateDir)
+		if err != nil {
+			return fmt.Errorf("loading existing identity: %w", err)
+		}
+		fmt.Printf("Already initialized.\n")
+		fmt.Printf("  DID: %s\n", identity.URI)
+		fmt.Printf("  State: %s\n", stateDir)
+		return nil
+	}
+
+	identity, err := did.Generate()
+	if err != nil {
+		return fmt.Errorf("generating DID: %w", err)
+	}
+
+	if err := identity.Store(stateDir); err != nil {
+		return fmt.Errorf("storing identity: %w", err)
+	}
+
+	fmt.Printf("Initialized new identity.\n")
+	fmt.Printf("  DID: %s\n", identity.URI)
+	fmt.Printf("  State: %s\n", stateDir)
+	return nil
+}
+
+// cmdNetworkCreate creates a new mesh network.
+//
+// Usage: dwn-mesh network create <name> --endpoint <dwn-url>
+func cmdNetworkCreate(ctx context.Context, args []string) error {
+	if len(args) < 3 {
+		return fmt.Errorf("usage: dwn-mesh network create <name> --endpoint <dwn-url>")
+	}
+
+	name := args[0]
+	endpoint := ""
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--endpoint" && i+1 < len(args) {
+			endpoint = args[i+1]
+			break
+		}
+	}
+	if endpoint == "" {
+		return fmt.Errorf("--endpoint is required")
+	}
+
+	stateDir := state.DefaultStateDir()
+	identity, err := loadIdentity(stateDir)
+	if err != nil {
+		return err
+	}
+
+	if state.HasNetwork(stateDir) {
+		return fmt.Errorf("already in a network. Use 'dwn-mesh network leave' first.")
+	}
+
+	signer := &dwn.Signer{
+		DID:        identity.URI,
+		PrivateKey: identity.SigningKey,
+	}
+	agent := dwn.NewSimpleAgent(endpoint, signer)
+	api := dwn.NewDwnAPI(agent)
+
+	// 1. Install the wireguard-mesh protocol on the DWN.
+	protocolDef := meshProtocolDefinition()
+	status, err := api.ConfigureProtocol(ctx, identity.URI, protocolDef)
+	if err != nil {
+		return fmt.Errorf("configuring protocol: %w", err)
+	}
+	if status.Code >= 300 && status.Code != 409 {
+		// 409 = already configured, which is fine.
+		return fmt.Errorf("protocol configure failed: %d %s", status.Code, status.Detail)
+	}
+	fmt.Printf("  Protocol installed on DWN.\n")
+
+	// 2. Create the network record.
+	meshCIDR := "10.200.0.0/16"
+	networkData, _ := json.Marshal(map[string]any{
+		"name":    name,
+		"meshCIDR": meshCIDR,
+		"created": time.Now().UTC().Format(time.RFC3339),
+	})
+
+	record, writeStatus, err := api.Write(ctx, identity.URI, dwn.WriteParams{
+		Protocol:     "https://enbox.org/protocols/wireguard-mesh",
+		ProtocolPath: "network",
+		Schema:       "https://enbox.org/schemas/wireguard-mesh/network",
+		DataFormat:   "application/json",
+		Data:         networkData,
+	})
+	if err != nil {
+		return fmt.Errorf("creating network record: %w", err)
+	}
+	if writeStatus.Code >= 300 {
+		return fmt.Errorf("network create failed: %d %s", writeStatus.Code, writeStatus.Detail)
+	}
+
+	// 3. Persist network state.
+	ns := &state.NetworkState{
+		NetworkRecordID: record.ID,
+		AnchorDID:       identity.URI,
+		AnchorEndpoint:  endpoint,
+		NetworkName:     name,
+		MeshCIDR:        meshCIDR,
+	}
+	if err := state.SaveNetworkState(stateDir, ns); err != nil {
+		return fmt.Errorf("saving network state: %w", err)
+	}
+
+	fmt.Printf("Network created.\n")
+	fmt.Printf("  Name: %s\n", name)
+	fmt.Printf("  CIDR: %s\n", meshCIDR)
+	fmt.Printf("  Record: %s\n", record.ID)
+	fmt.Printf("  Anchor: %s\n", endpoint)
+	fmt.Printf("\nShare this join token with peers:\n")
+	fmt.Printf("  dwn-mesh network join --endpoint %s --anchor %s --network %s\n",
+		endpoint, identity.URI, record.ID)
+
+	return nil
+}
+
+// cmdNetworkJoin joins an existing mesh network.
+//
+// Usage: dwn-mesh network join --endpoint <url> --anchor <did> --network <id>
+func cmdNetworkJoin(ctx context.Context, args []string) error {
+	var endpoint, anchorDID, networkID string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--endpoint":
+			if i+1 < len(args) {
+				endpoint = args[i+1]
+				i++
+			}
+		case "--anchor":
+			if i+1 < len(args) {
+				anchorDID = args[i+1]
+				i++
+			}
+		case "--network":
+			if i+1 < len(args) {
+				networkID = args[i+1]
+				i++
+			}
+		}
+	}
+
+	if endpoint == "" || anchorDID == "" || networkID == "" {
+		return fmt.Errorf("usage: dwn-mesh network join --endpoint <url> --anchor <did> --network <id>")
+	}
+
+	stateDir := state.DefaultStateDir()
+	identity, err := loadIdentity(stateDir)
+	if err != nil {
+		return err
+	}
+
+	if state.HasNetwork(stateDir) {
+		return fmt.Errorf("already in a network. Use 'dwn-mesh network leave' first.")
+	}
+
+	signer := &dwn.Signer{
+		DID:        identity.URI,
+		PrivateKey: identity.SigningKey,
+	}
+	agent := dwn.NewSimpleAgent(endpoint, signer)
+	api := dwn.NewDwnAPI(agent)
+
+	// Read the network record to verify it exists.
+	record, readStatus, err := api.Read(ctx, anchorDID, dwn.RecordsFilter{
+		RecordID: networkID,
+	}, "network/member")
+	if err != nil {
+		return fmt.Errorf("reading network: %w", err)
+	}
+	if readStatus.Code != 200 || record == nil {
+		return fmt.Errorf("network not found: %d %s", readStatus.Code, readStatus.Detail)
+	}
+
+	var networkData struct {
+		Name     string `json:"name"`
+		MeshCIDR string `json:"meshCIDR"`
+	}
+	if err := record.Data().JSON(ctx, &networkData); err != nil {
+		// Data might be in binary body, try status only.
+		slog.Warn("could not read network data", slog.Any("error", err))
+		networkData.Name = "unknown"
+		networkData.MeshCIDR = "10.200.0.0/16"
+	}
+
+	// Save network state locally.
+	ns := &state.NetworkState{
+		NetworkRecordID: networkID,
+		AnchorDID:       anchorDID,
+		AnchorEndpoint:  endpoint,
+		NetworkName:     networkData.Name,
+		MeshCIDR:        networkData.MeshCIDR,
+	}
+	if err := state.SaveNetworkState(stateDir, ns); err != nil {
+		return fmt.Errorf("saving network state: %w", err)
+	}
+
+	fmt.Printf("Joined network.\n")
+	fmt.Printf("  Name: %s\n", networkData.Name)
+	fmt.Printf("  CIDR: %s\n", networkData.MeshCIDR)
+	fmt.Printf("  Anchor: %s\n", anchorDID)
+	fmt.Printf("\nRun 'dwn-mesh up' to start the mesh.\n")
+
+	return nil
+}
+
+// cmdNetworkLeave leaves the current mesh network.
+func cmdNetworkLeave(ctx context.Context, args []string) error {
+	stateDir := state.DefaultStateDir()
+
+	if !state.HasNetwork(stateDir) {
+		fmt.Println("Not in a network.")
+		return nil
+	}
+
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return fmt.Errorf("loading network state: %w", err)
+	}
+
+	if err := state.ClearNetworkState(stateDir); err != nil {
+		return fmt.Errorf("clearing network state: %w", err)
+	}
+
+	name := "unknown"
+	if ns != nil {
+		name = ns.NetworkName
+	}
+	fmt.Printf("Left network %q.\n", name)
+	return nil
+}
+
+// cmdPeerList lists all peers in the current mesh network.
+func cmdPeerList(ctx context.Context, args []string) error {
+	stateDir := state.DefaultStateDir()
+	identity, err := loadIdentity(stateDir)
+	if err != nil {
+		return err
+	}
+
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return fmt.Errorf("loading network state: %w", err)
+	}
+	if ns == nil {
+		return fmt.Errorf("not in a network. Use 'dwn-mesh network join' first.")
+	}
+
+	signer := &dwn.Signer{
+		DID:        identity.URI,
+		PrivateKey: identity.SigningKey,
+	}
+	agent := dwn.NewSimpleAgent(ns.AnchorEndpoint, signer)
+	api := dwn.NewDwnAPI(agent)
+
+	// Query member records.
+	records, status, err := api.Query(ctx, ns.AnchorDID, dwn.QueryParams{
+		Filter: dwn.RecordsFilter{
+			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
+			ProtocolPath: "network/member",
+			ContextID:    ns.NetworkRecordID,
+		},
+		DateSort: "createdAscending",
+	}, "network/member")
+	if err != nil {
+		return fmt.Errorf("querying peers: %w", err)
+	}
+
+	if status.Code != 200 {
+		return fmt.Errorf("query failed: %d %s", status.Code, status.Detail)
+	}
+
+	if len(records) == 0 {
+		fmt.Println("No peers found.")
+		return nil
+	}
+
+	fmt.Printf("Peers in %q:\n", ns.NetworkName)
+	fmt.Printf("%-50s %-16s %s\n", "DID", "MESH IP", "STATUS")
+	fmt.Println(strings.Repeat("-", 80))
+
+	for _, r := range records {
+		var member struct {
+			DID    string `json:"did"`
+			MeshIP string `json:"meshIp"`
+			Role   string `json:"role"`
+		}
+		if err := r.Data().JSON(ctx, &member); err != nil {
+			// Data may not be inline.
+			fmt.Printf("%-50s %-16s %s\n", truncate(r.Recipient, 50), "?", "no data")
+			continue
+		}
+		fmt.Printf("%-50s %-16s %s\n",
+			truncate(member.DID, 50),
+			member.MeshIP,
+			member.Role)
+	}
+
+	return nil
+}
+
+// cmdStatus shows the current mesh status and identity info.
+func cmdStatus(ctx context.Context, args []string) error {
+	stateDir := state.DefaultStateDir()
+
+	// Identity.
+	if !did.Exists(stateDir) {
+		fmt.Println("Not initialized. Run 'dwn-mesh init' first.")
+		return nil
+	}
+
+	identity, err := did.Load(stateDir)
+	if err != nil {
+		return fmt.Errorf("loading identity: %w", err)
+	}
+
+	fmt.Printf("Identity:\n")
+	fmt.Printf("  DID: %s\n", identity.URI)
+	fmt.Printf("  State: %s\n", stateDir)
+
+	// Network.
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return fmt.Errorf("loading network state: %w", err)
+	}
+	if ns == nil {
+		fmt.Printf("\nNetwork: none (run 'dwn-mesh network create' or 'network join')\n")
+		return nil
+	}
+
+	fmt.Printf("\nNetwork:\n")
+	fmt.Printf("  Name: %s\n", ns.NetworkName)
+	fmt.Printf("  CIDR: %s\n", ns.MeshCIDR)
+	fmt.Printf("  Anchor DID: %s\n", ns.AnchorDID)
+	fmt.Printf("  Anchor Endpoint: %s\n", ns.AnchorEndpoint)
+	fmt.Printf("  Network Record: %s\n", ns.NetworkRecordID)
+	if ns.MeshIP != "" {
+		fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
+	}
+
+	return nil
+}
+
+// loadIdentity loads the DID identity, or returns an error if not initialized.
+func loadIdentity(stateDir string) (*did.DID, error) {
+	if !did.Exists(stateDir) {
+		return nil, fmt.Errorf("not initialized. Run 'dwn-mesh init' first.")
+	}
+	identity, err := did.Load(stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("loading identity: %w", err)
+	}
+	return identity, nil
+}
+
+// meshProtocolDefinition returns the wireguard-mesh protocol definition.
+func meshProtocolDefinition() json.RawMessage {
+	// Minimal protocol definition — the full version is in protocols/wireguard-mesh.json
+	return json.RawMessage(`{
+		"protocol": "https://enbox.org/protocols/wireguard-mesh",
+		"published": true,
+		"types": {
+			"network": {
+				"schema": "https://enbox.org/schemas/wireguard-mesh/network",
+				"dataFormats": ["application/json"]
+			},
+			"member": {
+				"schema": "https://enbox.org/schemas/wireguard-mesh/member",
+				"dataFormats": ["application/json"]
+			},
+			"nodeInfo": {
+				"schema": "https://enbox.org/schemas/wireguard-mesh/node-info",
+				"dataFormats": ["application/json"]
+			},
+			"endpoint": {
+				"schema": "https://enbox.org/schemas/wireguard-mesh/endpoint",
+				"dataFormats": ["application/json"]
+			},
+			"admin": {
+				"schema": "https://enbox.org/schemas/wireguard-mesh/admin",
+				"dataFormats": ["application/json"]
+			},
+			"aclPolicy": {
+				"schema": "https://enbox.org/schemas/wireguard-mesh/acl-policy",
+				"dataFormats": ["application/json"]
+			},
+			"relay": {
+				"schema": "https://enbox.org/schemas/wireguard-mesh/relay",
+				"dataFormats": ["application/json"]
+			},
+			"preAuthKey": {
+				"schema": "https://enbox.org/schemas/wireguard-mesh/pre-auth-key",
+				"dataFormats": ["application/json"]
+			},
+			"event": {
+				"schema": "https://enbox.org/schemas/wireguard-mesh/event",
+				"dataFormats": ["application/json"]
+			}
+		},
+		"structure": {
+			"network": {
+				"member": {},
+				"nodeInfo": {},
+				"endpoint": {},
+				"admin": {},
+				"aclPolicy": {},
+				"relay": {},
+				"preAuthKey": {},
+				"event": {}
+			}
+		}
+	}`)
+}
+
+// truncate shortens a string to maxLen, adding "..." if truncated.
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
 }

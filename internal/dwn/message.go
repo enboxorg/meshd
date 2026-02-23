@@ -56,13 +56,11 @@ type Status struct {
 	Detail string `json:"detail"`
 }
 
-// Response is a generic DWN response.
-type Response struct {
-	Status  Status          `json:"status"`
-	Entries json.RawMessage `json:"entries,omitempty"`
-	Cursor  json.RawMessage `json:"cursor,omitempty"`
-	Entry   json.RawMessage `json:"entry,omitempty"`
-}
+// Response is the old response type, kept temporarily for backward compat.
+// Prefer DwnReply from transport.go for new code.
+//
+// Deprecated: Use DwnReply instead.
+type Response = DwnReply
 
 //
 // --- Filter and pagination ---
@@ -417,26 +415,16 @@ func filterToMap(f RecordsFilter) map[string]any {
 	return m
 }
 
-// QueryResult extracts RecordsWrite entries from a query response.
+// QueryResult extracts entries from a query response.
+//
+// Deprecated: Use QueryEntries in client.go instead.
 func QueryResult(resp *Response) ([]json.RawMessage, error) {
-	if resp.Status.Code != 200 {
-		return nil, fmt.Errorf("query failed: %d %s", resp.Status.Code, resp.Status.Detail)
-	}
-	if resp.Entries == nil {
-		return nil, nil
-	}
-
-	var entries []json.RawMessage
-	if err := json.Unmarshal(resp.Entries, &entries); err != nil {
-		return nil, fmt.Errorf("unmarshaling entries: %w", err)
-	}
-	return entries, nil
+	return QueryEntries(resp)
 }
 
 // ReadResult extracts the entry from a read response.
+//
+// Deprecated: Use ReadEntry in client.go instead.
 func ReadResult(resp *Response) (json.RawMessage, error) {
-	if resp.Status.Code != 200 {
-		return nil, fmt.Errorf("read failed: %d %s", resp.Status.Code, resp.Status.Detail)
-	}
-	return resp.Entry, nil
+	return ReadEntry(resp)
 }
