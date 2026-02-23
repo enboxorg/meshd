@@ -159,15 +159,14 @@ dwn-mesh for your personal infrastructure.
 ```
 cmd/dwn-mesh/           CLI entrypoint
 internal/
-  did/                  DID generation and resolution
-  dwn/                  DWN client + WebSocket subscriptions
-  control/              DWN-based control client (replaces Tailscale control)
-  mesh/                 Network, peers, discovery, IP allocation
-  acl/                  ACL policy parsing + tailcfg.FilterRule translation
+  did/                  DID generation (did:dht), key derivation, persistence
+  dwn/                  DWN HTTP client, JWS signing, CID computation, subscriptions
+  control/              DWN-based control client → MapResponse for networking engine
+  state/                On-disk state management (identity, network membership)
 protocols/              DWN protocol definitions (encrypted)
 schemas/                JSON schemas for record data
 
-External dependency:
+External dependency (not yet integrated):
   github.com/enboxorg/dexnet   (Tailscale fork -- WireGuard, NAT, DERP)
 ```
 
