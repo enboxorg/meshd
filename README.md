@@ -1,75 +1,87 @@
 # dwn-mesh
 
-Decentralized WireGuard mesh networking, coordinated by [Decentralized Web Nodes](https://github.com/enboxorg/dwn-spec).
+A private encrypted mesh for your [DWN](https://github.com/enboxorg/dwn-spec) infrastructure.
 
 **Status:** Design phase. See [DESIGN.md](DESIGN.md) for the full design document.
 
-## What is this?
+## The problem
 
-dwn-mesh replaces Tailscale's centralized coordination server with DWN
-protocol records. Each machine has a DID (Decentralized Identifier), stores
-its own data on its own DWN, and coordinates with peers using cryptographically
-signed, encrypted protocol messages.
+Your DID document publicly lists your DWN endpoints. If you want backup
+replicas, local-first access on your laptop, or a NAS at home syncing your
+DWN -- every one of those needs either a public IP or manual VPN setup.
+Your DWN collaboration traffic with others goes over the public internet.
+Your infrastructure topology is visible to anyone who resolves your DID.
 
-The result: a fully decentralized WireGuard mesh where **no single company
-or server controls your network**.
+## What dwn-mesh does
+
+dwn-mesh creates an encrypted WireGuard overlay network that connects your
+DWN instances and the DWN instances of people you collaborate with.
+
+```
+Public (what the world sees):
+
+    DID Document: serviceEndpoint: ["https://dwn.alice.com"]
+
+Private (the mesh, invisible to outsiders):
+
+     dwn.alice.com       nas.alice          laptop.alice
+     (VPS, public)    (home, behind NAT)   (roaming)
+     100.64.0.1        100.64.0.2          100.64.0.3
+          |                 |                    |
+          +-- WireGuard ----+---- WireGuard -----+
+                   encrypted mesh
+                   DWN sync runs here
+```
+
+- **Private DWN replicas.** Your NAS and laptop sync with your public DWN
+  over the mesh. No public IPs needed. No DID document changes. NAT
+  traversal is automatic.
+
+- **Encrypted collaboration.** Invite others into your mesh. Their DWNs
+  talk to yours over WireGuard tunnels. Private, fast, no middleman.
+
+- **Self-sovereign coordination.** Mesh coordination runs on DWN itself.
+  Every record is signed with DIDs and encrypted with JWE. No central
+  server. No company to trust.
 
 ## How it works
 
-```
-  Tailscale                          dwn-mesh
-  --------                          --------
-  Central coord server    ->    Anchor DWN (replicated, encrypted)
-  OAuth2/OIDC login       ->    DID-based identity (self-sovereign)
-  Key upload to server    ->    RecordsWrite to DWN (signed + encrypted)
-  Polling for peer keys   ->    RecordsSubscribe (real-time push)
-  Tailscale ACL policies  ->    DWN protocol $actions + ACL records
-  Tailscale DERP relays   ->    Community-run DERP relays (registered in DWN)
-```
+Mesh coordination uses two DWN protocols:
 
-All coordination data (WireGuard public keys, IP endpoints, ACL policies,
-membership) is encrypted at rest on the DWN. Even the DWN operator cannot
+- **`wireguard-mesh`** -- installed on an anchor DWN (any member's DWN).
+  Stores encrypted membership, ACL policies, relay servers, and audit events.
+
+- **`wireguard-node`** -- installed on each node's DWN. Stores encrypted
+  WireGuard public key and current network endpoint. Only authorized mesh
+  peers can read it.
+
+Nodes discover each other by reading the member list from the anchor DWN,
+resolving each member's DID to find their DWN, and subscribing to real-time
+endpoint updates via `RecordsSubscribe`. When a peer's IP changes, all
+members learn about it in real-time and update their WireGuard config.
+
+All coordination data is encrypted. Even the anchor DWN operator cannot
 read the plaintext without the decryption keys.
-
-## Architecture
-
-```
-                    +---------------+
-                    |  Anchor DWN   |  <- encrypted: members, ACLs, relays
-                    |  (replicated) |
-                    +-------+-------+
-                            |
-               +------------+------------+
-               v            v            v
-         +-----------++-----------++-----------+
-         | Node DWN  || Node DWN  || Node DWN  |  <- encrypted: nodeInfo,
-         |  Alice    ||   Bob     ||  Carol    |     endpoints
-         +-----------++-----------++-----------+
-               ^            ^            ^
-               +-----WireGuard mesh------+
-```
 
 ## Quick start (planned)
 
 ```bash
-# Initialize a node (generates DID + WireGuard keys + local DWN)
+# Initialize (generates DID + WireGuard keys + local DWN)
 dwn-mesh init
 
-# Create a new mesh network
-dwn-mesh network create --name "my-mesh" --cidr 100.64.0.0/10
+# Create a mesh network
+dwn-mesh network create --name "my-infra" --cidr 100.64.0.0/24
 
-# Add a peer (admin)
-dwn-mesh peer add did:dht:abc123...
+# Add your NAS
+dwn-mesh peer add did:dht:nas-device...
 
-# On the peer's machine: join the network
-dwn-mesh network join did:dht:owner... <network-id>
-
-# Start the mesh daemon
+# On the NAS:
+dwn-mesh network join did:dht:you... <network-id>
 dwn-mesh up
 
-# Check status
-dwn-mesh status
-dwn-mesh peer list
+# Your NAS now has mesh IP 100.64.0.2.
+# Point your NAS DWN sync at 100.64.0.1 (your VPS mesh IP).
+# Sync runs over the encrypted tunnel. Done.
 ```
 
 ## Project structure
@@ -83,8 +95,8 @@ internal/
   wg/                   WireGuard interface configuration (wgctrl)
   nat/                  STUN, UDP hole punching, UPnP/NAT-PMP/PCP
   derp/                 DERP relay client + optional embedded server
-  acl/                  ACL policy parsing + nftables/pf enforcement
-protocols/              DWN protocol definitions
+  acl/                  ACL policy parsing + local enforcement
+protocols/              DWN protocol definitions (all paths encrypted)
 schemas/                JSON schemas for record data
 ```
 
@@ -92,12 +104,12 @@ schemas/                JSON schemas for record data
 
 See [DESIGN.md](DESIGN.md) for the complete design document covering:
 
-- Architecture and DWN primitive mapping
+- Product scenarios (personal infra, collaboration, organizations)
+- Architecture (anchor DWN + per-node DWNs, hybrid model)
 - Encryption architecture (Protocol Path + Context key delivery)
-- Full protocol definitions with access control
-- Multi-owner federation models
-- Threat model analysis (comparison with Tailscale)
-- Implementation plan and phases
+- Protocol definitions with full access control
+- Threat model analysis
+- Implementation roadmap
 
 ## License
 
