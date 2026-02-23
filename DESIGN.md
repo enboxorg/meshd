@@ -697,51 +697,178 @@ Tailscale Inc. operates all relay infrastructure.
 | DERP      | Tailscale-operated (12+ PoPs) | Self-hosted / community / embedded |
 | Discovery | Hardcoded by Tailscale        | DWN protocol records (decentralized)|
 
+## dexnet: The Networking Engine
+
+### Why Not Build From Scratch
+
+The original design planned to build WireGuard management, NAT traversal,
+STUN, DERP, and hole punching from scratch using `wgctrl` and `pion/stun`.
+This would have been tens of thousands of lines of Go and years of
+battle-testing.
+
+Instead, we use **[dexnet](https://github.com/WebP2P/dexnet)** — a fork
+of Tailscale's open-source client (`tailscale/tailscale`, BSD-3-Clause)
+that has been rebranded and given its own IP address space so it can run
+side-by-side with a regular Tailscale installation.
+
+### What dexnet Provides
+
+dexnet is the full Tailscale networking stack:
+
+- WireGuard tunnel management (kernel module + wireguard-go fallback)
+- NAT traversal (STUN, ICE, birthday paradox probing)
+- DERP relay client and server (`cmd/derper`)
+- UDP hole punching with simultaneous transmission
+- TUN interface management, routing, DNS
+- Cross-platform: Linux, macOS, Windows, FreeBSD, iOS, Android
+- Port mapping (UPnP IGD, NAT-PMP, PCP)
+
+### What dexnet Changed from Tailscale
+
+| Aspect          | Tailscale             | dexnet                        |
+| --------------- | --------------------- | ----------------------------- |
+| Go module       | `tailscale.com`       | `github.com/WebP2P/dexnet`   |
+| IPv4 space      | `100.64.0.0/10`       | `10.200.0.0/16`               |
+| IPv6 ULA        | `fd7a:115c:a1e0::/48` | `fd0d:e100:d3c5::/48`         |
+| Service IP      | `100.100.100.100`     | `10.200.0.1`                  |
+| Tunnel name     | "Tailscale Tunnel"    | "DexNet Tunnel"               |
+| Socket          | `tailscaled.sock`     | `dexnetd.sock`                |
+| State dir       | `Tailscale/`          | `DexNet/`                     |
+
+The non-conflicting IP space means dexnet and Tailscale can coexist on
+the same machine. A user could have Tailscale for work and dwn-mesh for
+their personal infrastructure simultaneously.
+
+### What dexnet Does NOT Provide
+
+dexnet inherits Tailscale's control plane dependency. Out of the box, it
+still points to `controlplane.tailscale.com` and Tailscale's DERP servers.
+**This is exactly the gap dwn-mesh fills.** We replace:
+
+- The Tailscale control server → DWN protocols on an anchor DWN
+- The Tailscale DERP map → relay records in the mesh protocol
+- OAuth/OIDC identity → DIDs
+- Tailscale ACL policies → encrypted ACL records on the DWN
+
+### Integration Architecture
+
+```
+┌──────────────────────────────────────────────────┐
+│                    dwn-mesh                       │
+│                                                   │
+│  ┌─────────────────────────────────────────────┐ │
+│  │          DWN Coordination Layer              │ │
+│  │  - DID identity (did:dht)                    │ │
+│  │  - Anchor DWN: membership, ACLs, relays      │ │
+│  │  - Per-node DWN: nodeInfo, endpoint           │ │
+│  │  - RecordsSubscribe for real-time updates     │ │
+│  │  - JWE encryption on all coordination data    │ │
+│  └──────────────────┬──────────────────────────┘ │
+│                     │ translates DWN records into │
+│                     │ tailcfg.MapResponse         │
+│  ┌──────────────────▼──────────────────────────┐ │
+│  │         dexnet (networking engine)           │ │
+│  │  - WireGuard tunnels + NAT traversal         │ │
+│  │  - DERP relay client/server                   │ │
+│  │  - STUN, hole punching, port mapping          │ │
+│  │  - TUN interface, routing, DNS                │ │
+│  │  - IP space: 10.200.0.0/16                   │ │
+│  └──────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────┘
+```
+
+### The Integration Point: Control Client
+
+Tailscale's architecture has a clean separation between the control plane
+client and the data plane engine. The key interface is the **control
+client** in `control/controlclient/`, which communicates with the
+coordination server and produces `tailcfg.MapResponse` structures that
+the WireGuard engine consumes.
+
+dwn-mesh implements a **DWN-based control client** that replaces Tailscale's
+`controlclient.Auto` with a `controlclient.DWN` implementation:
+
+| Tailscale control client       | dwn-mesh DWN control client                   |
+| ------------------------------ | --------------------------------------------- |
+| Polls `controlplane.tailscale.com` | Subscribes to anchor DWN + peer DWNs       |
+| Gets `MapResponse` via HTTP    | Builds `MapResponse` from DWN records          |
+| OAuth token authentication     | DID signature authentication                   |
+| Receives peer list from server | Reads member list + resolves each peer's DID   |
+| Receives DERP map from server  | Reads relay records from anchor DWN             |
+| Receives filter rules from server | Reads ACL policy from anchor DWN             |
+| Long-polling for updates       | `RecordsSubscribe` WebSocket for real-time      |
+
+The DWN control client translates DWN records into the same data
+structures dexnet's WireGuard engine expects:
+
+```
+DWN member records     →  tailcfg.Node entries
+DWN endpoint records   →  tailcfg.Node.Endpoints
+DWN ACL policy         →  tailcfg.FilterRule
+DWN relay records      →  tailcfg.DERPMap
+DWN network config     →  tailcfg.DNSConfig
+```
+
+This means we get the entire Tailscale data plane — battle-tested
+WireGuard management, NAT traversal, DERP, hole punching — without
+modification. We only replace the part that answers "who are my peers
+and how do I reach them?"
+
+### Forking to enboxorg
+
+The dexnet repo should be forked to the `enboxorg` GitHub organization
+so that the dwn-mesh project has write access and can make additional
+changes as needed (custom DERP defaults, control client interface
+extraction, etc.). The module path would become
+`github.com/enboxorg/dexnet`.
+
 ## Implementation Plan
 
 ### Phase 0: Foundation (Weeks 1-2)
 
-- Go project setup with module structure
+- Fork dexnet to `enboxorg/dexnet`, update module path
+- Extract the control client interface from dexnet's `control/controlclient`
 - DID generation and management (`did:dht`)
 - DWN HTTP client (RecordsWrite, RecordsRead, RecordsQuery, RecordsSubscribe)
-- WireGuard interface management via `wgctrl`
+- Prototype `controlclient.DWN` that produces a static `MapResponse`
 
 ### Phase 1: Two-Node Mesh (Weeks 3-4)
 
 - `dwn-mesh init` and `dwn-mesh network create`
 - Protocol installation on DWNs (with encryption)
 - nodeInfo/endpoint record writing
-- Peer discovery (member list -> DID resolution -> nodeInfo read)
-- WireGuard tunnel establishment between two nodes
+- Peer discovery (member list → DID resolution → nodeInfo read)
+- DWN control client produces `MapResponse` from real DWN data
+- dexnet establishes WireGuard tunnel between two nodes
 
 ### Phase 2: Dynamic Mesh (Weeks 5-6)
 
 - `RecordsSubscribe` for real-time updates
+- DWN control client pushes updated `MapResponse` on subscription events
 - `dwn-mesh peer add` / `peer remove`
-- Daemon mode (`dwn-mesh up`) with subscription manager
-- STUN-based endpoint discovery
-- Endpoint propagation via encrypted DWN subscriptions
+- Daemon mode (`dwn-mesh up`) wrapping dexnet's `tailscaled` engine
+- Full NAT traversal via dexnet (STUN, hole punching, DERP — all inherited)
 
-### Phase 3: NAT Traversal (Weeks 7-8)
+### Phase 3: DERP Infrastructure (Weeks 7-8)
 
-- STUN (multiple servers)
-- NAT type detection
-- UDP hole punching
-- DERP relay integration
+- Custom DERP map from DWN relay records (replace Tailscale defaults)
+- `dwn-mesh up --relay` runs embedded DERP server (dexnet's `cmd/derper`)
+- Self-registration of DERP servers in the mesh protocol
+- Community DERP server defaults
 
-### Phase 4: ACLs & DWN Sync Integration (Weeks 9-10)
+### Phase 4: ACLs & Security (Weeks 9-10)
 
-- ACL policy distribution (encrypted)
-- Local ACL enforcement (nftables/iptables)
+- ACL policy → `tailcfg.FilterRule` translation
+- dexnet enforces filter rules natively (packet filter on WG interface)
 - Member revocation with key rotation
-- DWN-to-DWN sync over mesh IPs (transparent to DWN)
+- Context key rotation for forward secrecy
 
 ### Phase 5: Production Hardening (Weeks 11-12)
 
 - Anchor DWN replication
-- Cursor-based reconnection (EventLog catch-up)
-- IP address allocation
-- DNS integration (mesh-local hostnames)
+- Cursor-based reconnection (EventLog catch-up after disconnect)
+- DNS integration via dexnet's MagicDNS (mesh-local hostnames)
+- DWN-to-DWN sync over mesh IPs
 - systemd service files
 - Pre-auth keys for headless onboarding
 
@@ -814,18 +941,23 @@ the foot in the door.
 
 ## Comparison with Alternatives
 
-| Aspect          | Tailscale       | Headscale        | dwn-mesh                     |
-| --------------- | --------------- | ---------------- | ---------------------------- |
-| Coordination    | Centralized SaaS| Self-hosted      | Decentralized (DWN)          |
-| Identity        | OAuth2/OIDC     | OAuth2/OIDC      | DIDs (self-sovereign)        |
-| Data sovereignty| Tailscale Inc.  | Your server      | Your DWN(s), encrypted       |
-| Single point    | login.tailscale | Your headscale   | None (replicated anchor DWN) |
-| Trust model     | Trust Tailscale | Trust your infra | Trust cryptography           |
-| Data at rest    | Plaintext*      | Plaintext*       | Encrypted (JWE)              |
-| Primary use     | General VPN     | General VPN      | DWN infrastructure mesh      |
-| DWN-native      | No              | No               | Yes (protocols, sync, DIDs)  |
+| Aspect           | Tailscale       | Headscale        | dwn-mesh                     |
+| ---------------- | --------------- | ---------------- | ---------------------------- |
+| Coordination     | Centralized SaaS| Self-hosted      | Decentralized (DWN)          |
+| Data plane       | Tailscale client| Tailscale client | dexnet (Tailscale fork)      |
+| Identity         | OAuth2/OIDC     | OAuth2/OIDC      | DIDs (self-sovereign)        |
+| Data sovereignty | Tailscale Inc.  | Your server      | Your DWN(s), encrypted       |
+| Single point     | login.tailscale | Your headscale   | None (replicated anchor DWN) |
+| Trust model      | Trust Tailscale | Trust your infra | Trust cryptography           |
+| Data at rest     | Plaintext*      | Plaintext*       | Encrypted (JWE)              |
+| Coexists w/ TS   | N/A             | No**             | Yes (different IP space)     |
+| DERP relays      | Tailscale-run   | Self-hosted      | Self-hosted / embedded / community |
+| Primary use      | General VPN     | General VPN      | DWN infrastructure mesh      |
+| DWN-native       | No              | No               | Yes (protocols, sync, DIDs)  |
+| NAT traversal    | Built-in        | Built-in (TS client) | Built-in (via dexnet)   |
 
 *Coordination data (keys, endpoints) stored in plaintext on the server.
+**Headscale uses the same Tailscale client, so same IP space = conflict.
 
 ## References
 

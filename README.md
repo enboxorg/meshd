@@ -115,18 +115,28 @@ See [DESIGN.md](DESIGN.md) for the complete architecture.
 
 ## How it works under the hood
 
-Every device gets a **DID** (Decentralized Identifier) -- a cryptographic
-identity that doesn't depend on any company. Think of it as a self-signed
-certificate that the whole internet can verify.
+**Networking:** dwn-mesh uses [dexnet](https://github.com/WebP2P/dexnet)
+as its networking engine -- a fork of Tailscale's open-source client with
+its own IP space (`10.200.0.0/16`) so it runs side-by-side with Tailscale.
+This gives us battle-tested WireGuard management, NAT traversal, STUN,
+DERP relay, and UDP hole punching out of the box.
 
-Every device runs an embedded **DWN** (Decentralized Web Node) -- a tiny
-personal data store. It holds the device's WireGuard public key, current
-network endpoint, and mesh membership info. All encrypted.
+**Coordination:** dwn-mesh replaces Tailscale's coordination server with
+DWN protocols. Every device gets a **DID** (a cryptographic identity --
+think self-signed certificate the whole internet can verify) and runs an
+embedded **DWN** (a tiny personal data store). Devices discover each other
+by reading cryptographically signed, encrypted records from each other's
+DWNs and subscribing to real-time updates.
 
-Devices discover each other by reading records from each other's DWNs,
-subscribing to real-time updates, and configuring WireGuard accordingly.
-When a device's IP changes, it writes a new endpoint record. All peers
-receive the update instantly and reconfigure their tunnels.
+**The glue:** A DWN-based control client translates DWN records into the
+data structures dexnet's WireGuard engine expects. This means we get the
+entire Tailscale data plane without modification -- we only replace the
+part that answers "who are my peers and how do I reach them?"
+
+```
+dwn-mesh = DWN coordination (identity, membership, ACLs, encryption)
+         + dexnet engine (WireGuard, NAT traversal, DERP, hole punching)
+```
 
 The mesh uses two DWN protocols:
 
@@ -134,7 +144,15 @@ The mesh uses two DWN protocols:
 - **`wireguard-node`** on each device: WireGuard public key + endpoint
 
 All records are signed with DIDs and encrypted with JWE. The protocols
-enforce access control declaratively -- no application code needed.
+enforce access control declaratively.
+
+## Coexistence with Tailscale
+
+dexnet uses `10.200.0.0/16` (IPv4) and `fd0d:e100:d3c5::/48` (IPv6),
+while Tailscale uses `100.64.0.0/10` and `fd7a:115c:a1e0::/48`. Different
+socket names (`dexnetd` vs `tailscaled`), different state directories.
+You can run both simultaneously on the same machine -- Tailscale for work,
+dwn-mesh for your personal infrastructure.
 
 ## Project structure
 
@@ -143,13 +161,14 @@ cmd/dwn-mesh/           CLI entrypoint
 internal/
   did/                  DID generation and resolution
   dwn/                  DWN client + WebSocket subscriptions
+  control/              DWN-based control client (replaces Tailscale control)
   mesh/                 Network, peers, discovery, IP allocation
-  wg/                   WireGuard interface configuration
-  nat/                  STUN, UDP hole punching, UPnP/NAT-PMP/PCP
-  derp/                 Relay client + optional embedded server
-  acl/                  ACL policy parsing + local enforcement
+  acl/                  ACL policy parsing + tailcfg.FilterRule translation
 protocols/              DWN protocol definitions (encrypted)
 schemas/                JSON schemas for record data
+
+External dependency:
+  github.com/enboxorg/dexnet   (Tailscale fork -- WireGuard, NAT, DERP)
 ```
 
 ## License
