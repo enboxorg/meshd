@@ -258,6 +258,42 @@ func ParseProtectedHeader(protectedB64 string) (*ProtectedHeader, error) {
 	return &header, nil
 }
 
+// DecryptDataWithScheme decrypts a DWN record by matching the recipient entry
+// based on derivation scheme. This is useful for Protocol Context decryption
+// where the recipient's KID is the DWN owner's key ID, but the decryptor
+// holds a delivered context key.
+//
+// It tries each recipient whose derivationScheme matches, attempting to
+// unwrap the CEK with the provided private key.
+func DecryptDataWithScheme(ciphertext []byte, enc *Encryption, privateKey []byte, scheme string) ([]byte, error) {
+	header, err := ParseProtectedHeader(enc.Protected)
+	if err != nil {
+		return nil, err
+	}
+
+	iv, err := base64URLDecode(enc.IV)
+	if err != nil {
+		return nil, fmt.Errorf("decoding IV: %w", err)
+	}
+
+	tag, err := base64URLDecode(enc.Tag)
+	if err != nil {
+		return nil, fmt.Errorf("decoding tag: %w", err)
+	}
+
+	cek, err := unwrapCEKByScheme(enc.Recipients, privateKey, scheme)
+	if err != nil {
+		return nil, err
+	}
+
+	plaintext, err := AEADDecrypt(header.Enc, cek, iv, ciphertext, tag, nil)
+	if err != nil {
+		return nil, fmt.Errorf("decrypting data: %w", err)
+	}
+
+	return plaintext, nil
+}
+
 // unwrapCEKForRecipient finds the recipient matching the given KID and
 // unwraps the CEK using ECDH-ES+A256KW.
 func unwrapCEKForRecipient(recipients []Recipient, privateKey []byte, kid string) ([]byte, error) {
@@ -291,6 +327,47 @@ func unwrapCEKForRecipient(recipients []Recipient, privateKey []byte, kid string
 	}
 
 	return nil, fmt.Errorf("no matching recipient found for kid %q", kid)
+}
+
+// unwrapCEKByScheme tries to unwrap the CEK from any recipient entry
+// matching the given derivation scheme. This enables decryption with
+// a delivered context key where the KID doesn't directly match.
+func unwrapCEKByScheme(recipients []Recipient, privateKey []byte, scheme string) ([]byte, error) {
+	var lastErr error
+	for _, r := range recipients {
+		if r.Header.DerivationScheme != scheme {
+			continue
+		}
+
+		if r.Header.EPK == nil {
+			lastErr = fmt.Errorf("recipient (scheme=%s): missing ephemeral public key", scheme)
+			continue
+		}
+		ephPub, err := base64URLDecode(r.Header.EPK.X)
+		if err != nil {
+			lastErr = fmt.Errorf("recipient (scheme=%s): decoding ephemeral key: %w", scheme, err)
+			continue
+		}
+
+		wrappedKey, err := base64URLDecode(r.EncryptedKey)
+		if err != nil {
+			lastErr = fmt.Errorf("recipient (scheme=%s): decoding wrapped key: %w", scheme, err)
+			continue
+		}
+
+		cek, err := ECDHESUnwrapKey(privateKey, ephPub, wrappedKey)
+		if err != nil {
+			lastErr = fmt.Errorf("recipient (scheme=%s): unwrapping CEK: %w", scheme, err)
+			continue
+		}
+
+		return cek, nil
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no matching recipient found for scheme %q", scheme)
 }
 
 // base64URLEncode encodes bytes as base64url without padding.

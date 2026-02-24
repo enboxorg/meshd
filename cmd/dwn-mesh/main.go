@@ -33,6 +33,7 @@ Commands:
   network join      Join an existing mesh network
   network leave     Leave the current mesh network
   peer list         List all peers in the mesh
+  peer approve      Deliver encryption keys to a peer (anchor only)
   status            Show mesh status and identity info
   up                Start the mesh agent daemon
   down              Stop the mesh agent daemon
@@ -67,7 +68,7 @@ func main() {
 		combined := os.Args[1] + " " + os.Args[2]
 		switch combined {
 		case "network create", "network join", "network leave",
-			"peer list", "peer add", "peer remove":
+			"peer list", "peer add", "peer remove", "peer approve":
 			cmd = combined
 			args = os.Args[3:]
 		}
@@ -93,6 +94,8 @@ func main() {
 		err = cmdNetworkLeave(ctx, args)
 	case "peer list":
 		err = cmdPeerList(ctx, args)
+	case "peer approve":
+		err = cmdPeerApprove(ctx, args)
 	case "status":
 		err = cmdStatus(ctx, args)
 	case "up":
@@ -262,6 +265,13 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 	}
 	fmt.Printf("  Protocol installed on DWN (with encryption keys).\n")
 
+	// Install the key-delivery protocol (needed for multi-party key exchange).
+	if err := mesh.EnsureKeyDeliveryProtocol(ctx, endpoint, identity.URI, signer, identity.EncryptionPrivateKey, identity.EncryptionKeyID()); err != nil {
+		fmt.Printf("  Warning: key-delivery protocol installation failed: %v\n", err)
+	} else {
+		fmt.Printf("  Key delivery protocol installed.\n")
+	}
+
 	// Set up encryption key manager for encrypted writes.
 	encMgr := &dwncrypto.EncryptionKeyManager{
 		RootPrivateKey: identity.EncryptionPrivateKey,
@@ -293,7 +303,24 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 		return fmt.Errorf("network create failed: %d %s", writeStatus.Code, writeStatus.Detail)
 	}
 
-	// 3. Create self as admin member (encrypted).
+	// 3. Deliver context key to self (anchor always needs this for context-based decryption).
+	kdm := &mesh.KeyDeliveryManager{
+		Endpoint:             endpoint,
+		Signer:               signer,
+		EncryptionKeyManager: encMgr,
+	}
+	if err := kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
+		AnchorDID:      identity.URI,
+		RecipientDID:   identity.URI,
+		SourceProtocol: "https://enbox.org/protocols/wireguard-mesh",
+		ContextID:      record.ID,
+	}); err != nil {
+		fmt.Printf("  Warning: context key self-delivery failed: %v\n", err)
+	} else {
+		fmt.Printf("  Context key delivered to self.\n")
+	}
+
+	// 4. Create self as admin member (encrypted).
 	memberRecipients, err := encMgr.DeriveWriteEncryption("network/member")
 	if err != nil {
 		return fmt.Errorf("deriving member encryption: %w", err)
@@ -326,7 +353,7 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 		fmt.Printf("  Created admin member record (encrypted).\n")
 	}
 
-	// 4. Generate WireGuard keys and allocate mesh IP.
+	// 5. Generate WireGuard keys and allocate mesh IP.
 	wgKeys, err := mesh.GenerateWireGuardKeyPair()
 	if err != nil {
 		return fmt.Errorf("generating WireGuard keys: %w", err)
@@ -337,7 +364,7 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 		return fmt.Errorf("allocating mesh IP: %w", err)
 	}
 
-	// 5. Register nodeInfo on DWN (encrypted).
+	// 6. Register nodeInfo on DWN (encrypted).
 	reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            identity.URI,
@@ -354,7 +381,7 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 		fmt.Printf("  Registered node (encrypted): IP=%s\n", meshIP)
 	}
 
-	// 6. Persist network state.
+	// 7. Persist network state.
 	ns := &state.NetworkState{
 		NetworkRecordID:     record.ID,
 		AnchorDID:           identity.URI,
@@ -625,6 +652,63 @@ func cmdPeerList(ctx context.Context, args []string) error {
 			member.Role)
 	}
 
+	return nil
+}
+
+// cmdPeerApprove delivers encryption keys to a peer so they can decrypt
+// mesh records. This must be run by the network anchor (owner).
+//
+// Usage: dwn-mesh peer approve <did>
+func cmdPeerApprove(ctx context.Context, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: dwn-mesh peer approve <did>")
+	}
+
+	peerDID := args[0]
+
+	stateDir := state.DefaultStateDir()
+	identity, err := loadIdentity(stateDir)
+	if err != nil {
+		return err
+	}
+
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return fmt.Errorf("loading network state: %w", err)
+	}
+	if ns == nil {
+		return fmt.Errorf("not in a network. Use 'dwn-mesh network create' first.")
+	}
+
+	// Only the anchor (network owner) can deliver context keys.
+	if ns.AnchorDID != identity.URI {
+		return fmt.Errorf("only the network anchor (%s) can approve peers", ns.AnchorDID)
+	}
+
+	signer := &dwn.Signer{
+		DID:        identity.URI,
+		PrivateKey: identity.SigningKey,
+	}
+	encMgr := newEncryptionKeyManager(identity)
+
+	kdm := &mesh.KeyDeliveryManager{
+		Endpoint:             ns.AnchorEndpoint,
+		Signer:               signer,
+		EncryptionKeyManager: encMgr,
+	}
+
+	err = kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
+		AnchorDID:      identity.URI,
+		RecipientDID:   peerDID,
+		SourceProtocol: "https://enbox.org/protocols/wireguard-mesh",
+		ContextID:      ns.NetworkRecordID,
+	})
+	if err != nil {
+		return fmt.Errorf("delivering context key: %w", err)
+	}
+
+	fmt.Printf("Context key delivered to %s.\n", peerDID)
+	fmt.Printf("The peer can now decrypt mesh records in this network.\n")
 	return nil
 }
 

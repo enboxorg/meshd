@@ -104,6 +104,10 @@ func injectEncryptionRecursive(ruleSet map[string]any, parentKey []byte, rootKey
 //
 // This is the Go equivalent of the TypeScript SDK's EncryptionKeyDeriver
 // interface, but as a concrete type that holds the private key material.
+//
+// It supports both Protocol Path and Protocol Context derivation schemes:
+//   - Protocol Path: owner can derive all keys from root; used for single-party
+//   - Protocol Context: per-conversation key; non-owners receive via key delivery
 type EncryptionKeyManager struct {
 	// RootPrivateKey is the DWN owner's root X25519 private key (32 bytes).
 	RootPrivateKey []byte
@@ -113,6 +117,46 @@ type EncryptionKeyManager struct {
 
 	// ProtocolURI is the protocol URI for protocolPath derivation.
 	ProtocolURI string
+
+	// contextKeys caches delivered context keys (contextID → private key bytes).
+	// These are keys received via the Key Delivery Protocol from the DWN owner.
+	contextKeys map[string][]byte
+}
+
+// StoreContextKey stores a delivered context key for a given context ID.
+// This is called after receiving and decrypting a contextKey record from
+// the DWN owner (key delivery).
+func (m *EncryptionKeyManager) StoreContextKey(contextID string, privateKey []byte) {
+	if m.contextKeys == nil {
+		m.contextKeys = make(map[string][]byte)
+	}
+	keyCopy := make([]byte, len(privateKey))
+	copy(keyCopy, privateKey)
+	m.contextKeys[contextID] = keyCopy
+}
+
+// GetContextKey retrieves a stored context key for a given context ID.
+// Returns nil if no key is stored for that context.
+func (m *EncryptionKeyManager) GetContextKey(contextID string) []byte {
+	if m.contextKeys == nil {
+		return nil
+	}
+	return m.contextKeys[contextID]
+}
+
+// HasContextKey returns true if a context key is stored for the given context ID.
+func (m *EncryptionKeyManager) HasContextKey(contextID string) bool {
+	if m.contextKeys == nil {
+		return false
+	}
+	_, ok := m.contextKeys[contextID]
+	return ok
+}
+
+// IsOwner returns true if this key manager holds the root private key
+// (i.e., this node is the DWN owner / network anchor).
+func (m *EncryptionKeyManager) IsOwner() bool {
+	return len(m.RootPrivateKey) > 0
 }
 
 // DeriveWriteEncryption derives the encryption inputs needed for a RecordsWrite
@@ -147,9 +191,37 @@ func (m *EncryptionKeyManager) DeriveWriteEncryption(protocolPath string) ([]Key
 	}, nil
 }
 
+// DeriveContextWriteEncryption derives the encryption inputs for writing
+// a record encrypted with the Protocol Context scheme.
+//
+// The contextID is the root record ID of the protocol context (conversation).
+// This derives the context key and uses its public key for encryption.
+//
+// For DWN owners: derives from root key via HKDF.
+// For non-owners: uses a previously stored context key (received via key delivery).
+func (m *EncryptionKeyManager) DeriveContextWriteEncryption(contextID string) ([]KeyEncryptionInput, error) {
+	contextPrivKey, err := m.resolveContextPrivateKey(contextID)
+	if err != nil {
+		return nil, err
+	}
+
+	contextPubKey, err := X25519PublicKey(contextPrivKey)
+	if err != nil {
+		return nil, fmt.Errorf("computing context public key: %w", err)
+	}
+
+	return []KeyEncryptionInput{
+		{
+			PublicKeyID:      m.RootKeyID,
+			PublicKey:        contextPubKey,
+			DerivationScheme: DerivationSchemeProtocolContext,
+		},
+	}, nil
+}
+
 // DeriveDecryptionKey derives the X25519 private key for decrypting a record
-// at the given protocol path. This private key can be used with
-// crypto.DecryptData() to decrypt the record's ciphertext.
+// at the given protocol path using the Protocol Path scheme. This private
+// key can be used with crypto.DecryptData() to decrypt the record's ciphertext.
 func (m *EncryptionKeyManager) DeriveDecryptionKey(protocolPath string) (privateKey []byte, err error) {
 	segments := splitProtocolPath(protocolPath)
 	fullPath := BuildProtocolPathDerivation(m.ProtocolURI, segments...)
@@ -160,6 +232,42 @@ func (m *EncryptionKeyManager) DeriveDecryptionKey(protocolPath string) (private
 	}
 
 	return derivedPriv, nil
+}
+
+// DeriveContextDecryptionKey derives the X25519 private key for decrypting
+// a record encrypted with the Protocol Context scheme.
+//
+// For DWN owners: derives from root key.
+// For non-owners: uses stored context key from key delivery.
+func (m *EncryptionKeyManager) DeriveContextDecryptionKey(contextID string) ([]byte, error) {
+	return m.resolveContextPrivateKey(contextID)
+}
+
+// resolveContextPrivateKey resolves the context private key, preferring
+// a stored delivered key, then falling back to HKDF derivation from root.
+func (m *EncryptionKeyManager) resolveContextPrivateKey(contextID string) ([]byte, error) {
+	// First check if we have a delivered key for this context.
+	if key := m.GetContextKey(contextID); key != nil {
+		return key, nil
+	}
+
+	// Fall back to HKDF derivation from root (only works for DWN owner).
+	if !m.IsOwner() {
+		return nil, fmt.Errorf("no context key available for context %q and not the DWN owner", contextID)
+	}
+
+	return DeriveContextKey(m.RootPrivateKey, contextID)
+}
+
+// DeriveContextKeyJwk derives the Protocol Context key for a context and
+// wraps it in a DerivedPrivateJwk ready for key delivery.
+//
+// This is only callable by the DWN owner (requires root private key).
+func (m *EncryptionKeyManager) DeriveContextKeyJwk(contextID string) (*DerivedPrivateJwk, error) {
+	if !m.IsOwner() {
+		return nil, fmt.Errorf("context key derivation requires root private key (DWN owner only)")
+	}
+	return DeriveContextKeyJwk(m.RootPrivateKey, m.RootKeyID, contextID)
 }
 
 // splitProtocolPath splits a slash-delimited protocol path into segments.
