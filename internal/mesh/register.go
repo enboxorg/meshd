@@ -104,8 +104,7 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 		Schema:               schemaNodeInfo,
 		DataFormat:           "application/json",
 		Recipient:            params.AnchorDID,
-		ParentID:             params.NetworkRecordID,
-		ContextID:            params.NetworkRecordID,
+		ParentContextID:     params.NetworkRecordID,
 		Data:                 nodeInfoData,
 		Tags: map[string]any{
 			"did":      params.SelfDID,
@@ -163,14 +162,15 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
 	api := dwn.NewDwnAPI(agent)
 
+	// The endpoint's parent is nodeInfo, whose contextId is networkRecordID/nodeInfoRecordID.
+	nodeInfoContextID := params.NetworkRecordID + "/" + params.NodeInfoRecordID
 	_, status, err := api.Write(ctx, params.AnchorDID, dwn.WriteParams{
 		Protocol:             protocolMesh,
 		ProtocolPath:         "network/nodeInfo/endpoint",
 		Schema:               schemaEndpoint,
 		DataFormat:           "application/json",
 		Recipient:            params.AnchorDID,
-		ParentID:             params.NodeInfoRecordID,
-		ContextID:            params.NetworkRecordID,
+		ParentContextID:     nodeInfoContextID,
 		Data:                 endpointData,
 		EncryptionRecipients: recipients,
 	})
@@ -233,8 +233,7 @@ func CreateMember(ctx context.Context, params CreateMemberParams) error {
 		Schema:               schemaMember,
 		DataFormat:           "application/json",
 		Recipient:            params.MemberDID,
-		ParentID:             params.NetworkRecordID,
-		ContextID:            params.NetworkRecordID,
+		ParentContextID:     params.NetworkRecordID,
 		Data:                 memberData,
 		Tags:                 map[string]any{"status": "active"},
 		EncryptionRecipients: recipients,

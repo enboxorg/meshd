@@ -100,8 +100,6 @@ type WriteParams struct {
 	ProtocolPath string
 	Schema       string
 	Recipient    string
-	ParentID     string
-	ContextID    string
 	Tags         map[string]any
 	DataFormat   string
 	Published    *bool
@@ -112,6 +110,10 @@ type WriteParams struct {
 
 	// RecordID is set for updates (empty for initial writes).
 	RecordID string
+
+	// ParentContextID is the contextId of the parent record.
+	// For root records leave empty; for child records set to the parent's full contextId.
+	ParentContextID string
 
 	// EncryptionRecipients enables encryption for this write.
 	// When set, the data is encrypted with A256GCM and the CEK is
@@ -236,8 +238,7 @@ func (a *SimpleAgent) sendRecordsWrite(ctx context.Context, target string, req D
 		ProtocolPath:         params.ProtocolPath,
 		Schema:               params.Schema,
 		Recipient:            params.Recipient,
-		ParentID:             params.ParentID,
-		ContextID:            params.ContextID,
+		ParentContextID:     params.ParentContextID,
 		Tags:                 params.Tags,
 		DataFormat:           params.DataFormat,
 		Published:            params.Published,
