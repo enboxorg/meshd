@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"runtime"
 	"time"
@@ -259,14 +261,61 @@ type CreateMemberParams struct {
 }
 
 // DiscoverLocalEndpoints discovers local network endpoints for this node.
-// Returns ip:port strings for all non-loopback interfaces.
+// It enumerates non-loopback network interfaces and returns ip:port strings
+// for all unicast addresses on those interfaces.
+//
+// Public endpoint discovery (STUN) is handled by meshnet's magicsock layer
+// when the real engine is running. This function only discovers LAN-reachable
+// endpoints for the initial DWN record, enabling direct connections between
+// peers on the same local network.
 func DiscoverLocalEndpoints(listenPort uint16) []string {
 	if listenPort == 0 {
 		listenPort = 41641 // Default WireGuard port.
 	}
 
-	// For now, return an empty list. In a full implementation, this would
-	// enumerate local network interfaces and return ip:port pairs.
-	// The meshnet engine handles STUN discovery for public endpoints.
-	return nil
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+
+	var endpoints []string
+	for _, iface := range ifaces {
+		// Skip loopback, down, and point-to-point interfaces.
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip := ipNet.IP
+
+			// Skip loopback and link-local addresses.
+			if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+				continue
+			}
+
+			// Parse as netip.Addr for consistent formatting.
+			parsed, ok := netip.AddrFromSlice(ip)
+			if !ok {
+				continue
+			}
+			parsed = parsed.Unmap() // normalize IPv4-in-IPv6
+
+			ap := netip.AddrPortFrom(parsed, listenPort)
+			endpoints = append(endpoints, ap.String())
+		}
+	}
+
+	return endpoints
 }

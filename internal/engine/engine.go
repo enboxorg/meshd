@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -16,10 +18,13 @@ import (
 	"github.com/enboxorg/meshnet/ipn"
 	"github.com/enboxorg/meshnet/ipn/ipnlocal"
 	"github.com/enboxorg/meshnet/ipn/store/mem"
+	"github.com/enboxorg/meshnet/net/netmon"
+	"github.com/enboxorg/meshnet/net/tsdial"
 	"github.com/enboxorg/meshnet/tsd"
 	"github.com/enboxorg/meshnet/types/logid"
 	"github.com/enboxorg/meshnet/types/logger"
 	"github.com/enboxorg/meshnet/wgengine"
+	"github.com/enboxorg/meshnet/wgengine/netstack"
 )
 
 // Engine orchestrates the full dwn-mesh stack:
@@ -29,11 +34,15 @@ import (
 //
 // Engine is the core of `dwn-mesh up`.
 type Engine struct {
-	dwnClient *control.DWNClient
-	converter *Converter
-	backend   *ipnlocal.LocalBackend
-	sys       *tsd.System
-	logger    *slog.Logger
+	dwnClient       *control.DWNClient
+	converter       *Converter
+	backend         *ipnlocal.LocalBackend
+	sys             *tsd.System
+	netMon          *netmon.Monitor
+	dialer          *tsdial.Dialer
+	ns              *netstack.Impl
+	autoKeyDelivery *AutoKeyDelivery
+	logger          *slog.Logger
 
 	mu      sync.Mutex
 	running bool
@@ -76,6 +85,11 @@ type Config struct {
 	// EncryptionKeyManager manages derived encryption keys for decrypting
 	// protocol records. If nil, encrypted records cannot be read.
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
+
+	// AutoKeyDelivery enables automatic context key delivery to new members.
+	// Only active when this node is the anchor and has the root private key.
+	// If nil, auto delivery is disabled.
+	AutoKeyDelivery *AutoKeyDelivery
 
 	// Logger is the structured logger. Nil = default.
 	Logger *slog.Logger
@@ -150,36 +164,97 @@ func New(cfg Config) (*Engine, error) {
 	// Logging adapter: meshnet uses printf-style logging.
 	logf := slogToLogf(l)
 
-	// Create the WireGuard engine with a fake TUN device initially.
-	// On real platforms, we'll replace this with a real TUN.
-	eng, err := wgengine.NewFakeUserspaceEngine(
-		logf,
-		sys.Set,
-		sys.HealthTracker.Get(),
-		sys.UserMetricsRegistry(),
-		sys.Bus.Get(),
-	)
+	// Create network monitor for detecting connectivity changes.
+	nm, err := netmon.New(sys.Bus.Get(), logf)
 	if err != nil {
+		return nil, fmt.Errorf("creating network monitor: %w", err)
+	}
+
+	// Create the dialer that routes through netstack.
+	dial := &tsdial.Dialer{Logf: logf}
+	dial.SetBus(sys.Bus.Get())
+
+	// Create the real userspace WireGuard engine.
+	// Tun: nil triggers fake-TUN mode — no real TUN device, no root required.
+	// magicsock is still real: UDP hole punching, DERP relay, STUN all work.
+	eng, err := wgengine.NewUserspaceEngine(logf, wgengine.Config{
+		Tun:           nil, // fake TUN; netstack handles all packets in userspace
+		EventBus:      sys.Bus.Get(),
+		ListenPort:    cfg.ListenPort,
+		NetMon:        nm,
+		Dialer:        dial,
+		SetSubsystem:  sys.Set,
+		ControlKnobs:  sys.ControlKnobs(),
+		HealthTracker: sys.HealthTracker.Get(),
+		Metrics:       sys.UserMetricsRegistry(),
+	})
+	if err != nil {
+		nm.Close()
 		return nil, fmt.Errorf("creating WireGuard engine: %w", err)
 	}
 	sys.Set(eng)
+
+	// Create netstack — gVisor userspace TCP/IP stack that processes all
+	// WireGuard tunnel packets without needing a real TUN device.
+	ns, err := netstack.Create(
+		logf,
+		sys.Tun.Get(),      // the tstun.Wrapper created by the engine
+		eng,                 // wgengine.Engine
+		sys.MagicSock.Get(), // magicsock.Conn for direct connections
+		dial,                // tsdial.Dialer
+		sys.DNSManager.Get(),
+		sys.ProxyMapper(),
+	)
+	if err != nil {
+		eng.Close()
+		nm.Close()
+		return nil, fmt.Errorf("creating netstack: %w", err)
+	}
+	sys.Tun.Get().Start()
+	sys.Set(ns)
+
+	// With fake TUN (no real device), netstack handles everything:
+	// - ProcessLocalIPs: packets destined for our mesh IP
+	// - ProcessSubnets: packets destined for other mesh nodes
+	ns.ProcessLocalIPs = true
+	ns.ProcessSubnets = true
+
+	// Wire the dialer through netstack so outbound connections from the
+	// dwn-mesh process go through the WireGuard tunnel.
+	dial.UseNetstackForIP = func(ip netip.Addr) bool {
+		_, ok := eng.PeerForIP(ip)
+		return ok
+	}
+	dial.NetstackDialTCP = func(ctx context.Context, dst netip.AddrPort) (net.Conn, error) {
+		return ns.DialContextTCP(ctx, dst)
+	}
 
 	// Create the LocalBackend.
 	lb, err := ipnlocal.NewLocalBackend(
 		logf,
 		logid.PublicID{},
 		sys,
-		controlclient.LoginDefault,
+		controlclient.LoginDefault|controlclient.LocalBackendStartKeyOSNeutral,
 	)
 	if err != nil {
 		eng.Close()
+		nm.Close()
 		return nil, fmt.Errorf("creating LocalBackend: %w", err)
+	}
+
+	// Start netstack with the LocalBackend so it can resolve peer IPs.
+	if err := ns.Start(lb); err != nil {
+		lb.Shutdown()
+		eng.Close()
+		nm.Close()
+		return nil, fmt.Errorf("starting netstack: %w", err)
 	}
 
 	// Wire the DWN control client into the LocalBackend.
 	// MapResponseFunc closes over our DWNClient and Converter to produce
-	// NetworkMaps from DWN records.
-	mapFn := MapResponseFunc(dwnClient, converter)
+	// NetworkMaps from DWN records. If auto key delivery is configured,
+	// it also triggers key delivery to new members after each poll.
+	mapFn := MapResponseFunc(dwnClient, converter, cfg.AutoKeyDelivery)
 	dwnControlConfig := &controlclient.DWNControlConfig{
 		MapResponseFunc: mapFn,
 		PollInterval:    pollInterval,
@@ -190,11 +265,15 @@ func New(cfg Config) (*Engine, error) {
 	)
 
 	return &Engine{
-		dwnClient: dwnClient,
-		converter: converter,
-		backend:   lb,
-		sys:       sys,
-		logger:    l,
+		dwnClient:       dwnClient,
+		converter:       converter,
+		backend:         lb,
+		sys:             sys,
+		netMon:          nm,
+		dialer:          dial,
+		ns:              ns,
+		autoKeyDelivery: cfg.AutoKeyDelivery,
+		logger:          l,
 	}, nil
 }
 
@@ -247,9 +326,15 @@ func (e *Engine) Stop() error {
 		e.cancel()
 	}
 
+	// Shutdown order matters: backend first (stops control polling),
+	// then network monitor.
 	e.backend.Shutdown()
-	e.running = false
 
+	if e.netMon != nil {
+		e.netMon.Close()
+	}
+
+	e.running = false
 	e.logger.Info("dwn-mesh engine stopped")
 	return nil
 }
