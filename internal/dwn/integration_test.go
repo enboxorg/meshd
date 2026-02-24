@@ -950,3 +950,45 @@ func TestIntegrationProtocolRoleWrite(t *testing.T) {
 	}
 	t.Logf("Step 8: Bob's nested role write succeeded: %d %s", postStatus.Code, postStatus.Detail)
 }
+
+// TestIntegrationSquashDirective verifies the server accepts $squash in protocol definitions.
+func TestIntegrationSquashDirective(t *testing.T) {
+	endpoint := testEndpoint(t)
+	signer := testSigner(t, endpoint)
+	registerTenant(t, endpoint, signer)
+
+	agent := dwn.NewSimpleAgent(endpoint, signer)
+	api := dwn.NewDwnAPI(agent)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	protocolURI := fmt.Sprintf("https://example.com/squash-test/%d", time.Now().UnixNano())
+	def := json.RawMessage(fmt.Sprintf(`{
+		"protocol": %q,
+		"published": true,
+		"types": {
+			"status": {
+				"dataFormats": ["application/json"]
+			}
+		},
+		"structure": {
+			"status": {
+				"$squash": true,
+				"$actions": [
+					{ "who": "anyone", "can": ["read"] }
+				]
+			}
+		}
+	}`, protocolURI))
+
+	status, err := api.ConfigureProtocol(ctx, signer.DID, def)
+	if err != nil {
+		t.Fatalf("ConfigureProtocol with $squash: %v", err)
+	}
+	t.Logf("ConfigureProtocol status: %d %s", status.Code, status.Detail)
+	if status.Code >= 300 {
+		t.Fatalf("Server rejected $squash: %d %s", status.Code, status.Detail)
+	}
+	t.Log("Server accepted $squash!")
+}

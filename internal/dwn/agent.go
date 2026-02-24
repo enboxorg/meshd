@@ -88,6 +88,11 @@ type DwnResponse struct {
 
 	// Data is binary record data (for RecordsRead responses).
 	Data []byte
+
+	// BuiltMessage is the constructed Message from a write operation.
+	// Contains the computed recordId, contextId, and full descriptor.
+	// Only populated for RecordsWrite responses.
+	BuiltMessage *Message
 }
 
 //
@@ -257,8 +262,9 @@ func (a *SimpleAgent) sendRecordsWrite(ctx context.Context, target string, req D
 	}
 
 	return &DwnResponse{
-		Status: result.Reply.Status,
-		Reply:  result.Reply,
+		Status:       result.Reply.Status,
+		Reply:        result.Reply,
+		BuiltMessage: result.Message,
 	}, nil
 }
 

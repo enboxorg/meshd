@@ -350,33 +350,46 @@ func (r *Record) Update(ctx context.Context, data []byte, opts ...RecordUpdateOp
 		return nil, fmt.Errorf("update failed: %d %s", resp.Status.Code, resp.Status.Detail)
 	}
 
-	// Return a new record with updated metadata.
-	// Construct explicitly to avoid copying the mutex.
-	updated := &Record{
-		ID:            r.ID,
-		ContextID:     r.ContextID,
-		DateCreated:   r.DateCreated,
-		Protocol:      r.Protocol,
-		ProtocolPath:  r.ProtocolPath,
-		Schema:        r.Schema,
-		ParentID:      r.ParentID,
-		Recipient:     r.Recipient,
-		DataFormat:    r.DataFormat,
-		DataCID:       r.DataCID,
-		Published:     r.Published,
-		DatePublished: r.DatePublished,
-		Tags:          r.Tags,
-		Timestamp:     r.Timestamp,
-		Author:        r.Author,
-		agent:         r.agent,
-		target:        r.target,
-		DataSize:      len(data),
-	}
-
-	if len(data) <= maxInlineDataSize {
-		updated.encodedData = base64.RawURLEncoding.EncodeToString(data)
+	// Build updated record from the built message if available (has accurate
+	// dataCid, messageTimestamp, dataSize from the computed descriptor).
+	var updated *Record
+	if resp.BuiltMessage != nil {
+		var encoded string
+		if len(data) <= maxInlineDataSize {
+			encoded = base64.RawURLEncoding.EncodeToString(data)
+		}
+		updated = RecordFromWrite(r.agent, r.target, resp.BuiltMessage, encoded)
+		updated.Author = r.Author
+		if len(data) > maxInlineDataSize {
+			updated.rawData = data
+		}
 	} else {
-		updated.rawData = data
+		// Fallback: construct manually.
+		updated = &Record{
+			ID:            r.ID,
+			ContextID:     r.ContextID,
+			DateCreated:   r.DateCreated,
+			Protocol:      r.Protocol,
+			ProtocolPath:  r.ProtocolPath,
+			Schema:        r.Schema,
+			ParentID:      r.ParentID,
+			Recipient:     r.Recipient,
+			DataFormat:    r.DataFormat,
+			DataCID:       r.DataCID,
+			Published:     r.Published,
+			DatePublished: r.DatePublished,
+			Tags:          r.Tags,
+			Timestamp:     r.Timestamp,
+			Author:        r.Author,
+			agent:         r.agent,
+			target:        r.target,
+			DataSize:      len(data),
+		}
+		if len(data) <= maxInlineDataSize {
+			updated.encodedData = base64.RawURLEncoding.EncodeToString(data)
+		} else {
+			updated.rawData = data
+		}
 	}
 
 	return updated, nil
