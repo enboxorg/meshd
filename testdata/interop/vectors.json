@@ -1,0 +1,209 @@
+{
+  "version": "1.0.0",
+  "generatedBy": "go",
+  "hkdf": [
+    {
+      "description": "single segment: protocolPath",
+      "rootKey": "-gGJ83CirCkYDOH4ZRBDH-dTBVKDPW2mUUGaD-4s-Tg",
+      "path": [
+        "protocolPath"
+      ],
+      "derivedKey": "wz9516MjNZs7MARBSv7K4u-gnylvzc4iQUpg1xOdwyw",
+      "publicKey": "jXFix5yYF6yfsiHemV72Lwq2MbE3elQ2APJMLhDHbGk"
+    },
+    {
+      "description": "two segments: protocolPath + protocol URI",
+      "rootKey": "-gGJ83CirCkYDOH4ZRBDH-dTBVKDPW2mUUGaD-4s-Tg",
+      "path": [
+        "protocolPath",
+        "https://example.com/protocol/chat"
+      ],
+      "derivedKey": "P69xVoburQvT6WU40nF5Hsoj3TrZJ055ZACIjkvJJHU",
+      "publicKey": "v2Jst33d0ELhUfsXBsR9ims_ey6g8vi3PMCubGUa8B8"
+    },
+    {
+      "description": "full protocol path: protocolPath/URI/thread/message",
+      "rootKey": "-gGJ83CirCkYDOH4ZRBDH-dTBVKDPW2mUUGaD-4s-Tg",
+      "path": [
+        "protocolPath",
+        "https://example.com/protocol/chat",
+        "thread",
+        "message"
+      ],
+      "derivedKey": "vpoMvrpsmAMW-zUpykAbodgc0gltn3wiu43HZzB4MNI",
+      "publicKey": "DG7GTpKeg3Nd2xS5vr2I_3LmmgQ1QfcKp7wmFqbpID0"
+    },
+    {
+      "description": "protocol context scheme",
+      "rootKey": "-gGJ83CirCkYDOH4ZRBDH-dTBVKDPW2mUUGaD-4s-Tg",
+      "path": [
+        "protocolContext",
+        "bafyreiabc123contextid"
+      ],
+      "derivedKey": "CeNC8gY3F8b61Z-9m-Y5ZFRbAvRw-HdbSSoCf_O9f_k",
+      "publicKey": "pILDXnLVvwIXwlF-7Dh5QBgkSLNC1hAPasC5GET-igc"
+    },
+    {
+      "description": "three-step hierarchical derivation",
+      "rootKey": "-gGJ83CirCkYDOH4ZRBDH-dTBVKDPW2mUUGaD-4s-Tg",
+      "path": [
+        "step1",
+        "step2",
+        "step3"
+      ],
+      "derivedKey": "DLMRZVbLNKgiCg1rvssTqR9lMynO2dFGMwDuj9P_eAA",
+      "publicKey": "AR-qBipsyk782mFLHcwhGNSxemuvRvGmzpdXrk8fgBk"
+    }
+  ],
+  "concatKdf": [
+    {
+      "description": "DWN standard: A256KW, empty party info, 256-bit",
+      "sharedSecret": "GbEfLenm-0OvHCMSwJpdGSEJONVCmWASVkR_rw6JG34",
+      "keyDataLen": 256,
+      "algorithmId": "A256KW",
+      "partyUInfo": "",
+      "partyVInfo": "",
+      "suppPubInfo": 256,
+      "derivedKey": "1Po-5NiifW4KrJaEjFUVlPCFztwp9qZJVKVBZHCBtrQ"
+    },
+    {
+      "description": "RFC 7518 test vector: A128GCM, Alice/Bob, 128-bit",
+      "sharedSecret": "nlbZHYFxNdNyg0KDv4QmnPsxbqPagGpI9tqneYz-kMQ",
+      "keyDataLen": 128,
+      "algorithmId": "A128GCM",
+      "partyUInfo": "Alice",
+      "partyVInfo": "Bob",
+      "suppPubInfo": 128,
+      "derivedKey": "VqqN6vgjbSBcIijNcacQGg"
+    }
+  ],
+  "aead": [
+    {
+      "description": "A256GCM short plaintext",
+      "algorithm": "A256GCM",
+      "key": "j_ikLqyKahV3GF2nRYvOYweWJZZLnkk6_evyl0oy-2U",
+      "iv": "TO8BGeYKtts2ovMj",
+      "plaintext": "aGVsbG8sIERXTiBlbmNyeXB0aW9uIGludGVyb3Ah",
+      "ciphertext": "xGUQTXuoorYQcjHl52o7A7gRET_mKNkjHabU7FOl",
+      "tag": "R6U0cjK_bJorPvO52PdfOg"
+    },
+    {
+      "description": "A256GCM empty plaintext",
+      "algorithm": "A256GCM",
+      "key": "xL36eUWS5e92rteJQw75jeP7EYZ4rPJDC-yvQYwuxsQ",
+      "iv": "0zor_pTY7svI_5PJ",
+      "plaintext": "",
+      "ciphertext": "",
+      "tag": "qlLDfQno8K-VeZyRtDZvEA"
+    },
+    {
+      "description": "A256GCM JSON payload",
+      "algorithm": "A256GCM",
+      "key": "4OjWMmO4s13lkWgR0e8nblZM-0F10aBc9gfdksuy2t0",
+      "iv": "qkNZU99aMTsCqSb3",
+      "plaintext": "eyJ0eXBlIjoibm9kZUluZm8iLCJwdWJsaWNLZXkiOiJhYmMxMjMiLCJlbmRwb2ludCI6IjEwLjIwMC4wLjE6NTE4MjAifQ",
+      "ciphertext": "LIVuzkjWx1WlYCTDpN9CeJwPSmsO2seawMx_1MmBpVg1CLTq44s96hXXmukuz5F7jvzLJSXV4nBWlqQM4qcXuUSn9H-MtA",
+      "tag": "yHFFyejOYmcTEqb-P5C_kg"
+    }
+  ],
+  "keyWrap": [
+    {
+      "description": "AES-256 Key Wrap of 256-bit CEK",
+      "kek": "1-tZFpFWIjpXtuwUh-YZWGTWG0yzFaXSp7n-Pe6pNUM",
+      "plaintext": "9Mo7ZrFlF8sBrv9wmeDppNHsgq8BehUbYnWmztdbvs4",
+      "wrapped": "VxOna6euQCgoyszyM8wTtKqvx9dFJMMMe5EJ2pCj60fjT7epx9lrAw"
+    }
+  ],
+  "ecdhEs": [
+    {
+      "description": "ECDH-ES+A256KW full flow with deterministic keys",
+      "recipientPrivateKey": "DZxEIXgiB8fQ76m6LEomYMs2_L6XLevM1LasoNieOMU",
+      "recipientPublicKey": "wsLAdsLh9gZZKffopbK0Sc5XbMld-b55hxtkhSuh6BI",
+      "ephemeralPrivateKey": "pPGFiV1gBeS42UhDTjDfOHaq0O7QF4bfW1BuP49lRs4",
+      "ephemeralPublicKey": "SnOFlTMuE0HRc3vbTzf6cNQjlbq66infv1IAMcn1Fyo",
+      "cek": "q54OtYilVIPR8oWaWV1YC7FvHegDRlSo4jg4UbVL2Jg",
+      "sharedSecret": "zKn9pXzda2M4A7_uSm3xGGX6tX2LCH4XRBk9HDx8HwI",
+      "kek": "ixZ0YLXxEoxLy6SxmKfJlme-3YjVFuYYFzpFnlJKcE4",
+      "wrappedKey": "ykPqzNSdqktQzNtIZ6-03YgKcmGnvDOC5armrp3dS6c7RhkteIK0Eg"
+    }
+  ],
+  "fullJwe": [
+    {
+      "description": "full JWE A256GCM with deterministic keys",
+      "recipientPrivateKey": "dOT30gYEUHrwV1fEUwqLCgEicWtDZp8g3H4hEeADg9A",
+      "recipientPublicKey": "JI6Q3ZLIqNo2s1QrcUBsmsTyKN4F9CypnVdLYVtLax4",
+      "recipientKid": "did:dht:interoptest123#enc",
+      "derivationScheme": "protocolPath",
+      "plaintext": "eyJuZXR3b3JrSWQiOiJuZXQtMDAxIiwicm9sZSI6ImFkbWluIn0",
+      "cek": "t0klMC50Gzj51Ha5-ST0simRQZoQfs_U8DZMmWIVY3k",
+      "iv": "IDTGN2vgi5SeJ_y8",
+      "ciphertext": "yqf5yxGO275JygCIorX6Xof__0Sh-6jl2wz7J5D84Bfbs7aEMzs",
+      "jwe": {
+        "protected": "eyJhbGciOiJFQ0RILUVTK0EyNTZLVyIsImVuYyI6IkEyNTZHQ00ifQ",
+        "iv": "IDTGN2vgi5SeJ_y8",
+        "tag": "DtMlXGQ6JaoUp3VrHdH2WA",
+        "recipients": [
+          {
+            "header": {
+              "kid": "did:dht:interoptest123#enc",
+              "epk": {
+                "kty": "OKP",
+                "crv": "X25519",
+                "x": "0fz2_ifKRnT6h7DC8gAaur-7Aov20gYEYa0qj3WyjC8"
+              },
+              "derivationScheme": "protocolPath"
+            },
+            "encrypted_key": "MfO37WQ_MCOTA9uDKIK3wAij5XwLO3LrFOoZWkfBsDZIntK_4Z-q8Q"
+          }
+        ]
+      }
+    }
+  ],
+  "protocolKey": [
+    {
+      "description": "protocol path: network",
+      "rootKey": "8DBENkiUrNwT4rI1gyrIVvDYuRzzub--aWe0DhynvpU",
+      "rootKeyId": "did:dht:interoptest123#enc",
+      "protocolUri": "https://example.com/protocol/wireguard-mesh",
+      "protocolPath": "network",
+      "fullPath": [
+        "protocolPath",
+        "https://example.com/protocol/wireguard-mesh",
+        "network"
+      ],
+      "derivedKey": "dM_JHD1G6SMEH0r3xJj9mOknM2XTAGa_2tvdIwFh9No",
+      "publicKey": "Ov44LzYHQaWmJb8MJWiyoxRJvqhrC3r6BcA9xJKBYkM"
+    },
+    {
+      "description": "protocol path: network/member",
+      "rootKey": "8DBENkiUrNwT4rI1gyrIVvDYuRzzub--aWe0DhynvpU",
+      "rootKeyId": "did:dht:interoptest123#enc",
+      "protocolUri": "https://example.com/protocol/wireguard-mesh",
+      "protocolPath": "network/member",
+      "fullPath": [
+        "protocolPath",
+        "https://example.com/protocol/wireguard-mesh",
+        "network",
+        "member"
+      ],
+      "derivedKey": "Z_MT1MrEmBh-DZpFGwzCFroSImix1h5Brd_r4syj1Vg",
+      "publicKey": "85-guodABi1QaMtFTygILjdjC7h79f3jZxRYIOGRVRE"
+    },
+    {
+      "description": "protocol path: network/member/nodeInfo",
+      "rootKey": "8DBENkiUrNwT4rI1gyrIVvDYuRzzub--aWe0DhynvpU",
+      "rootKeyId": "did:dht:interoptest123#enc",
+      "protocolUri": "https://example.com/protocol/wireguard-mesh",
+      "protocolPath": "network/member/nodeInfo",
+      "fullPath": [
+        "protocolPath",
+        "https://example.com/protocol/wireguard-mesh",
+        "network",
+        "member",
+        "nodeInfo"
+      ],
+      "derivedKey": "GFE2AKFQw--mZ5hvGlwxc8ylmph5Nk4WJCSqGFZWBxE",
+      "publicKey": "t9Wn-LH3fd7ARGvOgtmAbrzWev1JbDbHVn3BaPrMll4"
+    }
+  ]
+}
