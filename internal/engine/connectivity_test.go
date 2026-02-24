@@ -634,14 +634,21 @@ type testNode struct {
 	api      *dwn.DwnAPI
 }
 
-// newTestNode creates a fresh DID identity, registers it as a tenant, and
-// returns a fully wired test node.
+// newTestNode creates a fresh DID identity, publishes it to the DHT,
+// registers it as a tenant, and returns a fully wired test node.
 func newTestNode(t *testing.T, endpoint string) *testNode {
 	t.Helper()
 
 	identity, err := did.Generate()
 	if err != nil {
 		t.Fatalf("generating DID: %v", err)
+	}
+
+	// Publish DID to DHT so the server can resolve it for JWS verification.
+	pubCtx, pubCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer pubCancel()
+	if err := identity.Publish(pubCtx, endpoint); err != nil {
+		t.Fatalf("publishing DID: %v", err)
 	}
 
 	signer := &dwn.Signer{
@@ -653,20 +660,8 @@ func newTestNode(t *testing.T, endpoint string) *testNode {
 	regCtx, regCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer regCancel()
 
-	err = dwn.RegisterTenant(regCtx, endpoint, signer.DID)
-	if err != nil {
-		if err == dwn.ErrRegistrationNotAvailable {
-			// Try a simple query to see if the server allows open access.
-			client := dwn.NewClient(endpoint, signer)
-			qCtx, qCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer qCancel()
-			reply, qErr := client.ProtocolsQuery(qCtx, signer.DID, "")
-			if qErr != nil || reply.Status.Code == 401 {
-				t.Skipf("Server requires tenant registration but PoW endpoints unavailable")
-			}
-		} else {
-			t.Fatalf("RegisterTenant: %v", err)
-		}
+	if err := dwn.RegisterTenant(regCtx, endpoint, signer.DID); err != nil {
+		t.Fatalf("RegisterTenant: %v", err)
 	}
 
 	agent := dwn.NewSimpleAgent(endpoint, signer)

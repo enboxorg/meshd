@@ -24,7 +24,9 @@ func TestRecordFromWrite(t *testing.T) {
 	msg := result.Message
 
 	agent := NewSimpleAgent("http://localhost:8080", s)
-	record := RecordFromWrite(agent, s.DID, msg, msg.EncodedData)
+	// After a write the caller has the wire data; encode it for the local Record.
+	encoded := base64.RawURLEncoding.EncodeToString(result.WireData)
+	record := RecordFromWrite(agent, s.DID, msg, encoded)
 
 	t.Run("record ID", func(t *testing.T) {
 		if record.ID == "" {
@@ -80,7 +82,8 @@ func TestRecordDataLazyAccess(t *testing.T) {
 	})
 	msg := writeResult.Message
 
-	record := RecordFromWrite(agent, s.DID, msg, msg.EncodedData)
+	encoded := base64.RawURLEncoding.EncodeToString(writeResult.WireData)
+	record := RecordFromWrite(agent, s.DID, msg, encoded)
 
 	t.Run("JSON", func(t *testing.T) {
 		var result map[string]string
@@ -97,7 +100,7 @@ func TestRecordDataLazyAccess(t *testing.T) {
 		// Data was consumed by JSON call above. Since there's no server
 		// to re-fetch from, and no raw data, this should fail.
 		// But we can set up a new record for this test.
-		record2 := RecordFromWrite(agent, s.DID, msg, msg.EncodedData)
+		record2 := RecordFromWrite(agent, s.DID, msg, encoded)
 		text, err := record2.Data().Text(context.Background())
 		if err != nil {
 			t.Fatalf("Data().Text: %v", err)
@@ -108,7 +111,7 @@ func TestRecordDataLazyAccess(t *testing.T) {
 	})
 
 	t.Run("Bytes", func(t *testing.T) {
-		record3 := RecordFromWrite(agent, s.DID, msg, msg.EncodedData)
+		record3 := RecordFromWrite(agent, s.DID, msg, encoded)
 		data, err := record3.Data().Bytes(context.Background())
 		if err != nil {
 			t.Fatalf("Data().Bytes: %v", err)

@@ -169,8 +169,8 @@ func TestBuildRecordsWrite(t *testing.T) {
 		if msg.Authorization == nil || msg.Authorization.Signature == nil {
 			t.Fatal("missing authorization")
 		}
-		if msg.EncodedData == "" {
-			t.Error("missing encodedData for small payload")
+		if msg.EncodedData != "" {
+			t.Error("encodedData should not be set on writes (data goes in HTTP body)")
 		}
 	})
 
@@ -415,16 +415,16 @@ func TestBuildRecordsWriteEncrypted(t *testing.T) {
 		}
 	})
 
-	t.Run("encodedData contains ciphertext", func(t *testing.T) {
-		if msg.EncodedData == "" {
-			t.Fatal("small payload should be inlined")
+	t.Run("encodedData not set on writes", func(t *testing.T) {
+		if msg.EncodedData != "" {
+			t.Fatal("encodedData should not be set on writes (data goes in HTTP body)")
 		}
-		decoded, err := base64.RawURLEncoding.DecodeString(msg.EncodedData)
-		if err != nil {
-			t.Fatalf("decoding encodedData: %v", err)
-		}
+	})
+
+	t.Run("wireData contains ciphertext", func(t *testing.T) {
+		decoded := result.WireData
 		if bytes.Equal(decoded, plaintext) {
-			t.Fatal("encodedData should contain ciphertext, not plaintext")
+			t.Fatal("wireData should contain ciphertext, not plaintext")
 		}
 	})
 

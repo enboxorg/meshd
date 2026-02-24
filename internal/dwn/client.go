@@ -64,7 +64,7 @@ type RecordsWriteResult struct {
 // RecordsWrite creates or updates a record on the target DWN.
 //
 // For data payloads:
-//   - Data ≤ 30KB is inlined as base64url encodedData in the message
+//   - Data is always sent in the HTTP body as application/octet-stream
 //   - Data > 30KB is sent as binary in the HTTP body
 //
 // When encryption is enabled (via EncryptionRecipients), the plaintext is
@@ -79,11 +79,10 @@ func (c *Client) RecordsWrite(ctx context.Context, target string, opts RecordsWr
 	}
 	msg := built.Message
 
-	// Determine if data should go in the body (large payloads)
-	// or inline in the message (small payloads, already base64url encoded).
+	// Data always goes in the HTTP body as application/octet-stream.
+	// encodedData is a read-side optimization only (query/subscribe responses).
 	var bodyData []byte
-	if msg.EncodedData == "" && len(built.WireData) > 0 {
-		// Large data: send as binary body.
+	if len(built.WireData) > 0 {
 		bodyData = built.WireData
 	}
 

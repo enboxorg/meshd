@@ -61,7 +61,7 @@ func WithPublishLogger(l *slog.Logger) PublishOption {
 // If empty, the DID Document will not include a DWN service endpoint.
 func (d *DID) Publish(ctx context.Context, dwnEndpoint string, opts ...PublishOption) error {
 	options := &PublishOptions{
-		GatewayURL: "https://diddht.tbddev.org",
+		GatewayURL: "https://enbox-did-dht.fly.dev",
 		HTTPClient: http.DefaultClient,
 		Logger:     slog.Default(),
 	}
