@@ -56,6 +56,10 @@ type Config struct {
 	// Signer signs DWN messages for this node.
 	Signer *dwn.Signer
 
+	// Resolver resolves peer DIDs to discover their DWN endpoints and keys.
+	// If nil, peer DID resolution is disabled.
+	Resolver control.Resolver
+
 	// Domain is the mesh domain name for DNS.
 	Domain string
 
@@ -114,13 +118,17 @@ func New(cfg Config) (*Engine, error) {
 	}
 
 	// Create the DWN control client that reads mesh state.
+	controlOpts := []control.Option{control.WithLogger(l)}
+	if cfg.Resolver != nil {
+		controlOpts = append(controlOpts, control.WithResolver(cfg.Resolver))
+	}
 	dwnClient := control.NewDWNClient(
 		cfg.AnchorEndpoint,
 		cfg.AnchorTenant,
 		cfg.NetworkRecordID,
 		cfg.SelfDID,
 		cfg.Signer,
-		control.WithLogger(l),
+		controlOpts...,
 	)
 
 	// Create the converter that bridges dwn-mesh types to meshnet types.

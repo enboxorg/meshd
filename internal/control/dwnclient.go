@@ -32,6 +32,7 @@ type UpdateFunc func(*MapResponse)
 type dwnClientOptions struct {
 	logger   *slog.Logger
 	onUpdate UpdateFunc
+	resolver Resolver
 }
 
 // Option configures a DWNClient.
@@ -51,6 +52,14 @@ func WithUpdateHandler(fn UpdateFunc) Option {
 	}
 }
 
+// WithResolver sets the DID resolver used to discover peer DWN endpoints.
+// If not set, peer DWN endpoints cannot be resolved from their DIDs.
+func WithResolver(r Resolver) Option {
+	return func(o *dwnClientOptions) {
+		o.resolver = r
+	}
+}
+
 // DWNClient reads mesh state from DWN records and produces MapResponse
 // snapshots for the networking engine.
 type DWNClient struct {
@@ -61,6 +70,7 @@ type DWNClient struct {
 	signer          *dwn.Signer
 	logger          *slog.Logger
 	onUpdate        UpdateFunc
+	resolver        Resolver
 
 	mu      sync.RWMutex
 	network *NetworkConfig
@@ -68,6 +78,9 @@ type DWNClient struct {
 	nodes   map[string]*NodeInfoData
 	relays  []*RelayData
 	acl     *ACLPolicyData
+
+	// peerEndpoints caches resolved DID → DWN endpoint mappings.
+	peerEndpoints map[string]*PeerEndpointInfo
 }
 
 // NewDWNClient creates a new DWN-based control client.
@@ -94,8 +107,10 @@ func NewDWNClient(
 		signer:          signer,
 		logger:          options.logger,
 		onUpdate:        options.onUpdate,
+		resolver:        options.resolver,
 		members:         make(map[string]*MemberInfo),
 		nodes:           make(map[string]*NodeInfoData),
+		peerEndpoints:   make(map[string]*PeerEndpointInfo),
 	}
 }
 
@@ -235,6 +250,33 @@ func BuildStaticMapResponse(selfNode *Node, peers []*Node, derpMap *DERPMap) *Ma
 		PacketFilter: defaultFilterRules(),
 		DNSConfig:    &DNSConfig{MagicDNSSuffix: "mesh.local"},
 	}
+}
+
+// ResolvePeerDID resolves a peer's DID and caches the result. Returns the
+// cached result on subsequent calls for the same DID. If no resolver is
+// configured, returns nil without error.
+func (c *DWNClient) ResolvePeerDID(ctx context.Context, peerDID string) (*PeerEndpointInfo, error) {
+	if c.resolver == nil {
+		return nil, nil
+	}
+
+	c.mu.RLock()
+	cached, ok := c.peerEndpoints[peerDID]
+	c.mu.RUnlock()
+	if ok {
+		return cached, nil
+	}
+
+	info, err := ResolvePeerEndpoints(ctx, c.resolver, peerDID, c.logger)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.peerEndpoints[peerDID] = info
+	c.mu.Unlock()
+
+	return info, nil
 }
 
 // buildMapResponse constructs a MapResponse from the current cached state.
