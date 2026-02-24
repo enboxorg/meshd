@@ -9,6 +9,7 @@ on:
 env:
   GOPRIVATE: github.com/enboxorg/*
   GONOSUMCHECK: github.com/enboxorg/*
+  GOTOOLCHAIN: auto
 
 jobs:
   test:
@@ -18,7 +19,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25.x'
 
       - name: Configure private modules
         run: git config --global url."https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/".insteadOf "https://github.com/"
@@ -41,7 +42,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25.x'
 
       - name: Configure private modules
         run: git config --global url."https://x-access-token:${{ secrets.GH_TOKEN }}@github.com/".insteadOf "https://github.com/"
@@ -55,3 +56,4 @@ jobs:
             exit 0
           fi
           go test ./internal/dwn/ -run TestIntegration -v -count=1 -timeout 120s
+          go test ./internal/mesh/ -run TestE2E -v -count=1 -timeout 180s
