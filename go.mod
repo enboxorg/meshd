@@ -5,6 +5,7 @@ go 1.25.5
 require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/coder/websocket v1.8.14
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
 	github.com/enboxorg/meshnet v0.0.0-20260223190217-72d896c787af
 	github.com/fxamacker/cbor/v2 v2.9.0
 	github.com/google/uuid v1.6.0
@@ -13,6 +14,7 @@ require (
 	github.com/tv42/zbase32 v0.0.0-20220222190657-f76a9fc892fa
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745
 	golang.org/x/crypto v0.48.0
+	golang.org/x/net v0.50.0
 )
 
 require (
@@ -50,7 +52,6 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
-	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/term v0.40.0 // indirect
