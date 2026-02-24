@@ -1,0 +1,449 @@
+# filippo.io/edwards25519 v1.2.0
+## explicit; go 1.24.0
+filippo.io/edwards25519
+filippo.io/edwards25519/field
+# github.com/akutz/memconn v0.1.0
+## explicit
+github.com/akutz/memconn
+# github.com/coder/websocket v1.8.14
+## explicit; go 1.23
+github.com/coder/websocket
+github.com/coder/websocket/internal/bpool
+github.com/coder/websocket/internal/errd
+github.com/coder/websocket/internal/util
+github.com/coder/websocket/internal/wsjs
+# github.com/creachadair/msync v0.7.1
+## explicit; go 1.25
+github.com/creachadair/msync/trigger
+# github.com/dblohm7/wingoes v0.0.0-20240119213807-a09d6be7affa
+## explicit; go 1.21
+github.com/dblohm7/wingoes
+# github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
+## explicit; go 1.17
+github.com/decred/dcrd/dcrec/secp256k1/v4
+github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa
+# github.com/enboxorg/meshnet v0.0.0-20260223190217-72d896c787af
+## explicit; go 1.25.5
+github.com/enboxorg/meshnet
+github.com/enboxorg/meshnet/appc
+github.com/enboxorg/meshnet/atomicfile
+github.com/enboxorg/meshnet/client/local
+github.com/enboxorg/meshnet/client/tailscale/apitype
+github.com/enboxorg/meshnet/client/web
+github.com/enboxorg/meshnet/control/controlbase
+github.com/enboxorg/meshnet/control/controlclient
+github.com/enboxorg/meshnet/control/controlhttp
+github.com/enboxorg/meshnet/control/controlhttp/controlhttpcommon
+github.com/enboxorg/meshnet/control/controlknobs
+github.com/enboxorg/meshnet/control/ts2021
+github.com/enboxorg/meshnet/derp
+github.com/enboxorg/meshnet/derp/derpconst
+github.com/enboxorg/meshnet/derp/derphttp
+github.com/enboxorg/meshnet/disco
+github.com/enboxorg/meshnet/drive
+github.com/enboxorg/meshnet/envknob
+github.com/enboxorg/meshnet/envknob/featureknob
+github.com/enboxorg/meshnet/feature
+github.com/enboxorg/meshnet/feature/buildfeatures
+github.com/enboxorg/meshnet/feature/condlite/expvar
+github.com/enboxorg/meshnet/feature/syspolicy
+github.com/enboxorg/meshnet/health
+github.com/enboxorg/meshnet/health/healthmsg
+github.com/enboxorg/meshnet/hostinfo
+github.com/enboxorg/meshnet/ipn
+github.com/enboxorg/meshnet/ipn/conffile
+github.com/enboxorg/meshnet/ipn/ipnauth
+github.com/enboxorg/meshnet/ipn/ipnext
+github.com/enboxorg/meshnet/ipn/ipnlocal
+github.com/enboxorg/meshnet/ipn/ipnstate
+github.com/enboxorg/meshnet/ipn/store
+github.com/enboxorg/meshnet/ipn/store/mem
+github.com/enboxorg/meshnet/kube/kubetypes
+github.com/enboxorg/meshnet/licenses
+github.com/enboxorg/meshnet/log/filelogger
+github.com/enboxorg/meshnet/log/sockstatlog
+github.com/enboxorg/meshnet/logpolicy
+github.com/enboxorg/meshnet/logtail
+github.com/enboxorg/meshnet/logtail/filch
+github.com/enboxorg/meshnet/metrics
+github.com/enboxorg/meshnet/net/bakedroots
+github.com/enboxorg/meshnet/net/batching
+github.com/enboxorg/meshnet/net/captivedetection
+github.com/enboxorg/meshnet/net/dns
+github.com/enboxorg/meshnet/net/dns/publicdns
+github.com/enboxorg/meshnet/net/dns/resolvconffile
+github.com/enboxorg/meshnet/net/dns/resolver
+github.com/enboxorg/meshnet/net/dnscache
+github.com/enboxorg/meshnet/net/dnsfallback
+github.com/enboxorg/meshnet/net/flowtrack
+github.com/enboxorg/meshnet/net/ipset
+github.com/enboxorg/meshnet/net/netaddr
+github.com/enboxorg/meshnet/net/netcheck
+github.com/enboxorg/meshnet/net/neterror
+github.com/enboxorg/meshnet/net/netkernelconf
+github.com/enboxorg/meshnet/net/netknob
+github.com/enboxorg/meshnet/net/netmon
+github.com/enboxorg/meshnet/net/netns
+github.com/enboxorg/meshnet/net/netutil
+github.com/enboxorg/meshnet/net/netx
+github.com/enboxorg/meshnet/net/packet
+github.com/enboxorg/meshnet/net/packet/checksum
+github.com/enboxorg/meshnet/net/ping
+github.com/enboxorg/meshnet/net/portmapper/portmappertype
+github.com/enboxorg/meshnet/net/sockopts
+github.com/enboxorg/meshnet/net/sockstats
+github.com/enboxorg/meshnet/net/stun
+github.com/enboxorg/meshnet/net/tlsdial
+github.com/enboxorg/meshnet/net/tlsdial/blockblame
+github.com/enboxorg/meshnet/net/tsaddr
+github.com/enboxorg/meshnet/net/tsdial
+github.com/enboxorg/meshnet/net/tstun
+github.com/enboxorg/meshnet/net/udprelay/endpoint
+github.com/enboxorg/meshnet/net/udprelay/status
+github.com/enboxorg/meshnet/net/wsconn
+github.com/enboxorg/meshnet/omit
+github.com/enboxorg/meshnet/paths
+github.com/enboxorg/meshnet/proxymap
+github.com/enboxorg/meshnet/safesocket
+github.com/enboxorg/meshnet/syncs
+github.com/enboxorg/meshnet/tailcfg
+github.com/enboxorg/meshnet/tempfork/acme
+github.com/enboxorg/meshnet/tempfork/heap
+github.com/enboxorg/meshnet/tka
+github.com/enboxorg/meshnet/tsconst
+github.com/enboxorg/meshnet/tsd
+github.com/enboxorg/meshnet/tstime
+github.com/enboxorg/meshnet/tstime/mono
+github.com/enboxorg/meshnet/tstime/rate
+github.com/enboxorg/meshnet/tsweb
+github.com/enboxorg/meshnet/tsweb/varz
+github.com/enboxorg/meshnet/types/appctype
+github.com/enboxorg/meshnet/types/bools
+github.com/enboxorg/meshnet/types/dnstype
+github.com/enboxorg/meshnet/types/empty
+github.com/enboxorg/meshnet/types/ipproto
+github.com/enboxorg/meshnet/types/key
+github.com/enboxorg/meshnet/types/lazy
+github.com/enboxorg/meshnet/types/logger
+github.com/enboxorg/meshnet/types/logid
+github.com/enboxorg/meshnet/types/mapx
+github.com/enboxorg/meshnet/types/netlogfunc
+github.com/enboxorg/meshnet/types/netlogtype
+github.com/enboxorg/meshnet/types/netmap
+github.com/enboxorg/meshnet/types/nettype
+github.com/enboxorg/meshnet/types/opt
+github.com/enboxorg/meshnet/types/persist
+github.com/enboxorg/meshnet/types/preftype
+github.com/enboxorg/meshnet/types/ptr
+github.com/enboxorg/meshnet/types/result
+github.com/enboxorg/meshnet/types/structs
+github.com/enboxorg/meshnet/types/tkatype
+github.com/enboxorg/meshnet/types/views
+github.com/enboxorg/meshnet/util/backoff
+github.com/enboxorg/meshnet/util/checkchange
+github.com/enboxorg/meshnet/util/cibuild
+github.com/enboxorg/meshnet/util/clientmetric
+github.com/enboxorg/meshnet/util/cloudenv
+github.com/enboxorg/meshnet/util/cloudinfo
+github.com/enboxorg/meshnet/util/cmpver
+github.com/enboxorg/meshnet/util/ctxkey
+github.com/enboxorg/meshnet/util/deephash
+github.com/enboxorg/meshnet/util/dirwalk
+github.com/enboxorg/meshnet/util/dnsname
+github.com/enboxorg/meshnet/util/eventbus
+github.com/enboxorg/meshnet/util/execqueue
+github.com/enboxorg/meshnet/util/goroutines
+github.com/enboxorg/meshnet/util/groupmember
+github.com/enboxorg/meshnet/util/hashx
+github.com/enboxorg/meshnet/util/httpm
+github.com/enboxorg/meshnet/util/lineiter
+github.com/enboxorg/meshnet/util/mak
+github.com/enboxorg/meshnet/util/must
+github.com/enboxorg/meshnet/util/nocasemaps
+github.com/enboxorg/meshnet/util/osuser
+github.com/enboxorg/meshnet/util/race
+github.com/enboxorg/meshnet/util/racebuild
+github.com/enboxorg/meshnet/util/rands
+github.com/enboxorg/meshnet/util/ringlog
+github.com/enboxorg/meshnet/util/set
+github.com/enboxorg/meshnet/util/singleflight
+github.com/enboxorg/meshnet/util/slicesx
+github.com/enboxorg/meshnet/util/syspolicy
+github.com/enboxorg/meshnet/util/syspolicy/internal
+github.com/enboxorg/meshnet/util/syspolicy/internal/loggerx
+github.com/enboxorg/meshnet/util/syspolicy/internal/metrics
+github.com/enboxorg/meshnet/util/syspolicy/pkey
+github.com/enboxorg/meshnet/util/syspolicy/policyclient
+github.com/enboxorg/meshnet/util/syspolicy/ptype
+github.com/enboxorg/meshnet/util/syspolicy/rsop
+github.com/enboxorg/meshnet/util/syspolicy/setting
+github.com/enboxorg/meshnet/util/syspolicy/source
+github.com/enboxorg/meshnet/util/testenv
+github.com/enboxorg/meshnet/util/truncate
+github.com/enboxorg/meshnet/util/usermetric
+github.com/enboxorg/meshnet/util/vizerror
+github.com/enboxorg/meshnet/util/winutil
+github.com/enboxorg/meshnet/util/winutil/gp
+github.com/enboxorg/meshnet/util/winutil/policy
+github.com/enboxorg/meshnet/util/winutil/winenv
+github.com/enboxorg/meshnet/util/zstdframe
+github.com/enboxorg/meshnet/version
+github.com/enboxorg/meshnet/version/distro
+github.com/enboxorg/meshnet/wgengine
+github.com/enboxorg/meshnet/wgengine/filter
+github.com/enboxorg/meshnet/wgengine/filter/filtertype
+github.com/enboxorg/meshnet/wgengine/magicsock
+github.com/enboxorg/meshnet/wgengine/netlog
+github.com/enboxorg/meshnet/wgengine/netstack/gro
+github.com/enboxorg/meshnet/wgengine/router
+github.com/enboxorg/meshnet/wgengine/wgcfg
+github.com/enboxorg/meshnet/wgengine/wgcfg/nmcfg
+github.com/enboxorg/meshnet/wgengine/wgint
+github.com/enboxorg/meshnet/wgengine/wglog
+# github.com/fxamacker/cbor/v2 v2.9.0
+## explicit; go 1.20
+github.com/fxamacker/cbor/v2
+# github.com/gaissmai/bart v0.18.0
+## explicit; go 1.23.6
+github.com/gaissmai/bart
+github.com/gaissmai/bart/internal/bitset
+github.com/gaissmai/bart/internal/sparse
+# github.com/go-json-experiment/json v0.0.0-20250813024750-ebf49471dced
+## explicit; go 1.24
+github.com/go-json-experiment/json
+github.com/go-json-experiment/json/internal
+github.com/go-json-experiment/json/internal/jsonflags
+github.com/go-json-experiment/json/internal/jsonopts
+github.com/go-json-experiment/json/internal/jsonwire
+github.com/go-json-experiment/json/jsontext
+# github.com/godbus/dbus/v5 v5.1.1-0.20230522191255-76236955d466
+## explicit; go 1.12
+github.com/godbus/dbus/v5
+# github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8
+## explicit; go 1.20
+github.com/golang/groupcache/lru
+# github.com/google/btree v1.1.3
+## explicit; go 1.18
+github.com/google/btree
+# github.com/google/go-cmp v0.7.0
+## explicit; go 1.21
+github.com/google/go-cmp/cmp
+github.com/google/go-cmp/cmp/internal/diff
+github.com/google/go-cmp/cmp/internal/flags
+github.com/google/go-cmp/cmp/internal/function
+github.com/google/go-cmp/cmp/internal/value
+# github.com/google/uuid v1.6.0
+## explicit
+github.com/google/uuid
+# github.com/hdevalence/ed25519consensus v0.2.0
+## explicit; go 1.19
+github.com/hdevalence/ed25519consensus
+# github.com/ipfs/go-cid v0.6.0
+## explicit; go 1.24
+github.com/ipfs/go-cid
+# github.com/jsimonetti/rtnetlink v1.4.0
+## explicit; go 1.20
+github.com/jsimonetti/rtnetlink
+github.com/jsimonetti/rtnetlink/internal/unix
+# github.com/klauspost/compress v1.18.2
+## explicit; go 1.23
+github.com/klauspost/compress
+github.com/klauspost/compress/fse
+github.com/klauspost/compress/huff0
+github.com/klauspost/compress/internal/cpuinfo
+github.com/klauspost/compress/internal/le
+github.com/klauspost/compress/internal/snapref
+github.com/klauspost/compress/zstd
+github.com/klauspost/compress/zstd/internal/xxhash
+# github.com/klauspost/cpuid/v2 v2.0.9
+## explicit; go 1.13
+github.com/klauspost/cpuid/v2
+# github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42
+## explicit; go 1.21
+github.com/mdlayher/netlink
+github.com/mdlayher/netlink/nlenc
+# github.com/mdlayher/socket v0.5.0
+## explicit; go 1.21
+github.com/mdlayher/socket
+# github.com/minio/sha256-simd v1.0.0
+## explicit; go 1.13
+github.com/minio/sha256-simd
+# github.com/mitchellh/go-ps v1.0.0
+## explicit; go 1.13
+github.com/mitchellh/go-ps
+# github.com/mr-tron/base58 v1.2.0
+## explicit; go 1.12
+github.com/mr-tron/base58/base58
+# github.com/multiformats/go-base32 v0.0.3
+## explicit
+github.com/multiformats/go-base32
+# github.com/multiformats/go-base36 v0.1.0
+## explicit; go 1.11
+github.com/multiformats/go-base36
+# github.com/multiformats/go-multibase v0.2.0
+## explicit; go 1.19
+github.com/multiformats/go-multibase
+# github.com/multiformats/go-multihash v0.2.3
+## explicit; go 1.19
+github.com/multiformats/go-multihash
+github.com/multiformats/go-multihash/core
+github.com/multiformats/go-multihash/register/all
+github.com/multiformats/go-multihash/register/blake2
+github.com/multiformats/go-multihash/register/blake3
+github.com/multiformats/go-multihash/register/miniosha256
+github.com/multiformats/go-multihash/register/murmur3
+github.com/multiformats/go-multihash/register/sha256
+github.com/multiformats/go-multihash/register/sha3
+# github.com/multiformats/go-varint v0.1.0
+## explicit; go 1.23
+github.com/multiformats/go-varint
+# github.com/pires/go-proxyproto v0.8.1
+## explicit; go 1.24
+github.com/pires/go-proxyproto
+# github.com/safchain/ethtool v0.3.0
+## explicit; go 1.16
+github.com/safchain/ethtool
+# github.com/spaolacci/murmur3 v1.1.0
+## explicit
+github.com/spaolacci/murmur3
+# github.com/tailscale/certstore v0.1.1-0.20231202035212-d3fa0460f47e
+## explicit; go 1.20
+github.com/tailscale/certstore
+# github.com/tailscale/go-winio v0.0.0-20231025203758-c4f33415bf55
+## explicit; go 1.17
+github.com/tailscale/go-winio
+github.com/tailscale/go-winio/internal/fs
+github.com/tailscale/go-winio/internal/socket
+github.com/tailscale/go-winio/internal/stringbuffer
+github.com/tailscale/go-winio/pkg/guid
+# github.com/tailscale/hujson v0.0.0-20221223112325-20486734a56a
+## explicit; go 1.18
+github.com/tailscale/hujson
+# github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc
+## explicit; go 1.18
+github.com/tailscale/peercred
+# github.com/tailscale/web-client-prebuilt v0.0.0-20250124233751-d4cd19a26976
+## explicit; go 1.21
+github.com/tailscale/web-client-prebuilt
+# github.com/tailscale/wireguard-go v0.0.0-20250716170648-1d0488a3d7da
+## explicit; go 1.20
+github.com/tailscale/wireguard-go/conn
+github.com/tailscale/wireguard-go/conn/winrio
+github.com/tailscale/wireguard-go/device
+github.com/tailscale/wireguard-go/ipc
+github.com/tailscale/wireguard-go/ipc/namedpipe
+github.com/tailscale/wireguard-go/ratelimiter
+github.com/tailscale/wireguard-go/replay
+github.com/tailscale/wireguard-go/rwcancel
+github.com/tailscale/wireguard-go/tai64n
+github.com/tailscale/wireguard-go/tun
+# github.com/tv42/zbase32 v0.0.0-20220222190657-f76a9fc892fa
+## explicit; go 1.13
+github.com/tv42/zbase32
+# github.com/x448/float16 v0.8.4
+## explicit; go 1.11
+github.com/x448/float16
+# go4.org/mem v0.0.0-20240501181205-ae6ca9944745
+## explicit; go 1.14
+go4.org/mem
+# go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
+## explicit; go 1.18
+go4.org/netipx
+# golang.org/x/crypto v0.48.0
+## explicit; go 1.24.0
+golang.org/x/crypto/argon2
+golang.org/x/crypto/blake2b
+golang.org/x/crypto/blake2s
+golang.org/x/crypto/blowfish
+golang.org/x/crypto/chacha20
+golang.org/x/crypto/chacha20poly1305
+golang.org/x/crypto/curve25519
+golang.org/x/crypto/hkdf
+golang.org/x/crypto/internal/alias
+golang.org/x/crypto/internal/poly1305
+golang.org/x/crypto/nacl/box
+golang.org/x/crypto/nacl/secretbox
+golang.org/x/crypto/poly1305
+golang.org/x/crypto/salsa20/salsa
+golang.org/x/crypto/sha3
+golang.org/x/crypto/ssh
+golang.org/x/crypto/ssh/internal/bcrypt_pbkdf
+# golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b
+## explicit; go 1.23.0
+golang.org/x/exp/constraints
+golang.org/x/exp/maps
+# golang.org/x/net v0.50.0
+## explicit; go 1.24.0
+golang.org/x/net/bpf
+golang.org/x/net/dns/dnsmessage
+golang.org/x/net/http/httpguts
+golang.org/x/net/icmp
+golang.org/x/net/idna
+golang.org/x/net/internal/iana
+golang.org/x/net/internal/socket
+golang.org/x/net/internal/socks
+golang.org/x/net/ipv4
+golang.org/x/net/ipv6
+golang.org/x/net/proxy
+golang.org/x/net/route
+# golang.org/x/sync v0.19.0
+## explicit; go 1.24.0
+golang.org/x/sync/errgroup
+# golang.org/x/sys v0.41.0
+## explicit; go 1.24.0
+golang.org/x/sys/cpu
+golang.org/x/sys/plan9
+golang.org/x/sys/unix
+golang.org/x/sys/windows
+golang.org/x/sys/windows/registry
+golang.org/x/sys/windows/svc
+golang.org/x/sys/windows/svc/mgr
+# golang.org/x/term v0.40.0
+## explicit; go 1.24.0
+golang.org/x/term
+# golang.org/x/text v0.34.0
+## explicit; go 1.24.0
+golang.org/x/text/secure/bidirule
+golang.org/x/text/transform
+golang.org/x/text/unicode/bidi
+golang.org/x/text/unicode/norm
+# golang.org/x/time v0.12.0
+## explicit; go 1.23.0
+golang.org/x/time/rate
+# golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2
+## explicit; go 1.17
+golang.zx2c4.com/wintun
+# golang.zx2c4.com/wireguard/windows v0.5.3
+## explicit; go 1.18
+golang.zx2c4.com/wireguard/windows/tunnel/winipcfg
+# gvisor.dev/gvisor v0.0.0-20250205023644-9414b50a5633
+## explicit; go 1.23.1
+gvisor.dev/gvisor/pkg/atomicbitops
+gvisor.dev/gvisor/pkg/bits
+gvisor.dev/gvisor/pkg/buffer
+gvisor.dev/gvisor/pkg/context
+gvisor.dev/gvisor/pkg/cpuid
+gvisor.dev/gvisor/pkg/gohacks
+gvisor.dev/gvisor/pkg/goid
+gvisor.dev/gvisor/pkg/linewriter
+gvisor.dev/gvisor/pkg/log
+gvisor.dev/gvisor/pkg/rand
+gvisor.dev/gvisor/pkg/refs
+gvisor.dev/gvisor/pkg/state
+gvisor.dev/gvisor/pkg/state/wire
+gvisor.dev/gvisor/pkg/sync
+gvisor.dev/gvisor/pkg/sync/locking
+gvisor.dev/gvisor/pkg/tcpip
+gvisor.dev/gvisor/pkg/tcpip/checksum
+gvisor.dev/gvisor/pkg/tcpip/hash/jenkins
+gvisor.dev/gvisor/pkg/tcpip/header
+gvisor.dev/gvisor/pkg/tcpip/header/parse
+gvisor.dev/gvisor/pkg/tcpip/ports
+gvisor.dev/gvisor/pkg/tcpip/seqnum
+gvisor.dev/gvisor/pkg/tcpip/stack
+gvisor.dev/gvisor/pkg/tcpip/stack/gro
+gvisor.dev/gvisor/pkg/tcpip/transport/tcpconntrack
+gvisor.dev/gvisor/pkg/waiter
+# lukechampine.com/blake3 v1.1.6
+## explicit; go 1.13
+lukechampine.com/blake3

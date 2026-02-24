@@ -7,9 +7,8 @@ on:
     branches: [main, master]
 
 env:
-  GOPRIVATE: github.com/enboxorg/*
-  GONOSUMCHECK: github.com/enboxorg/*
   GOTOOLCHAIN: auto
+  GOFLAGS: -mod=vendor
 
 jobs:
   test:
@@ -20,17 +19,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
-
-      - name: Configure private modules
-        env:
-          TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "::error::GH_TOKEN secret is not set. Required to fetch private enboxorg/* dependencies."
-            echo "Create a PAT with 'repo' scope and add it as a repository secret named GH_TOKEN."
-            exit 1
-          fi
-          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
 
       - name: Build
         run: go build ./...
@@ -52,16 +40,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25.x'
-
-      - name: Configure private modules
-        env:
-          TOKEN: ${{ secrets.GH_TOKEN }}
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "::warning::GH_TOKEN not set, skipping integration tests"
-            exit 0
-          fi
-          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
 
       - name: Integration Tests
         env:
