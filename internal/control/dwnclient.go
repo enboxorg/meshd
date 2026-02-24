@@ -496,16 +496,62 @@ type entryDecryptor func(ciphertext []byte, enc *dwncrypto.Encryption) ([]byte, 
 
 // makeDecryptor creates a decryptor function from an EncryptionKeyManager
 // and a protocol path. Returns nil if no key manager is available.
+//
+// The decryptor inspects the JWE recipient entries to determine the derivation
+// scheme used and applies the correct decryption strategy:
+//   - protocolPath: derives the key from root via HKDF at the given path
+//   - protocolContext: uses a delivered context key (or derives from root if owner)
 func (c *DWNClient) makeDecryptor(protocolPath string) entryDecryptor {
 	if c.encManager == nil {
 		return nil
 	}
 
 	return func(ciphertext []byte, enc *dwncrypto.Encryption) ([]byte, error) {
-		privKey, err := c.encManager.DeriveDecryptionKey(protocolPath)
-		if err != nil {
-			return nil, fmt.Errorf("deriving decryption key for %s: %w", protocolPath, err)
+		// Inspect the JWE to determine which derivation scheme was used.
+		scheme := detectDerivationScheme(enc)
+
+		switch scheme {
+		case dwncrypto.DerivationSchemeProtocolContext:
+			// Protocol Context: use delivered context key or derive from root.
+			// We need the contextID, which we can get from the network record ID
+			// stored on the DWNClient.
+			contextKey, err := c.encManager.DeriveContextDecryptionKey(c.networkRecordID)
+			if err != nil {
+				// Fall back to Protocol Path if context key isn't available.
+				c.logger.Debug("context key not available, falling back to protocolPath",
+					slog.String("protocolPath", protocolPath),
+					slog.Any("error", err),
+				)
+				return c.decryptWithProtocolPath(ciphertext, enc, protocolPath)
+			}
+			return dwncrypto.DecryptDataWithScheme(ciphertext, enc, contextKey, dwncrypto.DerivationSchemeProtocolContext)
+
+		default:
+			// Protocol Path (default): derive from root HKDF.
+			return c.decryptWithProtocolPath(ciphertext, enc, protocolPath)
 		}
-		return dwncrypto.DecryptData(ciphertext, enc, privKey, c.encManager.RootKeyID)
 	}
+}
+
+// decryptWithProtocolPath decrypts using the Protocol Path derivation scheme.
+func (c *DWNClient) decryptWithProtocolPath(ciphertext []byte, enc *dwncrypto.Encryption, protocolPath string) ([]byte, error) {
+	privKey, err := c.encManager.DeriveDecryptionKey(protocolPath)
+	if err != nil {
+		return nil, fmt.Errorf("deriving decryption key for %s: %w", protocolPath, err)
+	}
+	return dwncrypto.DecryptData(ciphertext, enc, privKey, c.encManager.RootKeyID)
+}
+
+// detectDerivationScheme examines the JWE recipients to determine which
+// key derivation scheme was used for encryption.
+func detectDerivationScheme(enc *dwncrypto.Encryption) string {
+	if enc == nil {
+		return ""
+	}
+	for _, r := range enc.Recipients {
+		if r.Header.DerivationScheme != "" {
+			return r.Header.DerivationScheme
+		}
+	}
+	return dwncrypto.DerivationSchemeProtocolPath // default
 }
