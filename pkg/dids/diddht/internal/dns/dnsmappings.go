@@ -3,6 +3,7 @@ package dns
 
 import (
 	"github.com/enboxorg/dwn-mesh/pkg/crypto/dsa"
+	"github.com/enboxorg/dwn-mesh/pkg/crypto/dsa/eddsa"
 	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
 )
 
@@ -25,6 +26,7 @@ var vmPurposeDNStoDID = map[string]didcore.Purpose{
 var dhtIndexToAlg = map[string]string{
 	"0": dsa.AlgorithmIDED25519,
 	"1": dsa.AlgorithmIDSECP256K1,
+	"3": eddsa.X25519AlgorithmID,
 }
 
 // algToDhtIndex maps the DID representation of the key type (algorithm)
@@ -34,4 +36,5 @@ var dhtIndexToAlg = map[string]string{
 var algToDhtIndex = map[string]string{
 	dsa.AlgorithmIDED25519:   "0",
 	dsa.AlgorithmIDSECP256K1: "1",
+	eddsa.X25519AlgorithmID:  "3",
 }

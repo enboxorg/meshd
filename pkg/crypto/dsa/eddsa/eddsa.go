@@ -18,6 +18,7 @@ const (
 
 var algorithmIDs = map[string]bool{
 	ED25519AlgorithmID: true,
+	X25519AlgorithmID:  true,
 }
 
 // GeneratePrivateKey generates an EdDSA private key for the given algorithm
@@ -87,6 +88,8 @@ func BytesToPublicKey(algorithmID string, input []byte) (jwk.JWK, error) {
 	switch algorithmID {
 	case ED25519AlgorithmID:
 		return ED25519BytesToPublicKey(input)
+	case X25519AlgorithmID:
+		return X25519BytesToPublicKey(input)
 	default:
 		return jwk.JWK{}, fmt.Errorf("unsupported algorithm: %s", algorithmID)
 	}
@@ -97,6 +100,8 @@ func PublicKeyToBytes(publicKey jwk.JWK) ([]byte, error) {
 	switch publicKey.CRV {
 	case ED25519JWACurve:
 		return ED25519PublicKeyToBytes(publicKey)
+	case X25519JWACurve:
+		return X25519PublicKeyToBytes(publicKey)
 	default:
 		return nil, fmt.Errorf("unsupported curve: %s", publicKey.CRV)
 	}
@@ -112,6 +117,8 @@ func AlgorithmID(jwk *jwk.JWK) (string, error) {
 	switch jwk.CRV {
 	case ED25519JWACurve:
 		return ED25519AlgorithmID, nil
+	case X25519JWACurve:
+		return X25519AlgorithmID, nil
 	default:
 		return "", fmt.Errorf("unsupported curve: %s", jwk.CRV)
 	}

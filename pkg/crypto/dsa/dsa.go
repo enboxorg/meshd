@@ -12,6 +12,7 @@ import (
 const (
 	AlgorithmIDSECP256K1 = ecdsa.SECP256K1AlgorithmID
 	AlgorithmIDED25519   = eddsa.ED25519AlgorithmID
+	AlgorithmIDX25519    = eddsa.X25519AlgorithmID
 )
 
 // GeneratePrivateKey generates a private key using the algorithm specified by algorithmID.
