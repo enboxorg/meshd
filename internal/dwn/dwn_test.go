@@ -64,6 +64,50 @@ func TestComputeCID(t *testing.T) {
 			t.Errorf("field order affected CID: %q vs %q", cid1, cid2)
 		}
 	})
+
+	t.Run("float64 integers normalized to int64", func(t *testing.T) {
+		// Go's json.Unmarshal produces float64 for JSON numbers.
+		// The JS DAG-CBOR encoder treats integer-valued numbers as CBOR integers.
+		// Our normalization must ensure the CIDs match.
+		cidFromInt, _ := ComputeCID(map[string]any{"max": int64(10000)})
+		cidFromFloat, _ := ComputeCID(map[string]any{"max": float64(10000)})
+		if cidFromInt != cidFromFloat {
+			t.Errorf("int64 vs float64 produced different CIDs: %q vs %q", cidFromInt, cidFromFloat)
+		}
+	})
+
+	t.Run("nested float64 integers normalized", func(t *testing.T) {
+		// Simulate a protocol definition with nested numeric fields like $size.max.
+		nested := map[string]any{
+			"structure": map[string]any{
+				"node": map[string]any{
+					"$size":        map[string]any{"max": float64(10000)},
+					"$recordLimit": map[string]any{"max": float64(1)},
+				},
+			},
+		}
+		explicit := map[string]any{
+			"structure": map[string]any{
+				"node": map[string]any{
+					"$size":        map[string]any{"max": int64(10000)},
+					"$recordLimit": map[string]any{"max": int64(1)},
+				},
+			},
+		}
+		cidNested, _ := ComputeCID(nested)
+		cidExplicit, _ := ComputeCID(explicit)
+		if cidNested != cidExplicit {
+			t.Errorf("nested normalization failed: %q vs %q", cidNested, cidExplicit)
+		}
+	})
+
+	t.Run("non-integer floats preserved", func(t *testing.T) {
+		cidFloat, _ := ComputeCID(map[string]any{"val": float64(3.14)})
+		cidInt, _ := ComputeCID(map[string]any{"val": int64(3)})
+		if cidFloat == cidInt {
+			t.Error("non-integer float should produce different CID than int")
+		}
+	})
 }
 
 func TestComputeDataCID(t *testing.T) {
