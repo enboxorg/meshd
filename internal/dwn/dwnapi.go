@@ -37,11 +37,15 @@ func (api *DwnAPI) Agent() Agent {
 //
 // Returns the Record and the DWN status. For initial writes, the Record
 // has a newly generated ID. For updates, set params.RecordID.
+//
+// To invoke role-based authorization, set params.ProtocolRole to the
+// Protocol Path of the role (e.g., "network/member").
 func (api *DwnAPI) Write(ctx context.Context, target string, params WriteParams) (*Record, *Status, error) {
 	resp, err := api.agent.SendDwnRequest(ctx, DwnRequest{
-		Target:      target,
-		MessageType: InterfaceRecordsWrite,
+		Target:       target,
+		MessageType:  InterfaceRecordsWrite,
 		MessageParams: &params,
+		ProtocolRole: params.ProtocolRole,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -380,6 +384,14 @@ func WithParentContext(parentContextID string) WriteOption {
 func WithWriteTags(tags map[string]any) WriteOption {
 	return func(p *WriteParams) {
 		p.Tags = tags
+	}
+}
+
+// WithProtocolRole sets the protocol role for role-based authorization.
+// The role is the Protocol Path of a $role type (e.g., "network/member").
+func WithProtocolRole(role string) WriteOption {
+	return func(p *WriteParams) {
+		p.ProtocolRole = role
 	}
 }
 

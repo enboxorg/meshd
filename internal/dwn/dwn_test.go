@@ -240,6 +240,56 @@ func TestBuildRecordsWrite(t *testing.T) {
 		}
 	})
 
+	t.Run("protocolRole in signature payload", func(t *testing.T) {
+		result, err := BuildRecordsWrite(s, RecordsWriteOptions{
+			Protocol:     "https://example.com/test",
+			ProtocolPath: "root/child",
+			DataFormat:   "application/json",
+			Data:         []byte(`{}`),
+			ProtocolRole: "root/member",
+			ParentContextID: "abc123",
+		})
+		if err != nil {
+			t.Fatalf("BuildRecordsWrite: %v", err)
+		}
+
+		// Decode the JWS payload.
+		payloadBytes, _ := base64.RawURLEncoding.DecodeString(result.Message.Authorization.Signature.Payload)
+		var payload map[string]any
+		json.Unmarshal(payloadBytes, &payload)
+
+		role, ok := payload["protocolRole"]
+		if !ok {
+			t.Fatal("protocolRole missing from signature payload")
+		}
+		if role != "root/member" {
+			t.Errorf("protocolRole = %v, want %q", role, "root/member")
+		}
+
+		// protocolRole must NOT be in the descriptor.
+		descBytes, _ := json.Marshal(result.Message.Descriptor)
+		if strings.Contains(string(descBytes), "protocolRole") {
+			t.Error("protocolRole must not appear in descriptor")
+		}
+	})
+
+	t.Run("protocolRole omitted when empty", func(t *testing.T) {
+		result, _ := BuildRecordsWrite(s, RecordsWriteOptions{
+			Protocol:     "https://example.com/test",
+			ProtocolPath: "root",
+			DataFormat:   "application/json",
+			Data:         []byte(`{}`),
+		})
+
+		payloadBytes, _ := base64.RawURLEncoding.DecodeString(result.Message.Authorization.Signature.Payload)
+		var payload map[string]any
+		json.Unmarshal(payloadBytes, &payload)
+
+		if _, ok := payload["protocolRole"]; ok {
+			t.Error("protocolRole should be omitted from signature payload when empty")
+		}
+	})
+
 	t.Run("missing protocol returns error", func(t *testing.T) {
 		_, err := BuildRecordsWrite(s, RecordsWriteOptions{
 			DataFormat: "application/json",

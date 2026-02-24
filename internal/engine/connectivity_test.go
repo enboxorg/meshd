@@ -201,19 +201,21 @@ func TestTwoNodeConnectivity(t *testing.T) {
 	// ================================================================
 	t.Log("Step 5: Node B joins the network")
 
-	// Node B creates a member record on anchor's DWN.
+	// Node A (network author) creates Node B's member record on the anchor DWN.
+	// Per the protocol's $actions: only the network author can create members.
 	err = mesh.CreateMember(ctx, mesh.CreateMemberParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            nodeA.identity.URI,
 		NetworkRecordID:      networkRecordID,
 		MemberDID:            nodeB.identity.URI,
 		Label:                "member",
-		Signer:               nodeB.signer,
-		EncryptionKeyManager: nodeB.encMgr,
+		Signer:               nodeA.signer,
+		EncryptionKeyManager: nodeA.encMgr,
 	})
 	if err != nil {
-		t.Logf("  Warning: Node B member creation failed: %v (may be expected)", err)
+		t.Fatalf("Node B member creation (by Node A) failed: %v", err)
 	}
+	t.Log("  Node B member record created by Node A")
 
 	wgKeysB, err := mesh.GenerateWireGuardKeyPair()
 	if err != nil {
@@ -234,12 +236,12 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		WireGuardPubKey:      wgKeysB.PublicKeyBase64(),
 		MeshIP:               meshIPB.String(),
 		Hostname:             "node-b",
+		ProtocolRole:         "network/member",
 	})
 	if err != nil {
-		t.Logf("  Warning: Node B nodeInfo registration failed: %v", err)
-	} else {
-		t.Logf("  Node B: IP=%s, nodeInfo=%s", meshIPB, regB.NodeInfoRecordID)
+		t.Fatalf("Node B nodeInfo registration failed: %v", err)
 	}
+	t.Logf("  Node B: IP=%s, nodeInfo=%s", meshIPB, regB.NodeInfoRecordID)
 
 	// Write endpoint record for node B.
 	if regB != nil && regB.NodeInfoRecordID != "" {
@@ -550,6 +552,22 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 		}
 	}
 
+	// Create member records (Node A is network author, so it creates both).
+	memberRecipients, _ := nodeA.encMgr.DeriveWriteEncryption("network/member")
+	mData, _ := json.Marshal(map[string]any{"joinedAt": time.Now().UTC().Format(time.RFC3339)})
+	nodeA.api.Write(ctx, nodeA.identity.URI, dwn.WriteParams{
+		Protocol: protocols.MeshProtocolURI, ProtocolPath: "network/member",
+		Schema: "https://enbox.org/schemas/wireguard-mesh/member", DataFormat: "application/json",
+		Recipient: nodeA.identity.URI, ParentContextID: networkRecordID,
+		Data: mData, Tags: map[string]any{"status": "active"}, EncryptionRecipients: memberRecipients,
+	})
+	nodeA.api.Write(ctx, nodeA.identity.URI, dwn.WriteParams{
+		Protocol: protocols.MeshProtocolURI, ProtocolPath: "network/member",
+		Schema: "https://enbox.org/schemas/wireguard-mesh/member", DataFormat: "application/json",
+		Recipient: nodeB.identity.URI, ParentContextID: networkRecordID,
+		Data: mData, Tags: map[string]any{"status": "active"}, EncryptionRecipients: memberRecipients,
+	})
+
 	// Register both nodes.
 	wgA, _ := mesh.GenerateWireGuardKeyPair()
 	ipA, _ := mesh.AllocateMeshIP(meshCIDR, nodeA.identity.URI)
@@ -568,17 +586,7 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 		NetworkRecordID: networkRecordID, SelfDID: nodeB.identity.URI,
 		Signer: nodeB.signer, EncryptionKeyManager: nodeB.encMgr,
 		WireGuardPubKey: wgB.PublicKeyBase64(), MeshIP: ipB.String(),
-		Hostname: "disc-b",
-	})
-
-	// Create member records.
-	memberRecipients, _ := nodeA.encMgr.DeriveWriteEncryption("network/member")
-	mData, _ := json.Marshal(map[string]any{"joinedAt": time.Now().UTC().Format(time.RFC3339)})
-	nodeA.api.Write(ctx, nodeA.identity.URI, dwn.WriteParams{
-		Protocol: protocols.MeshProtocolURI, ProtocolPath: "network/member",
-		Schema: "https://enbox.org/schemas/wireguard-mesh/member", DataFormat: "application/json",
-		Recipient: nodeA.identity.URI, ParentContextID: networkRecordID,
-		Data: mData, Tags: map[string]any{"status": "active"}, EncryptionRecipients: memberRecipients,
+		Hostname: "disc-b", ProtocolRole: "network/member",
 	})
 
 	// Create engine A.

@@ -115,6 +115,11 @@ type WriteParams struct {
 	// For root records leave empty; for child records set to the parent's full contextId.
 	ParentContextID string
 
+	// ProtocolRole is the Protocol Path of a role to invoke for
+	// role-based authorization (e.g., "network/member"). Leave empty
+	// for owner or actor-based writes.
+	ProtocolRole string
+
 	// EncryptionRecipients enables encryption for this write.
 	// When set, the data is encrypted with A256GCM and the CEK is
 	// wrapped per-recipient using ECDH-ES+A256KW.
