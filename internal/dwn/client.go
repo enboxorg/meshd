@@ -67,22 +67,25 @@ type RecordsWriteResult struct {
 //   - Data ≤ 30KB is inlined as base64url encodedData in the message
 //   - Data > 30KB is sent as binary in the HTTP body
 //
+// When encryption is enabled (via EncryptionRecipients), the plaintext is
+// encrypted internally by BuildRecordsWrite. The ciphertext is what gets
+// sent on the wire, and dataCid/dataSize in the descriptor reference it.
+//
 // The target parameter is the DID of the DWN owner.
 func (c *Client) RecordsWrite(ctx context.Context, target string, opts RecordsWriteOptions) (*RecordsWriteResult, error) {
-	msg, err := BuildRecordsWrite(c.signer, opts)
+	built, err := BuildRecordsWrite(c.signer, opts)
 	if err != nil {
 		return nil, fmt.Errorf("building RecordsWrite: %w", err)
 	}
+	msg := built.Message
 
 	// Determine if data should go in the body (large payloads)
 	// or inline in the message (small payloads, already base64url encoded).
 	var bodyData []byte
-	if len(opts.Data) > maxInlineDataSize {
-		// Large data: send as binary body, clear inline encoding.
-		bodyData = opts.Data
-		msg.EncodedData = ""
+	if msg.EncodedData == "" && len(built.WireData) > 0 {
+		// Large data: send as binary body.
+		bodyData = built.WireData
 	}
-	// Small data: already base64url encoded in msg.EncodedData by BuildRecordsWrite.
 
 	result, err := c.transport.Send(ctx, target, msg, bodyData)
 	if err != nil {

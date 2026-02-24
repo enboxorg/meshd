@@ -39,6 +39,11 @@ type Record struct {
 	Timestamp    string         `json:"messageTimestamp"`
 	Author       string         `json:"author,omitempty"`
 
+	// RawEntry is the raw JSON entry from the server response.
+	// Available after RecordFromRead or RecordFromEntry.
+	// Useful for extracting encryption metadata.
+	RawEntry json.RawMessage `json:"-"`
+
 	// Internal state.
 	agent       Agent
 	target      string // DID of the DWN tenant
@@ -109,6 +114,7 @@ func RecordFromEntry(agent Agent, target string, entry json.RawMessage) (*Record
 		ParentID:     stringFromMap(msg.Descriptor, "parentId"),
 		Published:    boolFromMap(msg.Descriptor, "published"),
 		DatePublished: stringFromMap(msg.Descriptor, "datePublished"),
+		RawEntry:     entry,
 		agent:        agent,
 		target:       target,
 		encodedData:  msg.EncodedData,
@@ -160,6 +166,7 @@ func RecordFromRead(agent Agent, target string, reply *DwnReply, data []byte) (*
 		ParentID:     stringFromMap(desc, "parentId"),
 		Published:    boolFromMap(desc, "published"),
 		DatePublished: stringFromMap(desc, "datePublished"),
+		RawEntry:     entry,
 		agent:        agent,
 		target:       target,
 		encodedData:  wrapper.RecordsWrite.EncodedData,

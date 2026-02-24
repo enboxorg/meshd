@@ -284,12 +284,13 @@ func TestHTTPTransportSend(t *testing.T) {
 		transport := NewHTTPTransport(server.URL)
 
 		// Build a message and send with large binary data
-		msg, _ := BuildRecordsWrite(s, RecordsWriteOptions{
+		writeResult, _ := BuildRecordsWrite(s, RecordsWriteOptions{
 			Protocol:     "https://example.com/test",
 			ProtocolPath: "root",
 			DataFormat:   "application/octet-stream",
 			Data:         make([]byte, 50000), // > 30KB threshold
 		})
+		msg := writeResult.Message
 		msg.EncodedData = "" // large data, not inlined
 
 		largeData := make([]byte, 50000)

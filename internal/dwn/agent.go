@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
 )
 
 //
@@ -110,6 +112,11 @@ type WriteParams struct {
 
 	// RecordID is set for updates (empty for initial writes).
 	RecordID string
+
+	// EncryptionRecipients enables encryption for this write.
+	// When set, the data is encrypted with A256GCM and the CEK is
+	// wrapped per-recipient using ECDH-ES+A256KW.
+	EncryptionRecipients []dwncrypto.KeyEncryptionInput
 }
 
 // ReadParams configures a RecordsRead operation.
@@ -225,18 +232,19 @@ func (a *SimpleAgent) sendRecordsWrite(ctx context.Context, target string, req D
 	}
 
 	result, err := a.client.RecordsWrite(ctx, target, RecordsWriteOptions{
-		Protocol:     params.Protocol,
-		ProtocolPath: params.ProtocolPath,
-		Schema:       params.Schema,
-		Recipient:    params.Recipient,
-		ParentID:     params.ParentID,
-		ContextID:    params.ContextID,
-		Tags:         params.Tags,
-		DataFormat:   params.DataFormat,
-		Published:    params.Published,
-		Data:         data,
-		RecordID:     params.RecordID,
-		ProtocolRole: req.ProtocolRole,
+		Protocol:             params.Protocol,
+		ProtocolPath:         params.ProtocolPath,
+		Schema:               params.Schema,
+		Recipient:            params.Recipient,
+		ParentID:             params.ParentID,
+		ContextID:            params.ContextID,
+		Tags:                 params.Tags,
+		DataFormat:           params.DataFormat,
+		Published:            params.Published,
+		Data:                 data,
+		RecordID:             params.RecordID,
+		ProtocolRole:         req.ProtocolRole,
+		EncryptionRecipients: params.EncryptionRecipients,
 	})
 	if err != nil {
 		return nil, err

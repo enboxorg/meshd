@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+
+	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
 )
 
 // DwnAPI is the high-level consumer API for DWN operations.
@@ -379,6 +381,15 @@ func WithParent(parentID, contextID string) WriteOption {
 func WithWriteTags(tags map[string]any) WriteOption {
 	return func(p *WriteParams) {
 		p.Tags = tags
+	}
+}
+
+// WithEncryption enables encryption for the write operation.
+// The data will be encrypted with A256GCM and the CEK wrapped
+// per-recipient using ECDH-ES+A256KW.
+func WithEncryption(recipients []dwncrypto.KeyEncryptionInput) WriteOption {
+	return func(p *WriteParams) {
+		p.EncryptionRecipients = recipients
 	}
 }
 

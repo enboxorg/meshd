@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
 )
 
 // Sentinel errors.
@@ -124,11 +126,12 @@ type recordsWriteSignaturePayload struct {
 
 // Message is a complete DWN message.
 type Message struct {
-	RecordID      string          `json:"recordId,omitempty"`
-	ContextID     string          `json:"contextId,omitempty"`
-	Descriptor    map[string]any  `json:"descriptor"`
-	Authorization *Authorization  `json:"authorization,omitempty"`
-	EncodedData   string          `json:"encodedData,omitempty"`
+	RecordID      string                `json:"recordId,omitempty"`
+	ContextID     string                `json:"contextId,omitempty"`
+	Descriptor    map[string]any        `json:"descriptor"`
+	Authorization *Authorization        `json:"authorization,omitempty"`
+	Encryption    *dwncrypto.Encryption `json:"encryption,omitempty"`
+	EncodedData   string                `json:"encodedData,omitempty"`
 }
 
 //
@@ -154,10 +157,33 @@ type RecordsWriteOptions struct {
 
 	// ProtocolRole for role-based authorization.
 	ProtocolRole string
+
+	// EncryptionRecipients enables encryption for this write.
+	// When set, the plaintext Data is encrypted with A256GCM and the CEK
+	// is wrapped per-recipient. The descriptor's dataCid and dataSize will
+	// reference the ciphertext, not the plaintext.
+	EncryptionRecipients []dwncrypto.KeyEncryptionInput
+}
+
+// BuildRecordsWriteResult holds the result of building a RecordsWrite message.
+type BuildRecordsWriteResult struct {
+	// Message is the signed DWN message.
+	Message *Message
+
+	// WireData is the data bytes to send on the wire (ciphertext if encrypted,
+	// plaintext otherwise). This is what dataCid/dataSize in the descriptor
+	// reference. For data ≤ 30KB, this is already inlined as msg.EncodedData.
+	// For larger data, the caller must send it as the HTTP body.
+	WireData []byte
 }
 
 // BuildRecordsWrite constructs and signs a RecordsWrite message.
-func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*Message, error) {
+//
+// When EncryptionRecipients is set, the plaintext data is encrypted using
+// A256GCM. The descriptor's dataCid and dataSize will reference the ciphertext.
+// The encryption property (JWE) is set on the message and its CID is included
+// in the authorization signature payload.
+func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteResult, error) {
 	if opts.Protocol == "" || opts.ProtocolPath == "" {
 		return nil, ErrMissingProtocol
 	}
@@ -167,11 +193,27 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*Message, error) {
 
 	now := Now()
 
-	dataCID, err := ComputeDataCID(opts.Data)
+	// If encryption is requested, encrypt the data first.
+	// dataCid/dataSize in the descriptor must reference the ciphertext.
+	var (
+		wireData   = opts.Data // The data that goes on the wire (ciphertext or plaintext).
+		encryption *dwncrypto.Encryption
+	)
+
+	if len(opts.EncryptionRecipients) > 0 {
+		ct, enc, err := dwncrypto.EncryptData(opts.Data, opts.EncryptionRecipients)
+		if err != nil {
+			return nil, fmt.Errorf("encrypting data: %w", err)
+		}
+		wireData = ct
+		encryption = enc
+	}
+
+	dataCID, err := ComputeDataCID(wireData)
 	if err != nil {
 		return nil, fmt.Errorf("computing data CID: %w", err)
 	}
-	dataSize := len(opts.Data)
+	dataSize := len(wireData)
 
 	// Build descriptor as map — only include non-zero fields.
 	// This matches the SDK's removeUndefinedProperties() behavior.
@@ -246,26 +288,58 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*Message, error) {
 		ProtocolRole:  opts.ProtocolRole,
 	}
 
+	// If encryption is present, compute its CID for the signature payload.
+	if encryption != nil {
+		// Convert encryption to a map for CID computation (matching SDK behavior).
+		encMap, err := structToMap(encryption)
+		if err != nil {
+			return nil, fmt.Errorf("converting encryption to map: %w", err)
+		}
+		encCID, err := ComputeCID(encMap)
+		if err != nil {
+			return nil, fmt.Errorf("computing encryption CID: %w", err)
+		}
+		sigPayload.EncryptionCID = encCID
+	}
+
 	jws, err := SignJWS(sigPayload, s.KeyID(), s.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("signing: %w", err)
 	}
 
 	msg := &Message{
-		RecordID:  recordID,
-		ContextID: contextID,
+		RecordID:   recordID,
+		ContextID:  contextID,
 		Descriptor: desc,
+		Encryption: encryption,
 		Authorization: &Authorization{
 			Signature: jws,
 		},
 	}
 
 	// Inline data if ≤ 30KB.
-	if len(opts.Data) <= 30000 {
-		msg.EncodedData = base64.RawURLEncoding.EncodeToString(opts.Data)
+	if len(wireData) <= 30000 {
+		msg.EncodedData = base64.RawURLEncoding.EncodeToString(wireData)
 	}
 
-	return msg, nil
+	return &BuildRecordsWriteResult{
+		Message:  msg,
+		WireData: wireData,
+	}, nil
+}
+
+// structToMap converts a struct to map[string]any via JSON round-trip.
+// Used to produce the canonical representation for CID computation.
+func structToMap(v any) (map[string]any, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // BuildRecordsRead constructs and signs a RecordsRead message.

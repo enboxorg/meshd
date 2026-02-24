@@ -1,11 +1,14 @@
 package dwn
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
+
+	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
 )
 
 func newTestSigner(t *testing.T) *Signer {
@@ -139,7 +142,7 @@ func TestBuildRecordsWrite(t *testing.T) {
 	s := newTestSigner(t)
 
 	t.Run("initial write", func(t *testing.T) {
-		msg, err := BuildRecordsWrite(s, RecordsWriteOptions{
+		result, err := BuildRecordsWrite(s, RecordsWriteOptions{
 			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
 			ProtocolPath: "network",
 			Schema:       "https://enbox.org/schemas/wireguard-mesh/network",
@@ -149,6 +152,7 @@ func TestBuildRecordsWrite(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildRecordsWrite: %v", err)
 		}
+		msg := result.Message
 
 		if msg.RecordID == "" {
 			t.Error("missing record ID")
@@ -171,12 +175,13 @@ func TestBuildRecordsWrite(t *testing.T) {
 	})
 
 	t.Run("extended signature payload", func(t *testing.T) {
-		msg, _ := BuildRecordsWrite(s, RecordsWriteOptions{
+		result, _ := BuildRecordsWrite(s, RecordsWriteOptions{
 			Protocol:     "https://example.com/test",
 			ProtocolPath: "root",
 			DataFormat:   "application/json",
 			Data:         []byte(`{}`),
 		})
+		msg := result.Message
 
 		// Decode the JWS payload and verify it has recordId and contextId.
 		payloadBytes, _ := base64.RawURLEncoding.DecodeString(msg.Authorization.Signature.Payload)
@@ -202,21 +207,21 @@ func TestBuildRecordsWrite(t *testing.T) {
 	})
 
 	t.Run("update preserves record ID", func(t *testing.T) {
-		initial, _ := BuildRecordsWrite(s, RecordsWriteOptions{
+		initialResult, _ := BuildRecordsWrite(s, RecordsWriteOptions{
 			Protocol:     "https://example.com/test",
 			ProtocolPath: "root",
 			DataFormat:   "application/json",
 			Data:         []byte(`{"v":1}`),
 		})
-		update, _ := BuildRecordsWrite(s, RecordsWriteOptions{
+		updateResult, _ := BuildRecordsWrite(s, RecordsWriteOptions{
 			Protocol:     "https://example.com/test",
 			ProtocolPath: "root",
 			DataFormat:   "application/json",
 			Data:         []byte(`{"v":2}`),
-			RecordID:     initial.RecordID,
-			ContextID:    initial.ContextID,
+			RecordID:     initialResult.Message.RecordID,
+			ContextID:    initialResult.Message.ContextID,
 		})
-		if update.RecordID != initial.RecordID {
+		if updateResult.Message.RecordID != initialResult.Message.RecordID {
 			t.Error("update should preserve record ID")
 		}
 	})
@@ -333,7 +338,7 @@ func TestDescriptorOmitsZeroFields(t *testing.T) {
 	s := newTestSigner(t)
 
 	// Build a message with minimal fields — optional fields should be absent.
-	msg, err := BuildRecordsWrite(s, RecordsWriteOptions{
+	result, err := BuildRecordsWrite(s, RecordsWriteOptions{
 		Protocol:     "https://example.com/test",
 		ProtocolPath: "root",
 		DataFormat:   "application/json",
@@ -342,6 +347,7 @@ func TestDescriptorOmitsZeroFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildRecordsWrite: %v", err)
 	}
+	msg := result.Message
 
 	// Optional fields like schema, recipient, tags should NOT be in the descriptor.
 	if _, ok := msg.Descriptor["schema"]; ok {
@@ -358,5 +364,120 @@ func TestDescriptorOmitsZeroFields(t *testing.T) {
 	}
 	if _, ok := msg.Descriptor["published"]; ok {
 		t.Error("nil published should be omitted from descriptor")
+	}
+}
+
+func TestBuildRecordsWriteEncrypted(t *testing.T) {
+	s := newTestSigner(t)
+	plaintext := []byte(`{"name":"encrypted-network","cidr":"10.200.0.0/24"}`)
+
+	// Generate recipient key pair.
+	recipientPriv, recipientPub, err := dwncrypto.GenerateX25519KeyPair()
+	if err != nil {
+		t.Fatalf("GenerateX25519KeyPair: %v", err)
+	}
+
+	kid := "did:dht:recipient#enc-1"
+	result, err := BuildRecordsWrite(s, RecordsWriteOptions{
+		Protocol:     "https://enbox.org/protocols/wireguard-mesh",
+		ProtocolPath: "network",
+		DataFormat:   "application/json",
+		Data:         plaintext,
+		EncryptionRecipients: []dwncrypto.KeyEncryptionInput{{
+			PublicKeyID:      kid,
+			PublicKey:        recipientPub,
+			DerivationScheme: dwncrypto.DerivationSchemeProtocolPath,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("BuildRecordsWrite: %v", err)
+	}
+	msg := result.Message
+
+	t.Run("encryption property is set", func(t *testing.T) {
+		if msg.Encryption == nil {
+			t.Fatal("encryption property should be set")
+		}
+		if len(msg.Encryption.Recipients) != 1 {
+			t.Fatalf("recipients = %d, want 1", len(msg.Encryption.Recipients))
+		}
+		if msg.Encryption.Recipients[0].Header.KID != kid {
+			t.Errorf("kid = %q, want %q", msg.Encryption.Recipients[0].Header.KID, kid)
+		}
+	})
+
+	t.Run("wire data is ciphertext not plaintext", func(t *testing.T) {
+		if bytes.Equal(result.WireData, plaintext) {
+			t.Fatal("wire data should be ciphertext, not plaintext")
+		}
+		if len(result.WireData) == 0 {
+			t.Fatal("wire data should not be empty")
+		}
+	})
+
+	t.Run("encodedData contains ciphertext", func(t *testing.T) {
+		if msg.EncodedData == "" {
+			t.Fatal("small payload should be inlined")
+		}
+		decoded, err := base64.RawURLEncoding.DecodeString(msg.EncodedData)
+		if err != nil {
+			t.Fatalf("decoding encodedData: %v", err)
+		}
+		if bytes.Equal(decoded, plaintext) {
+			t.Fatal("encodedData should contain ciphertext, not plaintext")
+		}
+	})
+
+	t.Run("encryptionCid in signature payload", func(t *testing.T) {
+		payloadBytes, _ := base64.RawURLEncoding.DecodeString(msg.Authorization.Signature.Payload)
+		var payload map[string]any
+		json.Unmarshal(payloadBytes, &payload)
+
+		if _, ok := payload["encryptionCid"]; !ok {
+			t.Error("signature payload should contain encryptionCid")
+		}
+	})
+
+	t.Run("ciphertext decrypts to plaintext", func(t *testing.T) {
+		decrypted, err := dwncrypto.DecryptData(result.WireData, msg.Encryption, recipientPriv, kid)
+		if err != nil {
+			t.Fatalf("DecryptData: %v", err)
+		}
+		if !bytes.Equal(decrypted, plaintext) {
+			t.Fatal("decrypted data mismatch")
+		}
+	})
+}
+
+func TestBuildRecordsWriteUnencrypted(t *testing.T) {
+	s := newTestSigner(t)
+	plaintext := []byte(`{"name":"unencrypted"}`)
+
+	result, err := BuildRecordsWrite(s, RecordsWriteOptions{
+		Protocol:     "https://example.com/test",
+		ProtocolPath: "root",
+		DataFormat:   "application/json",
+		Data:         plaintext,
+	})
+	if err != nil {
+		t.Fatalf("BuildRecordsWrite: %v", err)
+	}
+
+	// No encryption property.
+	if result.Message.Encryption != nil {
+		t.Fatal("unencrypted write should not have encryption property")
+	}
+
+	// Wire data is the plaintext.
+	if !bytes.Equal(result.WireData, plaintext) {
+		t.Fatal("wire data should be plaintext for unencrypted write")
+	}
+
+	// No encryptionCid in signature.
+	payloadBytes, _ := base64.RawURLEncoding.DecodeString(result.Message.Authorization.Signature.Payload)
+	var payload map[string]any
+	json.Unmarshal(payloadBytes, &payload)
+	if _, ok := payload["encryptionCid"]; ok {
+		t.Error("unencrypted write should not have encryptionCid")
 	}
 }

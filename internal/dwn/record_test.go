@@ -10,7 +10,7 @@ import (
 func TestRecordFromWrite(t *testing.T) {
 	s := newTestSigner(t)
 
-	msg, err := BuildRecordsWrite(s, RecordsWriteOptions{
+	result, err := BuildRecordsWrite(s, RecordsWriteOptions{
 		Protocol:     "https://example.com/test",
 		ProtocolPath: "root",
 		Schema:       "https://example.com/schemas/root",
@@ -21,6 +21,7 @@ func TestRecordFromWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildRecordsWrite: %v", err)
 	}
+	msg := result.Message
 
 	agent := NewSimpleAgent("http://localhost:8080", s)
 	record := RecordFromWrite(agent, s.DID, msg, msg.EncodedData)
@@ -71,12 +72,13 @@ func TestRecordDataLazyAccess(t *testing.T) {
 
 	originalData := []byte(`{"hello":"world"}`)
 
-	msg, _ := BuildRecordsWrite(s, RecordsWriteOptions{
+	writeResult, _ := BuildRecordsWrite(s, RecordsWriteOptions{
 		Protocol:     "https://example.com/test",
 		ProtocolPath: "root",
 		DataFormat:   "application/json",
 		Data:         originalData,
 	})
+	msg := writeResult.Message
 
 	record := RecordFromWrite(agent, s.DID, msg, msg.EncodedData)
 
