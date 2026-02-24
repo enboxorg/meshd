@@ -10,7 +10,7 @@ import (
 
 const (
 	codecDAGCBOR = 0x71 // DAG-CBOR multicodec
-	codecDAGPB   = 0x70 // DAG-PB (UnixFS) multicodec
+	codecRaw     = 0x55 // raw multicodec (UnixFS leaf blocks)
 )
 
 // dagCBOREncMode uses deterministic CBOR encoding (canonical key sorting)
@@ -48,17 +48,18 @@ func ComputeCID(obj any) (string, error) {
 	return c.String(), nil
 }
 
-// ComputeDataCID computes a CIDv1 (DAG-PB codec, SHA-256) for raw data bytes.
+// ComputeDataCID computes a CIDv1 (raw codec, SHA-256) for data bytes.
 //
-// NOTE: A full implementation should use UnixFS DAG-PB encoding (chunking).
-// This simplified version hashes the raw bytes directly, which is correct
-// for data ≤ 256KiB (single-chunk UnixFS).
+// UnixFS uses raw codec (0x55) for leaf blocks. For single-chunk data
+// (≤ 256KiB), the root CID is the leaf CID itself. This matches the
+// JS SDK's `Cid.computeDagPbCidFromBytes` which uses the UnixFS importer
+// and produces a raw-codec CID for single-block data.
 func ComputeDataCID(data []byte) (string, error) {
 	mh, err := multihash.Sum(data, multihash.SHA2_256, -1)
 	if err != nil {
 		return "", fmt.Errorf("multihash: %w", err)
 	}
 
-	c := gocid.NewCidV1(codecDAGPB, mh)
+	c := gocid.NewCidV1(codecRaw, mh)
 	return c.String(), nil
 }

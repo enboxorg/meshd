@@ -10,7 +10,7 @@ import (
 	"github.com/enboxorg/dwn-mesh/pkg/dids/diddht/internal/pkarr"
 )
 
-const defaultGatewayURL = "https://diddht.tbddev.org"
+const defaultGatewayURL = "https://enbox-did-dht.fly.dev"
 
 // gateway is the internal interface used to publish Pakrr messages to the DHT
 type gateway interface {

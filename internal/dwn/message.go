@@ -2,7 +2,6 @@ package dwn
 
 import (
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -170,10 +169,9 @@ type BuildRecordsWriteResult struct {
 	// Message is the signed DWN message.
 	Message *Message
 
-	// WireData is the data bytes to send on the wire (ciphertext if encrypted,
-	// plaintext otherwise). This is what dataCid/dataSize in the descriptor
-	// reference. For data ≤ 30KB, this is already inlined as msg.EncodedData.
-	// For larger data, the caller must send it as the HTTP body.
+	// WireData is the data bytes to send in the HTTP body as
+	// application/octet-stream (ciphertext if encrypted, plaintext otherwise).
+	// This is what dataCid/dataSize in the descriptor reference.
 	WireData []byte
 }
 
@@ -317,10 +315,9 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteR
 		},
 	}
 
-	// Inline data if ≤ 30KB.
-	if len(wireData) <= 30000 {
-		msg.EncodedData = base64.RawURLEncoding.EncodeToString(wireData)
-	}
+	// NOTE: encodedData is a read-side optimization — the server inlines small
+	// data in query/subscribe responses. On the write side, data always goes in
+	// the HTTP body as application/octet-stream regardless of size.
 
 	return &BuildRecordsWriteResult{
 		Message:  msg,

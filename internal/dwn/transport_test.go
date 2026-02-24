@@ -291,7 +291,6 @@ func TestHTTPTransportSend(t *testing.T) {
 			Data:         make([]byte, 50000), // > 30KB threshold
 		})
 		msg := writeResult.Message
-		msg.EncodedData = "" // large data, not inlined
 
 		largeData := make([]byte, 50000)
 		for i := range largeData {

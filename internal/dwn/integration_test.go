@@ -29,13 +29,29 @@ func testEndpoint(t *testing.T) string {
 	return endpoint
 }
 
-func testSigner(t *testing.T) *dwn.Signer {
+// testIdentity generates a new did:dht identity and publishes it to the DHT
+// so the DWN server can resolve the DID Document for JWS verification.
+func testIdentity(t *testing.T, endpoint string) *did.DID {
 	t.Helper()
-	// Use the full did package for proper did:dht generation.
 	identity, err := did.Generate()
 	if err != nil {
 		t.Fatalf("generating DID: %v", err)
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := identity.Publish(ctx, endpoint); err != nil {
+		t.Fatalf("publishing DID to DHT: %v", err)
+	}
+	t.Logf("Published DID: %s", identity.URI)
+
+	return identity
+}
+
+func testSigner(t *testing.T, endpoint string) *dwn.Signer {
+	t.Helper()
+	identity := testIdentity(t, endpoint)
 	return &dwn.Signer{
 		DID:        identity.URI,
 		PrivateKey: identity.SigningKey,
@@ -43,31 +59,14 @@ func testSigner(t *testing.T) *dwn.Signer {
 }
 
 // registerTenant registers the signer's DID as a tenant on the DWN server.
-// This is required before any write operations on servers with tenant registration.
-//
-// Returns true if registration succeeded or wasn't needed.
-// Returns false and skips the test if registration isn't available.
+// RegisterTenant auto-detects the registration method (provider-auth or PoW)
+// via GET /info and returns nil if the server is open for all.
 func registerTenant(t *testing.T, endpoint string, signer *dwn.Signer) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	err := dwn.RegisterTenant(ctx, endpoint, signer.DID)
-	if err != nil {
-		if err == dwn.ErrRegistrationNotAvailable {
-			// Check if the server allows open access by trying a simple query.
-			client := dwn.NewClient(endpoint, signer)
-			queryCtx, queryCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer queryCancel()
-			reply, qErr := client.ProtocolsQuery(queryCtx, signer.DID, "")
-			if qErr != nil || reply.Status.Code == 401 {
-				t.Skipf("Server requires tenant registration but PoW endpoints unavailable. "+
-					"Set up open-access DWN or pre-register tenant. (query: %d)", reply.Status.Code)
-			}
-			// Server allowed the query — open access.
-			t.Logf("Registration not available but server allows open access")
-			return
-		}
+	if err := dwn.RegisterTenant(ctx, endpoint, signer.DID); err != nil {
 		t.Fatalf("RegisterTenant: %v", err)
 	}
 	t.Logf("Registered tenant: %s", signer.DID)
@@ -75,7 +74,7 @@ func registerTenant(t *testing.T, endpoint string, signer *dwn.Signer) {
 
 func TestIntegrationProtocolsConfigure(t *testing.T) {
 	endpoint := testEndpoint(t)
-	signer := testSigner(t)
+	signer := testSigner(t, endpoint)
 	registerTenant(t, endpoint, signer)
 
 	agent := dwn.NewSimpleAgent(endpoint, signer)
@@ -114,7 +113,7 @@ func TestIntegrationProtocolsConfigure(t *testing.T) {
 
 func TestIntegrationRecordsWriteReadQuery(t *testing.T) {
 	endpoint := testEndpoint(t)
-	signer := testSigner(t)
+	signer := testSigner(t, endpoint)
 	registerTenant(t, endpoint, signer)
 
 	agent := dwn.NewSimpleAgent(endpoint, signer)
@@ -237,7 +236,7 @@ func TestIntegrationRecordsWriteReadQuery(t *testing.T) {
 
 func TestIntegrationRecordsDelete(t *testing.T) {
 	endpoint := testEndpoint(t)
-	signer := testSigner(t)
+	signer := testSigner(t, endpoint)
 	registerTenant(t, endpoint, signer)
 
 	agent := dwn.NewSimpleAgent(endpoint, signer)
@@ -308,7 +307,7 @@ func TestIntegrationRecordsDelete(t *testing.T) {
 
 func TestIntegrationEncryptedRecordsWrite(t *testing.T) {
 	endpoint := testEndpoint(t)
-	signer := testSigner(t)
+	signer := testSigner(t, endpoint)
 	registerTenant(t, endpoint, signer)
 
 	agent := dwn.NewSimpleAgent(endpoint, signer)
@@ -458,7 +457,7 @@ func TestIntegrationEncryptedRecordsWrite(t *testing.T) {
 
 func TestIntegrationEncryptedWriteQueryDelete(t *testing.T) {
 	endpoint := testEndpoint(t)
-	signer := testSigner(t)
+	signer := testSigner(t, endpoint)
 	registerTenant(t, endpoint, signer)
 
 	agent := dwn.NewSimpleAgent(endpoint, signer)
@@ -569,7 +568,7 @@ func TestIntegrationEncryptedWriteQueryDelete(t *testing.T) {
 
 func TestIntegrationEncryptedMultiRecipient(t *testing.T) {
 	endpoint := testEndpoint(t)
-	signer := testSigner(t)
+	signer := testSigner(t, endpoint)
 	registerTenant(t, endpoint, signer)
 
 	agent := dwn.NewSimpleAgent(endpoint, signer)
@@ -698,7 +697,7 @@ func TestIntegrationHTTPWireProtocol(t *testing.T) {
 	// Verify the wire protocol is correct by checking that the server
 	// accepts our dwn-request header format.
 	endpoint := testEndpoint(t)
-	signer := testSigner(t)
+	signer := testSigner(t, endpoint)
 	registerTenant(t, endpoint, signer)
 
 	client := dwn.NewClient(endpoint, signer)
