@@ -352,6 +352,12 @@ func (e *Engine) Backend() *ipnlocal.LocalBackend {
 	return e.backend
 }
 
+// Netstack returns the underlying netstack implementation.
+// Use this for userspace TCP/UDP listening and dialing through the mesh.
+func (e *Engine) Netstack() *netstack.Impl {
+	return e.ns
+}
+
 // slogToLogf adapts a *slog.Logger to meshnet's printf-style logger.Logf.
 func slogToLogf(l *slog.Logger) logger.Logf {
 	if l == nil {
