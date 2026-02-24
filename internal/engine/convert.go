@@ -291,12 +291,29 @@ func (c *Converter) convertFilterRules(rules []control.FilterRule) []tailcfg.Fil
 //
 // This function is the bridge between dwn-mesh's DWN control client and
 // meshnet's DWNControl polling loop. It is passed to DWNControlConfig.MapResponseFunc.
-func MapResponseFunc(client *control.DWNClient, converter *Converter) func(context.Context) (*netmap.NetworkMap, error) {
+//
+// If autoDelivery is non-nil, it is triggered after each successful state
+// load to deliver context keys to any new members.
+func MapResponseFunc(client *control.DWNClient, converter *Converter, autoDelivery *AutoKeyDelivery) func(context.Context) (*netmap.NetworkMap, error) {
 	return func(ctx context.Context) (*netmap.NetworkMap, error) {
 		resp, err := client.LoadState(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("loading DWN state: %w", err)
 		}
+
+		// If auto key delivery is active, extract member DIDs from
+		// the response and deliver context keys to any new members.
+		if autoDelivery != nil && resp != nil {
+			var memberDIDs []string
+			if resp.Node != nil {
+				memberDIDs = append(memberDIDs, resp.Node.DID)
+			}
+			for _, p := range resp.Peers {
+				memberDIDs = append(memberDIDs, p.DID)
+			}
+			autoDelivery.OnMembersUpdated(ctx, memberDIDs)
+		}
+
 		return converter.Convert(resp)
 	}
 }

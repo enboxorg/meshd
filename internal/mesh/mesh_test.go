@@ -3,6 +3,7 @@ package mesh
 import (
 	"encoding/base64"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -203,5 +204,72 @@ func TestAllocateMeshIP_TooSmallCIDR(t *testing.T) {
 	_, err := AllocateMeshIP("10.200.0.0/31", "did:dht:test")
 	if err == nil {
 		t.Fatal("expected error for /31 CIDR")
+	}
+}
+
+// =============================================================================
+// Endpoint discovery tests
+// =============================================================================
+
+func TestDiscoverLocalEndpoints_ReturnsIPPort(t *testing.T) {
+	endpoints := DiscoverLocalEndpoints(51820)
+
+	// On any machine with a network interface we should get at least one
+	// endpoint, but in minimal CI containers we might get zero.
+	// Just verify format correctness for whatever we get.
+	for _, ep := range endpoints {
+		ap, err := netip.ParseAddrPort(ep)
+		if err != nil {
+			t.Errorf("endpoint %q is not a valid ip:port: %v", ep, err)
+			continue
+		}
+		if ap.Port() != 51820 {
+			t.Errorf("endpoint %q has port %d, want 51820", ep, ap.Port())
+		}
+		// Must not be loopback or link-local.
+		addr := ap.Addr()
+		if addr.IsLoopback() {
+			t.Errorf("endpoint %q is loopback", ep)
+		}
+		if addr.IsLinkLocalUnicast() {
+			t.Errorf("endpoint %q is link-local", ep)
+		}
+	}
+}
+
+func TestDiscoverLocalEndpoints_DefaultPort(t *testing.T) {
+	endpoints := DiscoverLocalEndpoints(0) // 0 should default to 41641.
+
+	for _, ep := range endpoints {
+		ap, err := netip.ParseAddrPort(ep)
+		if err != nil {
+			t.Errorf("endpoint %q is not valid: %v", ep, err)
+			continue
+		}
+		if ap.Port() != 41641 {
+			t.Errorf("endpoint %q has port %d, want default 41641", ep, ap.Port())
+		}
+	}
+}
+
+func TestDiscoverLocalEndpoints_NoLoopback(t *testing.T) {
+	endpoints := DiscoverLocalEndpoints(51820)
+
+	for _, ep := range endpoints {
+		if strings.HasPrefix(ep, "127.") || strings.HasPrefix(ep, "[::1]") {
+			t.Errorf("loopback address discovered: %s", ep)
+		}
+	}
+}
+
+func TestDiscoverLocalEndpoints_NoDuplicates(t *testing.T) {
+	endpoints := DiscoverLocalEndpoints(51820)
+
+	seen := make(map[string]bool, len(endpoints))
+	for _, ep := range endpoints {
+		if seen[ep] {
+			t.Errorf("duplicate endpoint: %s", ep)
+		}
+		seen[ep] = true
 	}
 }

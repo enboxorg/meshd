@@ -850,6 +850,23 @@ func cmdUp(ctx context.Context, args []string) error {
 		}
 	}
 
+	// If this node is the anchor, enable automatic context key delivery
+	// so new members get decryption keys without manual "peer approve".
+	var autoKeyDelivery *engine.AutoKeyDelivery
+	if ns.AnchorDID == identity.URI {
+		autoKeyDelivery = engine.NewAutoKeyDelivery(engine.AutoKeyDeliveryConfig{
+			Endpoint:             ns.AnchorEndpoint,
+			AnchorDID:            ns.AnchorDID,
+			NetworkRecordID:      ns.NetworkRecordID,
+			Signer:               signer,
+			EncryptionKeyManager: encMgr,
+			Logger:               logger,
+		})
+		if autoKeyDelivery != nil {
+			fmt.Printf("  Auto key delivery: enabled (anchor node)\n")
+		}
+	}
+
 	eng, err := engine.New(engine.Config{
 		AnchorEndpoint:       ns.AnchorEndpoint,
 		AnchorTenant:         ns.AnchorDID,
@@ -858,6 +875,7 @@ func cmdUp(ctx context.Context, args []string) error {
 		Signer:               signer,
 		Resolver:             universalResolver{},
 		EncryptionKeyManager: encMgr,
+		AutoKeyDelivery:      autoKeyDelivery,
 		Domain:               ns.NetworkName,
 		ListenPort:           listenPort,
 		PollInterval:         pollInterval,
