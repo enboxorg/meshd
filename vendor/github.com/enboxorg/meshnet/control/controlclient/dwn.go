@@ -33,6 +33,14 @@ type DWNControlConfig struct {
 	//   - When explicitly triggered via Notify()
 	MapResponseFunc func(ctx context.Context) (*netmap.NetworkMap, error)
 
+	// EndpointUpdateFunc is called when magicsock discovers new endpoints
+	// (via STUN, local interface enumeration, etc). The DWN control
+	// integration should write these back to the anchor DWN so peers
+	// can discover this node's reachable addresses.
+	//
+	// If nil, endpoint updates are not published.
+	EndpointUpdateFunc func(ctx context.Context, endpoints []tailcfg.Endpoint)
+
 	// PollInterval is how often to re-read DWN state.
 	// Default: 30 seconds.
 	PollInterval time.Duration
@@ -271,8 +279,16 @@ func (cc *DWNControl) UpdateEndpoints(endpoints []tailcfg.Endpoint) {
 	cc.mu.Lock()
 	cc.endpoints = endpoints
 	cc.mu.Unlock()
-	// TODO: publish endpoints to DWN as an endpoint record update.
-	// After publishing, trigger a Notify() so other peers pick up the change.
+
+	if cc.config.EndpointUpdateFunc != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			cc.config.EndpointUpdateFunc(ctx, endpoints)
+			// Trigger re-poll so peers pick up the new endpoints.
+			cc.Notify()
+		}()
+	}
 }
 
 func (cc *DWNControl) SetDiscoPublicKey(k key.DiscoPublic) {

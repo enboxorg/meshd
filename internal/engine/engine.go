@@ -13,6 +13,7 @@ import (
 	"github.com/enboxorg/dwn-mesh/internal/control"
 	"github.com/enboxorg/dwn-mesh/internal/dwn"
 	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
+	"github.com/enboxorg/dwn-mesh/internal/mesh"
 
 	"github.com/enboxorg/meshnet/control/controlclient"
 	"github.com/enboxorg/meshnet/ipn"
@@ -20,6 +21,7 @@ import (
 	"github.com/enboxorg/meshnet/ipn/store/mem"
 	"github.com/enboxorg/meshnet/net/netmon"
 	"github.com/enboxorg/meshnet/net/tsdial"
+	"github.com/enboxorg/meshnet/tailcfg"
 	"github.com/enboxorg/meshnet/tsd"
 	"github.com/enboxorg/meshnet/types/logid"
 	"github.com/enboxorg/meshnet/types/logger"
@@ -86,10 +88,20 @@ type Config struct {
 	// protocol records. If nil, encrypted records cannot be read.
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 
+	// NodeInfoRecordID is this node's nodeInfo record ID on the anchor DWN.
+	// Required for writing endpoint updates back to DWN.
+	NodeInfoRecordID string
+
 	// AutoKeyDelivery enables automatic context key delivery to new members.
 	// Only active when this node is the anchor and has the root private key.
 	// If nil, auto delivery is disabled.
 	AutoKeyDelivery *AutoKeyDelivery
+
+	// UseContextEncryption enables Protocol Context encryption for writes.
+	// Non-anchor nodes MUST set this to true so the anchor can decrypt their
+	// records using the shared context key. The EncryptionKeyManager must
+	// have the context key stored (via StoreContextKey) for NetworkRecordID.
+	UseContextEncryption bool
 
 	// Logger is the structured logger. Nil = default.
 	Logger *slog.Logger
@@ -260,6 +272,12 @@ func New(cfg Config) (*Engine, error) {
 		PollInterval:    pollInterval,
 		Logf:            logf,
 	}
+
+	// Wire endpoint writeback: when magicsock discovers STUN endpoints,
+	// publish them to the anchor DWN so peers can find us.
+	if cfg.NodeInfoRecordID != "" && cfg.EncryptionKeyManager != nil {
+		dwnControlConfig.EndpointUpdateFunc = makeEndpointUpdateFunc(cfg, l)
+	}
 	lb.SetControlClientGetterForTesting(
 		controlclient.NewDWNControlFactory(dwnControlConfig),
 	)
@@ -366,6 +384,62 @@ func slogToLogf(l *slog.Logger) logger.Logf {
 	return func(format string, args ...any) {
 		msg := fmt.Sprintf(format, args...)
 		l.Debug(msg, slog.String("source", "meshnet"))
+	}
+}
+
+// makeEndpointUpdateFunc creates a callback that writes STUN-discovered
+// endpoints back to the anchor DWN as an endpoint record update.
+func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []tailcfg.Endpoint) {
+	return func(ctx context.Context, endpoints []tailcfg.Endpoint) {
+		var publicEPs []mesh.PublicEndpoint
+		var localEPs []string
+
+		for _, ep := range endpoints {
+			ap := ep.Addr
+			if !ap.IsValid() {
+				continue
+			}
+			addr := ap.Addr()
+
+			// Classify endpoints: publicly routable vs local/private.
+			if addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() {
+				localEPs = append(localEPs, ap.String())
+			} else {
+				publicEPs = append(publicEPs, mesh.PublicEndpoint{
+					Address:  addr.String(),
+					Port:     int(ap.Port()),
+					Source:   "stun",
+				})
+			}
+		}
+
+		if len(publicEPs) == 0 && len(localEPs) == 0 {
+			return
+		}
+
+		l.Info("publishing discovered endpoints to DWN",
+			slog.Int("public", len(publicEPs)),
+			slog.Int("local", len(localEPs)),
+		)
+
+		err := mesh.WriteEndpoint(ctx, mesh.WriteEndpointParams{
+			AnchorEndpoint:       cfg.AnchorEndpoint,
+			AnchorDID:            cfg.AnchorTenant,
+			NetworkRecordID:      cfg.NetworkRecordID,
+			NodeInfoRecordID:     cfg.NodeInfoRecordID,
+			Signer:               cfg.Signer,
+			EncryptionKeyManager: cfg.EncryptionKeyManager,
+			PublicEndpoints:      publicEPs,
+			LocalEndpoints:       localEPs,
+			NATType:              "unknown",
+			ProtocolRole:         "network/member",
+			UseContextEncryption: cfg.UseContextEncryption,
+		})
+		if err != nil {
+			l.Warn("failed to publish endpoints to DWN",
+				slog.Any("error", err),
+			)
+		}
 	}
 }
 

@@ -1861,6 +1861,172 @@ func TestSplitProtocolPath(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Multi-party encryption (Protocol Context) tests
+// =============================================================================
+
+// TestContextEncryptionMultiParty verifies the full multi-party flow:
+// 1. A record encrypted with Protocol Context scheme can be decrypted by the owner
+// 2. A non-owner with a delivered context key can also decrypt it
+// 3. A non-owner encrypts and the anchor can decrypt
+// 4. A non-owner WITHOUT the context key CANNOT decrypt it
+func TestContextEncryptionMultiParty(t *testing.T) {
+	// Simulate the anchor (DWN owner).
+	anchorPriv, _, err := GenerateX25519KeyPair()
+	if err != nil {
+		t.Fatalf("generating anchor key: %v", err)
+	}
+
+	anchorMgr := &EncryptionKeyManager{
+		RootPrivateKey: anchorPriv,
+		RootKeyID:      "did:dht:anchor#enc",
+		ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+	}
+
+	contextID := "bafyreiabc123networkrecordid"
+
+	// 1. Encrypt data with Protocol Context scheme (as a non-anchor would).
+	recipients, err := anchorMgr.DeriveContextWriteEncryption(contextID)
+	if err != nil {
+		t.Fatalf("DeriveContextWriteEncryption: %v", err)
+	}
+
+	plaintext := []byte(`{"wireguardPublicKey":"abc==","meshIP":"10.200.0.5"}`)
+	ciphertext, enc, err := EncryptData(plaintext, recipients)
+	if err != nil {
+		t.Fatalf("EncryptData: %v", err)
+	}
+
+	// 2. Anchor (owner) decrypts using context key derived from root.
+	t.Run("owner can decrypt", func(t *testing.T) {
+		contextKey, err := anchorMgr.DeriveContextDecryptionKey(contextID)
+		if err != nil {
+			t.Fatalf("DeriveContextDecryptionKey: %v", err)
+		}
+		decrypted, err := DecryptDataWithScheme(ciphertext, enc, contextKey, DerivationSchemeProtocolContext)
+		if err != nil {
+			t.Fatalf("DecryptDataWithScheme: %v", err)
+		}
+		if !bytes.Equal(decrypted, plaintext) {
+			t.Errorf("decrypted = %q, want %q", decrypted, plaintext)
+		}
+	})
+
+	// 3. Non-owner with delivered context key can also decrypt.
+	t.Run("non-owner with context key can decrypt", func(t *testing.T) {
+		nonOwnerPriv, _, err := GenerateX25519KeyPair()
+		if err != nil {
+			t.Fatalf("generating non-owner key: %v", err)
+		}
+
+		nonOwnerMgr := &EncryptionKeyManager{
+			RootPrivateKey: nonOwnerPriv,
+			RootKeyID:      "did:dht:joiner#enc",
+			ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+		}
+
+		// Simulate key delivery: anchor derives context key and delivers it.
+		contextKeyJwk, err := anchorMgr.DeriveContextKeyJwk(contextID)
+		if err != nil {
+			t.Fatalf("DeriveContextKeyJwk: %v", err)
+		}
+		contextKeyBytes, err := contextKeyJwk.PrivateKeyBytes()
+		if err != nil {
+			t.Fatalf("PrivateKeyBytes: %v", err)
+		}
+		nonOwnerMgr.StoreContextKey(contextID, contextKeyBytes)
+
+		// Non-owner decrypts.
+		decryptKey, err := nonOwnerMgr.DeriveContextDecryptionKey(contextID)
+		if err != nil {
+			t.Fatalf("DeriveContextDecryptionKey: %v", err)
+		}
+		decrypted, err := DecryptDataWithScheme(ciphertext, enc, decryptKey, DerivationSchemeProtocolContext)
+		if err != nil {
+			t.Fatalf("DecryptDataWithScheme: %v", err)
+		}
+		if !bytes.Equal(decrypted, plaintext) {
+			t.Errorf("decrypted = %q, want %q", decrypted, plaintext)
+		}
+	})
+
+	// 4. Non-owner encrypts with delivered context key, anchor can decrypt.
+	t.Run("non-owner encrypts anchor decrypts", func(t *testing.T) {
+		nonOwnerPriv, _, err := GenerateX25519KeyPair()
+		if err != nil {
+			t.Fatalf("generating non-owner key: %v", err)
+		}
+
+		nonOwnerMgr := &EncryptionKeyManager{
+			RootPrivateKey: nonOwnerPriv,
+			RootKeyID:      "did:dht:joiner#enc",
+			ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+		}
+
+		// Deliver context key to non-owner.
+		contextKeyJwk, err := anchorMgr.DeriveContextKeyJwk(contextID)
+		if err != nil {
+			t.Fatalf("DeriveContextKeyJwk: %v", err)
+		}
+		contextKeyBytes, err := contextKeyJwk.PrivateKeyBytes()
+		if err != nil {
+			t.Fatalf("PrivateKeyBytes: %v", err)
+		}
+		nonOwnerMgr.StoreContextKey(contextID, contextKeyBytes)
+
+		// Non-owner encrypts with context scheme.
+		nonOwnerRecipients, err := nonOwnerMgr.DeriveContextWriteEncryption(contextID)
+		if err != nil {
+			t.Fatalf("DeriveContextWriteEncryption: %v", err)
+		}
+
+		data := []byte(`{"meshIP":"10.200.0.6","hostname":"joiner-node"}`)
+		ct, encMeta, err := EncryptData(data, nonOwnerRecipients)
+		if err != nil {
+			t.Fatalf("EncryptData: %v", err)
+		}
+
+		// Anchor decrypts.
+		anchorContextKey, err := anchorMgr.DeriveContextDecryptionKey(contextID)
+		if err != nil {
+			t.Fatalf("anchor DeriveContextDecryptionKey: %v", err)
+		}
+		decrypted, err := DecryptDataWithScheme(ct, encMeta, anchorContextKey, DerivationSchemeProtocolContext)
+		if err != nil {
+			t.Fatalf("anchor DecryptDataWithScheme: %v", err)
+		}
+		if !bytes.Equal(decrypted, data) {
+			t.Errorf("decrypted = %q, want %q", decrypted, data)
+		}
+	})
+
+	// 5. Outsider with wrong root key cannot decrypt (wrong context key derived).
+	t.Run("outsider with wrong key fails to decrypt", func(t *testing.T) {
+		outsiderPriv, _, err := GenerateX25519KeyPair()
+		if err != nil {
+			t.Fatalf("generating outsider key: %v", err)
+		}
+
+		outsiderMgr := &EncryptionKeyManager{
+			RootPrivateKey: outsiderPriv,
+			RootKeyID:      "did:dht:outsider#enc",
+			ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+		}
+
+		// Outsider derives a context key from their own (wrong) root key.
+		wrongContextKey, err := outsiderMgr.DeriveContextDecryptionKey(contextID)
+		if err != nil {
+			t.Fatalf("DeriveContextDecryptionKey: %v", err)
+		}
+
+		// Decryption should fail because the wrong key unwraps the wrong CEK.
+		_, err = DecryptDataWithScheme(ciphertext, enc, wrongContextKey, DerivationSchemeProtocolContext)
+		if err == nil {
+			t.Error("expected decryption to fail with wrong context key")
+		}
+	})
+}
+
 // RFC 3394 Section 4.3 — AES-192 KEK with 192-bit key data.
 func TestAESKeyWrapRFC3394Vector192(t *testing.T) {
 	kek, _ := hex.DecodeString("000102030405060708090A0B0C0D0E0F1011121314151617")
