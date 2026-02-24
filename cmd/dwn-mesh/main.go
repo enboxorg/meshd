@@ -15,6 +15,8 @@ import (
 	"github.com/enboxorg/dwn-mesh/internal/dwn"
 	"github.com/enboxorg/dwn-mesh/internal/engine"
 	"github.com/enboxorg/dwn-mesh/internal/state"
+	"github.com/enboxorg/dwn-mesh/pkg/dids"
+	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
 )
 
 const usage = `dwn-mesh - Decentralized WireGuard mesh networking via DWN
@@ -23,7 +25,7 @@ Usage:
   dwn-mesh <command> [arguments]
 
 Commands:
-  init              Generate DID identity and initialize node
+  init              Generate DID identity and publish to DHT
   network create    Create a new mesh network on a DWN
   network join      Join an existing mesh network
   network leave     Leave the current mesh network
@@ -32,12 +34,19 @@ Commands:
   up                Start the mesh agent daemon
   down              Stop the mesh agent daemon
 
+Init flags:
+  --dwn-endpoint <url>    DWN endpoint to include in DID Document
+  --gateway <url>         Pkarr gateway for DHT publication
+  --no-publish            Skip publishing DID to DHT
+  --force-publish         Re-publish existing DID to DHT
+
 Flags:
   -h, --help        Show this help message
   -v, --version     Show version information
 
 Environment:
   DWN_MESH_STATE_DIR    State directory (default: ~/.dwn-mesh)
+  DWN_ENDPOINT          Default DWN endpoint URL
 `
 
 var version = "dev"
@@ -99,8 +108,36 @@ func main() {
 	}
 }
 
-// cmdInit generates a DID identity and initializes the node.
+// cmdInit generates a DID identity, stores it, and publishes it to the DHT.
 func cmdInit(ctx context.Context, args []string) error {
+	// Parse init flags.
+	var dwnEndpoint, gateway string
+	noPublish := false
+	forcePublish := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dwn-endpoint":
+			if i+1 < len(args) {
+				dwnEndpoint = args[i+1]
+				i++
+			}
+		case "--gateway":
+			if i+1 < len(args) {
+				gateway = args[i+1]
+				i++
+			}
+		case "--no-publish":
+			noPublish = true
+		case "--force-publish":
+			forcePublish = true
+		}
+	}
+
+	// Fall back to DWN_ENDPOINT env var.
+	if dwnEndpoint == "" {
+		dwnEndpoint = os.Getenv("DWN_ENDPOINT")
+	}
+
 	stateDir := state.DefaultStateDir()
 
 	if did.Exists(stateDir) {
@@ -111,6 +148,13 @@ func cmdInit(ctx context.Context, args []string) error {
 		fmt.Printf("Already initialized.\n")
 		fmt.Printf("  DID: %s\n", identity.URI)
 		fmt.Printf("  State: %s\n", stateDir)
+
+		// Re-publish if forced.
+		if forcePublish && !noPublish {
+			if err := publishDID(ctx, identity, dwnEndpoint, gateway); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
@@ -126,6 +170,34 @@ func cmdInit(ctx context.Context, args []string) error {
 	fmt.Printf("Initialized new identity.\n")
 	fmt.Printf("  DID: %s\n", identity.URI)
 	fmt.Printf("  State: %s\n", stateDir)
+
+	// Publish to DHT unless opted out.
+	if !noPublish {
+		if err := publishDID(ctx, identity, dwnEndpoint, gateway); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// publishDID publishes the DID Document to the DHT via a Pkarr gateway.
+func publishDID(ctx context.Context, identity *did.DID, dwnEndpoint, gateway string) error {
+	var opts []did.PublishOption
+	if gateway != "" {
+		opts = append(opts, did.WithGatewayURL(gateway))
+	}
+
+	if dwnEndpoint != "" {
+		fmt.Printf("  DWN Endpoint: %s\n", dwnEndpoint)
+	}
+
+	fmt.Printf("  Publishing DID to DHT...")
+	if err := identity.Publish(ctx, dwnEndpoint, opts...); err != nil {
+		fmt.Printf(" failed\n")
+		return fmt.Errorf("publishing DID: %w", err)
+	}
+	fmt.Printf(" done\n")
 	return nil
 }
 
@@ -523,6 +595,7 @@ func cmdUp(ctx context.Context, args []string) error {
 		NetworkRecordID: ns.NetworkRecordID,
 		SelfDID:         identity.URI,
 		Signer:          signer,
+		Resolver:        universalResolver{},
 		Domain:          ns.NetworkName,
 		ListenPort:      listenPort,
 		PollInterval:    pollInterval,
@@ -639,6 +712,14 @@ func meshProtocolDefinition() json.RawMessage {
 			}
 		}
 	}`)
+}
+
+// universalResolver adapts the pkg/dids universal resolver to the
+// control.Resolver interface.
+type universalResolver struct{}
+
+func (r universalResolver) ResolveWithContext(ctx context.Context, uri string) (didcore.ResolutionResult, error) {
+	return dids.ResolveWithContext(ctx, uri)
 }
 
 // truncate shortens a string to maxLen, adding "..." if truncated.
