@@ -338,7 +338,9 @@ func (r *Record) Update(ctx context.Context, data []byte, opts ...RecordUpdateOp
 			Tags:            tags,
 			Data:            data,
 			RecordID:        r.ID,
+			ProtocolRole:    updateOpts.protocolRole,
 		},
+		ProtocolRole: updateOpts.protocolRole,
 	})
 	if err != nil {
 		return nil, err
@@ -409,8 +411,9 @@ func (r *Record) Delete(ctx context.Context, prune bool) error {
 type RecordUpdateOption func(*recordUpdateOptions)
 
 type recordUpdateOptions struct {
-	dataFormat string
-	tags       map[string]any
+	dataFormat   string
+	tags         map[string]any
+	protocolRole string
 }
 
 // WithDataFormat overrides the data format for the update.
@@ -424,6 +427,13 @@ func WithDataFormat(format string) RecordUpdateOption {
 func WithTags(tags map[string]any) RecordUpdateOption {
 	return func(o *recordUpdateOptions) {
 		o.tags = tags
+	}
+}
+
+// WithUpdateProtocolRole sets the protocol role for role-based authorization on updates.
+func WithUpdateProtocolRole(role string) RecordUpdateOption {
+	return func(o *recordUpdateOptions) {
+		o.protocolRole = role
 	}
 }
 

@@ -719,3 +719,234 @@ func TestIntegrationHTTPWireProtocol(t *testing.T) {
 		t.Fatalf("Unexpected status: %d %s", reply.Status.Code, reply.Status.Detail)
 	}
 }
+
+// TestIntegrationProtocolRoleWrite verifies that role-based authorization works
+// for writes to another party's DWN. This uses a minimal protocol with a
+// $role type and a record type that requires the role for writes.
+func TestIntegrationProtocolRoleWrite(t *testing.T) {
+	endpoint := testEndpoint(t)
+
+	// Create two identities: Alice (DWN owner) and Bob (role-holder).
+	aliceIdentity := testIdentity(t, endpoint)
+	aliceSigner := &dwn.Signer{DID: aliceIdentity.URI, PrivateKey: aliceIdentity.SigningKey}
+	registerTenant(t, endpoint, aliceSigner)
+
+	bobIdentity := testIdentity(t, endpoint)
+	bobSigner := &dwn.Signer{DID: bobIdentity.URI, PrivateKey: bobIdentity.SigningKey}
+	registerTenant(t, endpoint, bobSigner)
+
+	aliceAgent := dwn.NewSimpleAgent(endpoint, aliceSigner)
+	aliceAPI := dwn.NewDwnAPI(aliceAgent)
+
+	bobAgent := dwn.NewSimpleAgent(endpoint, bobSigner)
+	bobAPI := dwn.NewDwnAPI(bobAgent)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// 1. Alice installs a minimal role protocol.
+	protocolURI := fmt.Sprintf("https://example.com/role-test/%d", time.Now().UnixNano())
+	// Use a flat protocol structure to test role-based auth without nesting.
+	// This mirrors the JS SDK's friend-role.json test protocol.
+	protocolDef := json.RawMessage(fmt.Sprintf(`{
+		"protocol": %q,
+		"published": true,
+		"types": {
+			"friend": {},
+			"chat": {}
+		},
+		"structure": {
+			"friend": {
+				"$role": true,
+				"$actions": [
+					{ "who": "anyone", "can": ["create"] }
+				]
+			},
+			"chat": {
+				"$actions": [
+					{ "role": "friend", "can": ["create", "read"] }
+				]
+			}
+		}
+	}`, protocolURI))
+
+	status, err := aliceAPI.ConfigureProtocol(ctx, aliceIdentity.URI, protocolDef)
+	if err != nil {
+		t.Fatalf("ConfigureProtocol: %v", err)
+	}
+	t.Logf("Step 1: Protocol installed: %d %s", status.Code, status.Detail)
+
+	// 2. Alice creates Bob's friend role record (recipient = Bob).
+	// With flat structure, friend is a root-level type — no parentContextID needed.
+	_, ms, err := aliceAPI.Write(ctx, aliceIdentity.URI, dwn.WriteParams{
+		Protocol:     protocolURI,
+		ProtocolPath: "friend",
+		DataFormat:   "application/json",
+		Recipient:    bobIdentity.URI,
+		Data:         []byte(`{"label":"Bob is my friend"}`),
+	})
+	if err != nil || ms.Code >= 300 {
+		t.Fatalf("creating friend role: err=%v, status=%v", err, ms)
+	}
+	t.Logf("Step 2: Friend role created for Bob: %d %s", ms.Code, ms.Detail)
+
+	// Debug: Query the friend records.
+	friendRecords, fqs, _ := aliceAPI.Query(ctx, aliceIdentity.URI, dwn.QueryParams{
+		Filter: dwn.RecordsFilter{
+			Protocol:     protocolURI,
+			ProtocolPath: "friend",
+		},
+	}, "")
+	if fqs != nil {
+		t.Logf("  Debug: friend query: status=%d, count=%d", fqs.Code, len(friendRecords))
+		for i, m := range friendRecords {
+			t.Logf("    [%d]: id=%s, recipient=%s, contextId=%s", i, m.ID, m.Recipient, m.ContextID)
+		}
+	}
+
+	// 3. Bob writes a chat to Alice's DWN, invoking the "friend" role.
+	_, ps, err := bobAPI.Write(ctx, aliceIdentity.URI, dwn.WriteParams{
+		Protocol:     protocolURI,
+		ProtocolPath: "chat",
+		DataFormat:   "application/json",
+		Data:         []byte(`{"text":"hello from Bob"}`),
+		ProtocolRole: "friend",
+	})
+	if err != nil {
+		t.Fatalf("Bob's role-based write: %v", err)
+	}
+	if ps.Code >= 300 {
+		t.Fatalf("Bob's role-based write failed: %d %s", ps.Code, ps.Detail)
+	}
+	t.Logf("Step 3: Bob's role-based write succeeded: %d %s", ps.Code, ps.Detail)
+
+	// 4. Verify: write WITHOUT role should fail.
+	_, nrs, err := bobAPI.Write(ctx, aliceIdentity.URI, dwn.WriteParams{
+		Protocol:     protocolURI,
+		ProtocolPath: "chat",
+		DataFormat:   "application/json",
+		Data:         []byte(`{"text":"this should fail"}`),
+		// No ProtocolRole — should be rejected.
+	})
+	if err != nil {
+		t.Fatalf("Bob's no-role write: %v", err)
+	}
+	if nrs.Code < 300 {
+		t.Fatalf("expected Bob's no-role write to be rejected, got: %d %s", nrs.Code, nrs.Detail)
+	}
+	t.Logf("Step 4: Bob's no-role write correctly rejected: %d %s", nrs.Code, nrs.Detail)
+
+	// ---- Part 2: Test nested role (group/member pattern) ----
+	t.Log("--- Part 2: Nested role test ---")
+
+	nestedProtocolURI := fmt.Sprintf("https://example.com/nested-role-test/%d", time.Now().UnixNano())
+	nestedDef := json.RawMessage(fmt.Sprintf(`{
+		"protocol": %q,
+		"published": true,
+		"types": {
+			"group": {},
+			"member": {},
+			"post": {}
+		},
+		"structure": {
+			"group": {
+				"member": {
+					"$role": true,
+					"$actions": [
+						{ "who": "author", "of": "group", "can": ["create", "delete"] }
+					]
+				},
+				"post": {
+					"$actions": [
+						{ "role": "group/member", "can": ["create", "read"] }
+					]
+				}
+			}
+		}
+	}`, nestedProtocolURI))
+
+	nstatus, err := aliceAPI.ConfigureProtocol(ctx, aliceIdentity.URI, nestedDef)
+	if err != nil || nstatus.Code >= 300 {
+		t.Fatalf("ConfigureProtocol (nested): err=%v, status=%v", err, nstatus)
+	}
+	t.Logf("Step 5: Nested protocol installed: %d", nstatus.Code)
+
+	// Create group (root record).
+	groupRecord, gs, err := aliceAPI.Write(ctx, aliceIdentity.URI, dwn.WriteParams{
+		Protocol:     nestedProtocolURI,
+		ProtocolPath: "group",
+		DataFormat:   "application/json",
+		Data:         []byte(`{"name":"test-group"}`),
+	})
+	if err != nil || gs.Code >= 300 {
+		t.Fatalf("creating group: err=%v, status=%v", err, gs)
+	}
+	groupID := groupRecord.ID
+	if groupID == "" {
+		records, _, _ := aliceAPI.Query(ctx, aliceIdentity.URI, dwn.QueryParams{
+			Filter: dwn.RecordsFilter{Protocol: nestedProtocolURI, ProtocolPath: "group"},
+		}, "")
+		if len(records) > 0 {
+			groupID = records[0].ID
+		}
+	}
+	t.Logf("Step 6: Group created: %s (contextId should = recordId)", groupID)
+
+	// Create member role for Bob under the group.
+	_, memStatus, err := aliceAPI.Write(ctx, aliceIdentity.URI, dwn.WriteParams{
+		Protocol:        nestedProtocolURI,
+		ProtocolPath:    "group/member",
+		DataFormat:      "application/json",
+		Recipient:       bobIdentity.URI,
+		ParentContextID: groupID,
+		Data:            []byte(`{"role":"member"}`),
+	})
+	if err != nil || memStatus.Code >= 300 {
+		t.Fatalf("creating nested member role: err=%v, status=%v", err, memStatus)
+	}
+	t.Logf("Step 7: Nested member role created for Bob: %d %s", memStatus.Code, memStatus.Detail)
+
+	// Debug: Query member records to verify.
+	nestedMembers, nmqs, _ := aliceAPI.Query(ctx, aliceIdentity.URI, dwn.QueryParams{
+		Filter: dwn.RecordsFilter{
+			Protocol:     nestedProtocolURI,
+			ProtocolPath: "group/member",
+		},
+	}, "")
+	if nmqs != nil && nmqs.Code == 200 {
+		for i, m := range nestedMembers {
+			t.Logf("  Nested member[%d]: id=%s, recipient=%s, contextId=%s", i, m.ID, m.Recipient, m.ContextID)
+		}
+	}
+
+	// Debug: build the post message locally to see its contextId.
+	testSig := &dwn.Signer{DID: bobIdentity.URI, PrivateKey: bobIdentity.SigningKey}
+	postResult, _ := dwn.BuildRecordsWrite(testSig, dwn.RecordsWriteOptions{
+		Protocol:        nestedProtocolURI,
+		ProtocolPath:    "group/post",
+		DataFormat:      "application/json",
+		ParentContextID: groupID,
+		Data:            []byte(`{"text":"nested role write"}`),
+		ProtocolRole:    "group/member",
+	})
+	if postResult != nil {
+		t.Logf("  Debug: post contextId=%s, recordId=%s", postResult.Message.ContextID, postResult.Message.RecordID)
+	}
+
+	// Bob writes a post, invoking group/member role.
+	_, postStatus, err := bobAPI.Write(ctx, aliceIdentity.URI, dwn.WriteParams{
+		Protocol:        nestedProtocolURI,
+		ProtocolPath:    "group/post",
+		DataFormat:      "application/json",
+		ParentContextID: groupID,
+		Data:            []byte(`{"text":"nested role write"}`),
+		ProtocolRole:    "group/member",
+	})
+	if err != nil {
+		t.Fatalf("Bob's nested role write: %v", err)
+	}
+	if postStatus.Code >= 300 {
+		t.Fatalf("Bob's nested role write failed: %d %s", postStatus.Code, postStatus.Detail)
+	}
+	t.Logf("Step 8: Bob's nested role write succeeded: %d %s", postStatus.Code, postStatus.Detail)
+}

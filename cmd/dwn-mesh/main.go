@@ -514,7 +514,7 @@ func cmdNetworkJoin(ctx context.Context, args []string) error {
 		fmt.Printf("  Created member record (encrypted).\n")
 	}
 
-	// Register nodeInfo (encrypted).
+	// Register nodeInfo (encrypted), invoking the network/member role for authorization.
 	var nodeInfoRecordID string
 	reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
@@ -525,6 +525,7 @@ func cmdNetworkJoin(ctx context.Context, args []string) error {
 		EncryptionKeyManager: encMgr,
 		WireGuardPubKey:      wgKeys.PublicKeyBase64(),
 		MeshIP:               meshIP.String(),
+		ProtocolRole:         "network/member",
 	})
 	if err != nil {
 		fmt.Printf("  Warning: nodeInfo registration failed: %v\n", err)

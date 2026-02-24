@@ -244,6 +244,7 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 
 	// Node A (network author) creates Node B's member record on the anchor DWN.
 	// Per the protocol's $actions: only the network author or admins can create members.
+	// The member record's recipient is Node B — this assigns Node B the "network/member" role.
 	err = mesh.CreateMember(ctx, mesh.CreateMemberParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            nodeA.DID.URI,
@@ -254,9 +255,38 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		EncryptionKeyManager: nodeA.EncMgr,
 	})
 	if err != nil {
-		t.Logf("  Warning: Node B member creation (by Node A) failed: %v", err)
-	} else {
-		t.Log("  Node B member record created by Node A (encrypted)")
+		t.Fatalf("Node B member creation (by Node A) failed: %v", err)
+	}
+	t.Log("  Node B member record created by Node A (encrypted)")
+
+	// Debug: query member records to verify they exist with correct recipients.
+	memberRecords, mqs, err := nodeA.API.Query(ctx, nodeA.DID.URI, dwn.QueryParams{
+		Filter: dwn.RecordsFilter{
+			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
+			ProtocolPath: "network/member",
+			ParentID:     networkRecordID,
+		},
+	}, "")
+	if err == nil && mqs.Code == 200 {
+		for i, m := range memberRecords {
+			t.Logf("  Member[%d]: id=%s, recipient=%s, contextId=%s, author=%s", i, m.ID, m.Recipient, m.ContextID, m.Author)
+		}
+	}
+
+	// Debug: Node B queries for its own member role record on Node A's DWN.
+	// This uses the same filter the server would use internally.
+	nodeBMembers, nbqs, _ := nodeB.API.Query(ctx, nodeA.DID.URI, dwn.QueryParams{
+		Filter: dwn.RecordsFilter{
+			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
+			ProtocolPath: "network/member",
+			Recipient:    nodeB.DID.URI,
+		},
+	}, "")
+	if nbqs != nil {
+		t.Logf("  Node B member query (on A's DWN): status=%d, count=%d", nbqs.Code, len(nodeBMembers))
+		for i, m := range nodeBMembers {
+			t.Logf("    [%d]: id=%s, recipient=%s, contextId=%s", i, m.ID, m.Recipient, m.ContextID)
+		}
 	}
 
 	// Node B registers its nodeInfo (encrypted) using its own member role.
@@ -281,12 +311,12 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		WireGuardPubKey:      wgKeysB.PublicKeyBase64(),
 		MeshIP:               meshIPB.String(),
 		Hostname:             "node-b",
+		ProtocolRole:         "network/member",
 	})
 	if err != nil {
-		t.Logf("  Warning: Node B nodeInfo registration failed: %v", err)
-	} else {
-		t.Logf("  Node B registered: IP=%s, nodeInfo=%s", meshIPB, regB.NodeInfoRecordID)
+		t.Fatalf("Node B nodeInfo registration failed: %v", err)
 	}
+	t.Logf("  Node B registered: IP=%s, nodeInfo=%s", meshIPB, regB.NodeInfoRecordID)
 
 	// ---- Step 7: Verify mesh IPs are different ----
 	t.Log("Step 7: Verifying mesh IP uniqueness")
@@ -312,11 +342,8 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		t.Fatalf("member query: %d %s", queryStatus.Code, queryStatus.Detail)
 	}
 	t.Logf("  Found %d member records", len(members))
-
-	// We expect at least 1 member (nodeA as admin). NodeB's member may or
-	// may not have succeeded depending on protocol action rules.
-	if len(members) == 0 {
-		t.Fatal("expected at least 1 member record")
+	if len(members) < 2 {
+		t.Fatalf("expected at least 2 member records (node A admin + node B member), got %d", len(members))
 	}
 
 	// ---- Step 9: Query nodeInfo records from the anchor DWN ----
@@ -335,8 +362,8 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		t.Fatalf("nodeInfo query: %d %s", niStatus.Code, niStatus.Detail)
 	}
 	t.Logf("  Found %d nodeInfo records", len(nodeInfos))
-	if len(nodeInfos) == 0 {
-		t.Fatal("expected at least 1 nodeInfo record (node A)")
+	if len(nodeInfos) < 2 {
+		t.Fatalf("expected at least 2 nodeInfo records (node A + node B), got %d", len(nodeInfos))
 	}
 
 	// ---- Step 10: Node A writes an encrypted endpoint record ----

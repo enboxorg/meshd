@@ -61,6 +61,10 @@ type RegisterNodeParams struct {
 	// ExistingNodeInfoRecordID is set when updating an existing nodeInfo.
 	// Leave empty for initial registration.
 	ExistingNodeInfoRecordID string
+
+	// ProtocolRole is the role to invoke for authorization (e.g., "network/member").
+	// Required when writing to another party's DWN as a non-owner.
+	ProtocolRole string
 }
 
 // RegisterNode writes or updates the node's nodeInfo record (encrypted) on
@@ -111,6 +115,7 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 			"hostname": hostname,
 			"os":       runtime.GOOS,
 		},
+		ProtocolRole:         params.ProtocolRole,
 		EncryptionRecipients: recipients,
 	}
 
@@ -172,6 +177,7 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 		Recipient:            params.AnchorDID,
 		ParentContextID:     nodeInfoContextID,
 		Data:                 endpointData,
+		ProtocolRole:         params.ProtocolRole,
 		EncryptionRecipients: recipients,
 	})
 	if err != nil {
@@ -195,6 +201,7 @@ type WriteEndpointParams struct {
 	PublicEndpoints      []PublicEndpoint
 	LocalEndpoints       []string
 	NATType              string
+	ProtocolRole         string
 }
 
 // PublicEndpoint describes a publicly reachable endpoint.
