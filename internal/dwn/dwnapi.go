@@ -53,33 +53,41 @@ func (api *DwnAPI) Write(ctx context.Context, target string, params WriteParams)
 
 	status := resp.Status
 
-	// Construct a Record from the response.
-	// For writes, we build the record from the params since the response
-	// doesn't echo back the full message.
-	record := &Record{
-		ID:           "", // will be set from the write response or params
-		Protocol:     params.Protocol,
-		ProtocolPath: params.ProtocolPath,
-		Schema:       params.Schema,
-		Recipient:    params.Recipient,
-		DataFormat:   params.DataFormat,
-		Tags:         params.Tags,
-		agent:        api.agent,
-		target:       target,
-	}
-
-	if params.RecordID != "" {
-		record.ID = params.RecordID
-	}
-
-	// Store data for lazy access.
-	if len(params.Data) > 0 {
-		if len(params.Data) <= maxInlineDataSize {
-			record.encodedData = encodeData(params.Data)
-		} else {
+	// Construct a Record from the built message which has the computed
+	// recordId, contextId, timestamps, and full descriptor.
+	var record *Record
+	if resp.BuiltMessage != nil {
+		var encoded string
+		if len(params.Data) > 0 && len(params.Data) <= maxInlineDataSize {
+			encoded = encodeData(params.Data)
+		}
+		record = RecordFromWrite(api.agent, target, resp.BuiltMessage, encoded)
+		record.Author = api.agent.DID()
+		// Store raw data for large payloads.
+		if len(params.Data) > maxInlineDataSize {
 			record.rawData = params.Data
 		}
-		record.DataSize = len(params.Data)
+	} else {
+		// Fallback: construct manually if built message is not available.
+		record = &Record{
+			ID:           params.RecordID,
+			Protocol:     params.Protocol,
+			ProtocolPath: params.ProtocolPath,
+			Schema:       params.Schema,
+			Recipient:    params.Recipient,
+			DataFormat:   params.DataFormat,
+			Tags:         params.Tags,
+			agent:        api.agent,
+			target:       target,
+		}
+		if len(params.Data) > 0 {
+			if len(params.Data) <= maxInlineDataSize {
+				record.encodedData = encodeData(params.Data)
+			} else {
+				record.rawData = params.Data
+			}
+			record.DataSize = len(params.Data)
+		}
 	}
 
 	return record, &status, nil

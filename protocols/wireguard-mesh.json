@@ -94,6 +94,7 @@
       },
 
       "nodeInfo": {
+        "$squash": true,
         "$size": { "max": 10000 },
         "$encryption": {
           "rootKeyId": "#dwn-enc",
@@ -114,6 +115,7 @@
         ],
 
         "endpoint": {
+          "$squash": true,
           "$size": { "max": 2000 },
           "$encryption": {
             "rootKeyId": "#dwn-enc",

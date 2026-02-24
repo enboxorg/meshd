@@ -59,6 +59,8 @@ func NewClient(endpoint string, signer *Signer, opts ...ClientOption) *Client {
 type RecordsWriteResult struct {
 	Reply    *DwnReply
 	RecordID string
+	// Message is the built DWN message with computed recordId, contextId, etc.
+	Message *Message
 }
 
 // RecordsWrite creates or updates a record on the target DWN.
@@ -94,6 +96,7 @@ func (c *Client) RecordsWrite(ctx context.Context, target string, opts RecordsWr
 	return &RecordsWriteResult{
 		Reply:    result.Reply,
 		RecordID: msg.RecordID,
+		Message:  msg,
 	}, nil
 }
 
