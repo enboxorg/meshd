@@ -182,8 +182,7 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		Schema:               "https://enbox.org/schemas/wireguard-mesh/member",
 		DataFormat:           "application/json",
 		Recipient:            nodeA.DID.URI,
-		ParentID:             networkRecordID,
-		ContextID:            networkRecordID,
+		ParentContextID:     networkRecordID,
 		Data:                 memberData,
 		Tags:                 map[string]any{"status": "active"},
 		EncryptionRecipients: memberRecipients,
@@ -243,28 +242,26 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		t.Fatalf("ConfigureProtocol for node B: %d %s", statusB.Code, statusB.Detail)
 	}
 
-	// Node B creates a member record on the ANCHOR's DWN.
-	// Note: In a single-owner model, Node B uses its own encryption keys.
-	// The anchor can't decrypt Node B's records unless key delivery is implemented.
-	// For this test, we verify Node B can create records and query them.
+	// Node A (network author) creates Node B's member record on the anchor DWN.
+	// Per the protocol's $actions: only the network author or admins can create members.
 	err = mesh.CreateMember(ctx, mesh.CreateMemberParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            nodeA.DID.URI,
 		NetworkRecordID:      networkRecordID,
 		MemberDID:            nodeB.DID.URI,
 		Label:                "member",
-		Signer:               nodeB.Signer,
-		EncryptionKeyManager: nodeB.EncMgr,
+		Signer:               nodeA.Signer,
+		EncryptionKeyManager: nodeA.EncMgr,
 	})
 	if err != nil {
-		t.Logf("  Warning: Node B member creation failed: %v", err)
-		// This may fail if the anchor DWN enforces encryption with the anchor's
-		// keys and the joiner uses different keys. Continue with the test.
+		t.Logf("  Warning: Node B member creation (by Node A) failed: %v", err)
 	} else {
-		t.Log("  Node B member record created (encrypted)")
+		t.Log("  Node B member record created by Node A (encrypted)")
 	}
 
-	// Node B registers its nodeInfo (encrypted).
+	// Node B registers its nodeInfo (encrypted) using its own member role.
+	// Note: Node B can write its own nodeInfo because the protocol allows
+	// "role": "network/member" to ["create", "update", "read"] on nodeInfo.
 	wgKeysB, err := mesh.GenerateWireGuardKeyPair()
 	if err != nil {
 		t.Fatalf("generating WG keys for node B: %v", err)
@@ -304,7 +301,7 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		Filter: dwn.RecordsFilter{
 			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
 			ProtocolPath: "network/member",
-			ContextID:    networkRecordID,
+			ParentID:     networkRecordID,
 		},
 		DateSort: "createdAscending",
 	}, "")
@@ -328,7 +325,7 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		Filter: dwn.RecordsFilter{
 			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
 			ProtocolPath: "network/nodeInfo",
-			ContextID:    networkRecordID,
+			ParentID:     networkRecordID,
 		},
 	}, "")
 	if err != nil {

@@ -64,6 +64,50 @@ func TestComputeCID(t *testing.T) {
 			t.Errorf("field order affected CID: %q vs %q", cid1, cid2)
 		}
 	})
+
+	t.Run("float64 integers normalized to int64", func(t *testing.T) {
+		// Go's json.Unmarshal produces float64 for JSON numbers.
+		// The JS DAG-CBOR encoder treats integer-valued numbers as CBOR integers.
+		// Our normalization must ensure the CIDs match.
+		cidFromInt, _ := ComputeCID(map[string]any{"max": int64(10000)})
+		cidFromFloat, _ := ComputeCID(map[string]any{"max": float64(10000)})
+		if cidFromInt != cidFromFloat {
+			t.Errorf("int64 vs float64 produced different CIDs: %q vs %q", cidFromInt, cidFromFloat)
+		}
+	})
+
+	t.Run("nested float64 integers normalized", func(t *testing.T) {
+		// Simulate a protocol definition with nested numeric fields like $size.max.
+		nested := map[string]any{
+			"structure": map[string]any{
+				"node": map[string]any{
+					"$size":        map[string]any{"max": float64(10000)},
+					"$recordLimit": map[string]any{"max": float64(1)},
+				},
+			},
+		}
+		explicit := map[string]any{
+			"structure": map[string]any{
+				"node": map[string]any{
+					"$size":        map[string]any{"max": int64(10000)},
+					"$recordLimit": map[string]any{"max": int64(1)},
+				},
+			},
+		}
+		cidNested, _ := ComputeCID(nested)
+		cidExplicit, _ := ComputeCID(explicit)
+		if cidNested != cidExplicit {
+			t.Errorf("nested normalization failed: %q vs %q", cidNested, cidExplicit)
+		}
+	})
+
+	t.Run("non-integer floats preserved", func(t *testing.T) {
+		cidFloat, _ := ComputeCID(map[string]any{"val": float64(3.14)})
+		cidInt, _ := ComputeCID(map[string]any{"val": int64(3)})
+		if cidFloat == cidInt {
+			t.Error("non-integer float should produce different CID than int")
+		}
+	})
 }
 
 func TestComputeDataCID(t *testing.T) {
@@ -213,16 +257,54 @@ func TestBuildRecordsWrite(t *testing.T) {
 			DataFormat:   "application/json",
 			Data:         []byte(`{"v":1}`),
 		})
+		// For root record updates, ParentContextID is empty — contextId = recordId.
 		updateResult, _ := BuildRecordsWrite(s, RecordsWriteOptions{
 			Protocol:     "https://example.com/test",
 			ProtocolPath: "root",
 			DataFormat:   "application/json",
 			Data:         []byte(`{"v":2}`),
 			RecordID:     initialResult.Message.RecordID,
-			ContextID:    initialResult.Message.ContextID,
 		})
 		if updateResult.Message.RecordID != initialResult.Message.RecordID {
 			t.Error("update should preserve record ID")
+		}
+	})
+
+	t.Run("child record contextId computed from parent", func(t *testing.T) {
+		// Create a root record first.
+		rootResult, err := BuildRecordsWrite(s, RecordsWriteOptions{
+			Protocol:     "https://example.com/test",
+			ProtocolPath: "root",
+			DataFormat:   "application/json",
+			Data:         []byte(`{"type":"root"}`),
+		})
+		if err != nil {
+			t.Fatalf("root write: %v", err)
+		}
+		rootID := rootResult.Message.RecordID
+
+		// Create a child record with parentContextID set to the root's contextId.
+		childResult, err := BuildRecordsWrite(s, RecordsWriteOptions{
+			Protocol:        "https://example.com/test",
+			ProtocolPath:    "root/child",
+			DataFormat:      "application/json",
+			Data:            []byte(`{"type":"child"}`),
+			ParentContextID: rootID,
+		})
+		if err != nil {
+			t.Fatalf("child write: %v", err)
+		}
+
+		// contextId should be parentContextId + "/" + recordId
+		wantContext := rootID + "/" + childResult.Message.RecordID
+		if childResult.Message.ContextID != wantContext {
+			t.Errorf("child contextId = %q, want %q", childResult.Message.ContextID, wantContext)
+		}
+
+		// parentId should be derived as the last segment of parentContextID (= rootID).
+		parentID, _ := childResult.Message.Descriptor["parentId"].(string)
+		if parentID != rootID {
+			t.Errorf("parentId = %q, want %q", parentID, rootID)
 		}
 	})
 }

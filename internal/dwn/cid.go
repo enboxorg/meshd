@@ -2,6 +2,7 @@ package dwn
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/fxamacker/cbor/v2"
 	gocid "github.com/ipfs/go-cid"
@@ -33,7 +34,14 @@ func init() {
 // should be included. Zero-value/absent fields must be omitted, matching the
 // JS SDK's removeUndefinedProperties() behavior. Do NOT pass a Go struct
 // directly — use buildCIDInput helpers to construct the map.
+//
+// Before encoding, float64 values that represent whole integers are normalized
+// to int64. This is required because Go's json.Unmarshal decodes JSON numbers
+// to float64, and CBOR encodes float64 as a float type. The JS DAG-CBOR
+// encoder (cborg/@ipld/dag-cbor) encodes JavaScript integers as CBOR integers.
+// Without normalization, the CBOR bytes differ and the CIDs won't match.
 func ComputeCID(obj any) (string, error) {
+	obj = normalizeForCBOR(obj)
 	data, err := dagCBOREncMode.Marshal(obj)
 	if err != nil {
 		return "", fmt.Errorf("cbor marshal: %w", err)
@@ -46,6 +54,34 @@ func ComputeCID(obj any) (string, error) {
 
 	c := gocid.NewCidV1(codecDAGCBOR, mh)
 	return c.String(), nil
+}
+
+// normalizeForCBOR recursively walks a value and converts float64 values that
+// represent whole integers to int64. This ensures CBOR encodes them as integer
+// types (major type 0/1) rather than float types (major type 7), matching the
+// behavior of the JS DAG-CBOR encoder which treats Number.isInteger() values
+// as CBOR integers.
+func normalizeForCBOR(v any) any {
+	switch val := v.(type) {
+	case float64:
+		if !math.IsInf(val, 0) && !math.IsNaN(val) && val == math.Trunc(val) &&
+			val >= math.MinInt64 && val <= math.MaxInt64 {
+			return int64(val)
+		}
+		return val
+	case map[string]any:
+		for k, elem := range val {
+			val[k] = normalizeForCBOR(elem)
+		}
+		return val
+	case []any:
+		for i, elem := range val {
+			val[i] = normalizeForCBOR(elem)
+		}
+		return val
+	default:
+		return val
+	}
 }
 
 // ComputeDataCID computes a CIDv1 (raw codec, SHA-256) for data bytes.

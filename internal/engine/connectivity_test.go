@@ -144,8 +144,7 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		Schema:               "https://enbox.org/schemas/wireguard-mesh/member",
 		DataFormat:           "application/json",
 		Recipient:            nodeA.identity.URI,
-		ParentID:             networkRecordID,
-		ContextID:            networkRecordID,
+		ParentContextID:     networkRecordID,
 		Data:                 memberData,
 		Tags:                 map[string]any{"status": "active"},
 		EncryptionRecipients: memberRecipients,
@@ -578,7 +577,7 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 	nodeA.api.Write(ctx, nodeA.identity.URI, dwn.WriteParams{
 		Protocol: protocols.MeshProtocolURI, ProtocolPath: "network/member",
 		Schema: "https://enbox.org/schemas/wireguard-mesh/member", DataFormat: "application/json",
-		Recipient: nodeA.identity.URI, ParentID: networkRecordID, ContextID: networkRecordID,
+		Recipient: nodeA.identity.URI, ParentContextID: networkRecordID,
 		Data: mData, Tags: map[string]any{"status": "active"}, EncryptionRecipients: memberRecipients,
 	})
 

@@ -58,8 +58,6 @@ func (api *DwnAPI) Write(ctx context.Context, target string, params WriteParams)
 		ProtocolPath: params.ProtocolPath,
 		Schema:       params.Schema,
 		Recipient:    params.Recipient,
-		ParentID:     params.ParentID,
-		ContextID:    params.ContextID,
 		DataFormat:   params.DataFormat,
 		Tags:         params.Tags,
 		agent:        api.agent,
@@ -369,11 +367,12 @@ func WithRecipient(did string) WriteOption {
 	}
 }
 
-// WithParent sets the parent record ID and context ID.
-func WithParent(parentID, contextID string) WriteOption {
+// WithParentContext sets the parent context ID for child records.
+// The parentId descriptor field is derived automatically from the last
+// segment of the parentContextID.
+func WithParentContext(parentContextID string) WriteOption {
 	return func(p *WriteParams) {
-		p.ParentID = parentID
-		p.ContextID = contextID
+		p.ParentContextID = parentContextID
 	}
 }
 

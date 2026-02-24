@@ -172,7 +172,6 @@
 
       "event": {
         "$immutable": true,
-        "$squash": true,
         "$encryption": {
           "rootKeyId": "#dwn-enc",
           "publicKeyJwk": {}
@@ -200,8 +199,7 @@
           "timestamp": { "type": "string" }
         },
         "$actions": [
-          { "role": "network/member", "can": ["create", "read"] },
-          { "role": "network/admin", "can": ["squash"] }
+          { "role": "network/member", "can": ["create", "read"] }
         ]
       }
     }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 )
 
@@ -314,20 +315,29 @@ func (r *Record) Update(ctx context.Context, data []byte, opts ...RecordUpdateOp
 		tags = updateOpts.tags
 	}
 
+	// For updates, derive parentContextID from the record's existing contextID.
+	// contextId for a child is "parentContextId/recordId", so strip the last segment.
+	var parentContextID string
+	if r.ContextID != "" && r.ContextID != r.ID {
+		// This is a child record — extract parent context by removing last segment.
+		if idx := strings.LastIndex(r.ContextID, "/"); idx >= 0 {
+			parentContextID = r.ContextID[:idx]
+		}
+	}
+
 	resp, err := r.agent.SendDwnRequest(ctx, DwnRequest{
 		Target:      r.target,
 		MessageType: InterfaceRecordsWrite,
 		MessageParams: &WriteParams{
-			Protocol:     r.Protocol,
-			ProtocolPath: r.ProtocolPath,
-			Schema:       r.Schema,
-			Recipient:    r.Recipient,
-			ParentID:     r.ParentID,
-			ContextID:    r.ContextID,
-			DataFormat:   dataFormat,
-			Tags:         tags,
-			Data:         data,
-			RecordID:     r.ID,
+			Protocol:        r.Protocol,
+			ProtocolPath:    r.ProtocolPath,
+			Schema:          r.Schema,
+			Recipient:       r.Recipient,
+			ParentContextID: parentContextID,
+			DataFormat:      dataFormat,
+			Tags:            tags,
+			Data:            data,
+			RecordID:        r.ID,
 		},
 	})
 	if err != nil {

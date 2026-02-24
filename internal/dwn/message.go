@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
@@ -13,7 +14,6 @@ import (
 // Sentinel errors.
 var (
 	ErrMissingProtocol = errors.New("protocol and protocolPath are required")
-	ErrMissingContext   = errors.New("contextId required for child records")
 	ErrMissingData     = errors.New("data and dataFormat are required")
 )
 
@@ -143,16 +143,22 @@ type RecordsWriteOptions struct {
 	ProtocolPath string
 	Schema       string
 	Recipient    string
-	ParentID     string
-	Tags         map[string]any
-	Data         []byte
-	DataFormat   string
-	Published    *bool
+	Tags       map[string]any
+	Data       []byte
+	DataFormat string
+	Published  *bool
 
 	// For updates: set RecordID to the existing record's ID.
 	// Leave empty for initial writes.
-	RecordID  string
-	ContextID string
+	RecordID string
+
+	// ParentContextID is the contextId of the parent record for child records.
+	// For root records (top level of a protocol structure), leave empty.
+	// For child records, set to the parent's full contextId.
+	//
+	// The parentId descriptor field is derived from this (last segment).
+	// The final contextId is computed as parentContextId + "/" + recordId.
+	ParentContextID string
 
 	// ProtocolRole for role-based authorization.
 	ProtocolRole string
@@ -232,8 +238,11 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteR
 	if opts.Recipient != "" {
 		desc["recipient"] = opts.Recipient
 	}
-	if opts.ParentID != "" {
-		desc["parentId"] = opts.ParentID
+	// Derive parentId from ParentContextID (last segment is the parent's recordId).
+	if opts.ParentContextID != "" {
+		segments := strings.Split(opts.ParentContextID, "/")
+		parentID := segments[len(segments)-1]
+		desc["parentId"] = parentID
 	}
 	if len(opts.Tags) > 0 {
 		desc["tags"] = opts.Tags
@@ -247,7 +256,6 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteR
 
 	// Compute record ID.
 	recordID := opts.RecordID
-	contextID := opts.ContextID
 	isInitialWrite := recordID == ""
 
 	if isInitialWrite {
@@ -262,14 +270,16 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteR
 		if err != nil {
 			return nil, fmt.Errorf("computing record ID: %w", err)
 		}
+	}
 
-		if contextID == "" {
-			if opts.ParentID != "" {
-				return nil, ErrMissingContext
-			}
-			// Root record: contextId = recordId
-			contextID = recordID
-		}
+	// Compute contextId per the DWN spec:
+	// - Root records: contextId = recordId
+	// - Child records: contextId = parentContextId + "/" + recordId
+	var contextID string
+	if opts.ParentContextID != "" {
+		contextID = opts.ParentContextID + "/" + recordID
+	} else {
+		contextID = recordID
 	}
 
 	// Compute descriptor CID.
