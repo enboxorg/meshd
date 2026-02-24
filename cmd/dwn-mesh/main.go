@@ -15,6 +15,7 @@ import (
 	"github.com/enboxorg/dwn-mesh/internal/dwn"
 	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
 	"github.com/enboxorg/dwn-mesh/internal/engine"
+	"github.com/enboxorg/dwn-mesh/internal/mesh"
 	"github.com/enboxorg/dwn-mesh/internal/state"
 	"github.com/enboxorg/dwn-mesh/pkg/dids"
 	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
@@ -325,13 +326,47 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 		fmt.Printf("  Created admin member record (encrypted).\n")
 	}
 
-	// 4. Persist network state.
+	// 4. Generate WireGuard keys and allocate mesh IP.
+	wgKeys, err := mesh.GenerateWireGuardKeyPair()
+	if err != nil {
+		return fmt.Errorf("generating WireGuard keys: %w", err)
+	}
+
+	meshIP, err := mesh.AllocateMeshIP(meshCIDR, identity.URI)
+	if err != nil {
+		return fmt.Errorf("allocating mesh IP: %w", err)
+	}
+
+	// 5. Register nodeInfo on DWN (encrypted).
+	reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
+		AnchorEndpoint:       endpoint,
+		AnchorDID:            identity.URI,
+		NetworkRecordID:      record.ID,
+		SelfDID:              identity.URI,
+		Signer:               signer,
+		EncryptionKeyManager: encMgr,
+		WireGuardPubKey:      wgKeys.PublicKeyBase64(),
+		MeshIP:               meshIP.String(),
+	})
+	if err != nil {
+		fmt.Printf("  Warning: nodeInfo registration failed: %v\n", err)
+	} else {
+		fmt.Printf("  Registered node (encrypted): IP=%s\n", meshIP)
+	}
+
+	// 6. Persist network state.
 	ns := &state.NetworkState{
-		NetworkRecordID: record.ID,
-		AnchorDID:       identity.URI,
-		AnchorEndpoint:  endpoint,
-		NetworkName:     name,
-		MeshCIDR:        meshCIDR,
+		NetworkRecordID:     record.ID,
+		AnchorDID:           identity.URI,
+		AnchorEndpoint:      endpoint,
+		NetworkName:         name,
+		MeshCIDR:            meshCIDR,
+		MeshIP:              meshIP.String(),
+		WireGuardPublicKey:  wgKeys.PublicKeyBase64(),
+		WireGuardPrivateKey: wgKeys.PrivateKeyBase64(),
+	}
+	if reg != nil {
+		ns.NodeInfoRecordID = reg.NodeInfoRecordID
 	}
 	if err := state.SaveNetworkState(stateDir, ns); err != nil {
 		return fmt.Errorf("saving network state: %w", err)
@@ -340,6 +375,7 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 	fmt.Printf("Network created.\n")
 	fmt.Printf("  Name: %s\n", name)
 	fmt.Printf("  CIDR: %s\n", meshCIDR)
+	fmt.Printf("  Mesh IP: %s\n", meshIP)
 	fmt.Printf("  Record: %s\n", record.ID)
 	fmt.Printf("  Anchor: %s\n", endpoint)
 	fmt.Printf("\nShare this join token with peers:\n")
@@ -417,13 +453,71 @@ func cmdNetworkJoin(ctx context.Context, args []string) error {
 		networkData.MeshCIDR = "10.200.0.0/16"
 	}
 
+	// Generate WireGuard keys and allocate mesh IP.
+	wgKeys, err := mesh.GenerateWireGuardKeyPair()
+	if err != nil {
+		return fmt.Errorf("generating WireGuard keys: %w", err)
+	}
+
+	meshIP, err := mesh.AllocateMeshIP(networkData.MeshCIDR, identity.URI)
+	if err != nil {
+		return fmt.Errorf("allocating mesh IP: %w", err)
+	}
+
+	// Set up encryption for the anchor's protocol.
+	// Note: The joining node uses the anchor DWN owner's encryption context.
+	// The anchor's EncryptionKeyManager is needed to encrypt records that
+	// the anchor can decrypt. For now, use our own key (the anchor would
+	// need to have granted us access via key delivery protocol for full
+	// multi-party encryption). This is sufficient for single-owner networks.
+	encMgr := newEncryptionKeyManager(identity)
+
+	// Create member record (encrypted).
+	err = mesh.CreateMember(ctx, mesh.CreateMemberParams{
+		AnchorEndpoint:       endpoint,
+		AnchorDID:            anchorDID,
+		NetworkRecordID:      networkID,
+		MemberDID:            identity.URI,
+		Label:                "member",
+		Signer:               signer,
+		EncryptionKeyManager: encMgr,
+	})
+	if err != nil {
+		fmt.Printf("  Warning: member record creation failed: %v\n", err)
+	} else {
+		fmt.Printf("  Created member record (encrypted).\n")
+	}
+
+	// Register nodeInfo (encrypted).
+	var nodeInfoRecordID string
+	reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
+		AnchorEndpoint:       endpoint,
+		AnchorDID:            anchorDID,
+		NetworkRecordID:      networkID,
+		SelfDID:              identity.URI,
+		Signer:               signer,
+		EncryptionKeyManager: encMgr,
+		WireGuardPubKey:      wgKeys.PublicKeyBase64(),
+		MeshIP:               meshIP.String(),
+	})
+	if err != nil {
+		fmt.Printf("  Warning: nodeInfo registration failed: %v\n", err)
+	} else {
+		nodeInfoRecordID = reg.NodeInfoRecordID
+		fmt.Printf("  Registered node (encrypted): IP=%s\n", meshIP)
+	}
+
 	// Save network state locally.
 	ns := &state.NetworkState{
-		NetworkRecordID: networkID,
-		AnchorDID:       anchorDID,
-		AnchorEndpoint:  endpoint,
-		NetworkName:     networkData.Name,
-		MeshCIDR:        networkData.MeshCIDR,
+		NetworkRecordID:     networkID,
+		AnchorDID:           anchorDID,
+		AnchorEndpoint:      endpoint,
+		NetworkName:         networkData.Name,
+		MeshCIDR:            networkData.MeshCIDR,
+		MeshIP:              meshIP.String(),
+		WireGuardPublicKey:  wgKeys.PublicKeyBase64(),
+		WireGuardPrivateKey: wgKeys.PrivateKeyBase64(),
+		NodeInfoRecordID:    nodeInfoRecordID,
 	}
 	if err := state.SaveNetworkState(stateDir, ns); err != nil {
 		return fmt.Errorf("saving network state: %w", err)
@@ -432,6 +526,7 @@ func cmdNetworkJoin(ctx context.Context, args []string) error {
 	fmt.Printf("Joined network.\n")
 	fmt.Printf("  Name: %s\n", networkData.Name)
 	fmt.Printf("  CIDR: %s\n", networkData.MeshCIDR)
+	fmt.Printf("  Mesh IP: %s\n", meshIP)
 	fmt.Printf("  Anchor: %s\n", anchorDID)
 	fmt.Printf("\nRun 'dwn-mesh up' to start the mesh.\n")
 
@@ -571,6 +666,12 @@ func cmdStatus(ctx context.Context, args []string) error {
 	if ns.MeshIP != "" {
 		fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
 	}
+	if ns.WireGuardPublicKey != "" {
+		fmt.Printf("  WireGuard Key: %s\n", ns.WireGuardPublicKey)
+	}
+	if ns.NodeInfoRecordID != "" {
+		fmt.Printf("  NodeInfo Record: %s\n", ns.NodeInfoRecordID)
+	}
 
 	return nil
 }
@@ -637,10 +738,33 @@ func cmdUp(ctx context.Context, args []string) error {
 		PrivateKey: identity.SigningKey,
 	}
 
+	encMgr := newEncryptionKeyManager(identity)
+
 	fmt.Printf("Starting dwn-mesh...\n")
 	fmt.Printf("  Network: %s\n", ns.NetworkName)
 	fmt.Printf("  DID: %s\n", identity.URI)
+	fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
 	fmt.Printf("  Anchor: %s\n", ns.AnchorEndpoint)
+
+	// Write/update endpoint record (encrypted) before starting the engine.
+	if ns.NodeInfoRecordID != "" {
+		localEndpoints := mesh.DiscoverLocalEndpoints(listenPort)
+		err = mesh.WriteEndpoint(ctx, mesh.WriteEndpointParams{
+			AnchorEndpoint:       ns.AnchorEndpoint,
+			AnchorDID:            ns.AnchorDID,
+			NetworkRecordID:      ns.NetworkRecordID,
+			NodeInfoRecordID:     ns.NodeInfoRecordID,
+			Signer:               signer,
+			EncryptionKeyManager: encMgr,
+			LocalEndpoints:       localEndpoints,
+			NATType:              "unknown",
+		})
+		if err != nil {
+			logger.Warn("endpoint write failed (non-fatal)", slog.Any("error", err))
+		} else {
+			fmt.Printf("  Endpoint record updated (encrypted).\n")
+		}
+	}
 
 	eng, err := engine.New(engine.Config{
 		AnchorEndpoint:       ns.AnchorEndpoint,
@@ -649,7 +773,7 @@ func cmdUp(ctx context.Context, args []string) error {
 		SelfDID:              identity.URI,
 		Signer:               signer,
 		Resolver:             universalResolver{},
-		EncryptionKeyManager: newEncryptionKeyManager(identity),
+		EncryptionKeyManager: encMgr,
 		Domain:               ns.NetworkName,
 		ListenPort:           listenPort,
 		PollInterval:         pollInterval,
