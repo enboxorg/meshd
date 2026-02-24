@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/enboxorg/dwn-mesh/internal/dwn"
+	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
 )
 
 // Protocol URIs used by dwn-mesh.
@@ -30,9 +31,10 @@ type UpdateFunc func(*MapResponse)
 
 // dwnClientOptions holds configuration for the DWN control client.
 type dwnClientOptions struct {
-	logger   *slog.Logger
-	onUpdate UpdateFunc
-	resolver Resolver
+	logger     *slog.Logger
+	onUpdate   UpdateFunc
+	resolver   Resolver
+	encManager *dwncrypto.EncryptionKeyManager
 }
 
 // Option configures a DWNClient.
@@ -60,6 +62,14 @@ func WithResolver(r Resolver) Option {
 	}
 }
 
+// WithEncryptionKeyManager sets the encryption key manager used to decrypt
+// encrypted protocol records. If not set, encrypted records cannot be read.
+func WithEncryptionKeyManager(mgr *dwncrypto.EncryptionKeyManager) Option {
+	return func(o *dwnClientOptions) {
+		o.encManager = mgr
+	}
+}
+
 // DWNClient reads mesh state from DWN records and produces MapResponse
 // snapshots for the networking engine.
 type DWNClient struct {
@@ -71,6 +81,7 @@ type DWNClient struct {
 	logger          *slog.Logger
 	onUpdate        UpdateFunc
 	resolver        Resolver
+	encManager      *dwncrypto.EncryptionKeyManager
 
 	mu      sync.RWMutex
 	network *NetworkConfig
@@ -108,6 +119,7 @@ func NewDWNClient(
 		logger:          options.logger,
 		onUpdate:        options.onUpdate,
 		resolver:        options.resolver,
+		encManager:      options.encManager,
 		members:         make(map[string]*MemberInfo),
 		nodes:           make(map[string]*NodeInfoData),
 		peerEndpoints:   make(map[string]*PeerEndpointInfo),
@@ -138,7 +150,8 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	}
 
 	var network NetworkConfig
-	if err := parseEntryData(netResp.Reply.Entry, &network); err != nil {
+	// Network record is NOT encrypted (publicly readable anchor).
+	if err := parseEntryData(netResp.Reply.Entry, &network, nil); err != nil {
 		return nil, fmt.Errorf("parsing network: %w", err)
 	}
 
@@ -162,10 +175,11 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		return nil, fmt.Errorf("parsing members: %w", err)
 	}
 
+	memberDecryptor := c.makeDecryptor("network/member")
 	c.mu.Lock()
 	for _, entry := range entries {
 		var member MemberInfo
-		if err := json.Unmarshal(entry, &member); err != nil {
+		if err := parseEntryData(entry, &member, memberDecryptor); err != nil {
 			c.logger.WarnContext(ctx, "parsing member entry", slog.Any("error", err))
 			continue
 		}
@@ -189,10 +203,11 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		return nil, fmt.Errorf("parsing nodes: %w", err)
 	}
 
+	nodeDecryptor := c.makeDecryptor("network/nodeInfo")
 	c.mu.Lock()
 	for _, entry := range nodeEntries {
 		var node NodeInfoData
-		if err := json.Unmarshal(entry, &node); err != nil {
+		if err := parseEntryData(entry, &node, nodeDecryptor); err != nil {
 			c.logger.WarnContext(ctx, "parsing node entry", slog.Any("error", err))
 			continue
 		}
@@ -216,10 +231,11 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		return nil, fmt.Errorf("parsing relays: %w", err)
 	}
 
+	relayDecryptor := c.makeDecryptor("network/relay")
 	c.mu.Lock()
 	for _, entry := range relayEntries {
 		var relay RelayData
-		if err := json.Unmarshal(entry, &relay); err != nil {
+		if err := parseEntryData(entry, &relay, relayDecryptor); err != nil {
 			c.logger.WarnContext(ctx, "parsing relay entry", slog.Any("error", err))
 			continue
 		}
@@ -418,7 +434,9 @@ func defaultFilterRules() []FilterRule {
 }
 
 // parseEntryData extracts the data from a DWN read response entry.
-func parseEntryData(entry json.RawMessage, dst any) error {
+// If the entry contains encryption metadata and a decryptor is provided,
+// the data is decrypted before unmarshaling.
+func parseEntryData(entry json.RawMessage, dst any, decryptor entryDecryptor) error {
 	if entry == nil {
 		return ErrNoEntry
 	}
@@ -426,7 +444,8 @@ func parseEntryData(entry json.RawMessage, dst any) error {
 	// First try wrapped entry (RecordsRead response format).
 	var wrapped struct {
 		RecordsWrite struct {
-			EncodedData string `json:"encodedData"`
+			EncodedData string               `json:"encodedData"`
+			Encryption  *dwncrypto.Encryption `json:"encryption"`
 		} `json:"recordsWrite"`
 	}
 	if err := json.Unmarshal(entry, &wrapped); err == nil && wrapped.RecordsWrite.EncodedData != "" {
@@ -434,9 +453,59 @@ func parseEntryData(entry json.RawMessage, dst any) error {
 		if err != nil {
 			return fmt.Errorf("decoding data: %w", err)
 		}
+
+		// If encrypted and we have a decryptor, decrypt.
+		if wrapped.RecordsWrite.Encryption != nil && decryptor != nil {
+			data, err = decryptor(data, wrapped.RecordsWrite.Encryption)
+			if err != nil {
+				return fmt.Errorf("decrypting data: %w", err)
+			}
+		}
+
+		return json.Unmarshal(data, dst)
+	}
+
+	// Try flat entry format (query results).
+	var flat struct {
+		EncodedData string               `json:"encodedData"`
+		Encryption  *dwncrypto.Encryption `json:"encryption"`
+	}
+	if err := json.Unmarshal(entry, &flat); err == nil && flat.EncodedData != "" {
+		data, err := base64.RawURLEncoding.DecodeString(flat.EncodedData)
+		if err != nil {
+			return fmt.Errorf("decoding data: %w", err)
+		}
+
+		// If encrypted and we have a decryptor, decrypt.
+		if flat.Encryption != nil && decryptor != nil {
+			data, err = decryptor(data, flat.Encryption)
+			if err != nil {
+				return fmt.Errorf("decrypting data: %w", err)
+			}
+		}
+
 		return json.Unmarshal(data, dst)
 	}
 
 	// Fall back to direct unmarshal.
 	return json.Unmarshal(entry, dst)
+}
+
+// entryDecryptor is a function that decrypts ciphertext using the JWE metadata.
+type entryDecryptor func(ciphertext []byte, enc *dwncrypto.Encryption) ([]byte, error)
+
+// makeDecryptor creates a decryptor function from an EncryptionKeyManager
+// and a protocol path. Returns nil if no key manager is available.
+func (c *DWNClient) makeDecryptor(protocolPath string) entryDecryptor {
+	if c.encManager == nil {
+		return nil
+	}
+
+	return func(ciphertext []byte, enc *dwncrypto.Encryption) ([]byte, error) {
+		privKey, err := c.encManager.DeriveDecryptionKey(protocolPath)
+		if err != nil {
+			return nil, fmt.Errorf("deriving decryption key for %s: %w", protocolPath, err)
+		}
+		return dwncrypto.DecryptData(ciphertext, enc, privKey, c.encManager.RootKeyID)
+	}
 }

@@ -1,9 +1,13 @@
 package control
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"testing"
+
+	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
 )
 
 func TestBuildStaticMapResponse(t *testing.T) {
@@ -161,7 +165,7 @@ func TestDefaultFilterRules(t *testing.T) {
 func TestParseEntryData(t *testing.T) {
 	t.Run("direct JSON", func(t *testing.T) {
 		var net NetworkConfig
-		err := parseEntryData([]byte(`{"name":"test","meshCIDR":"10.200.0.0/16"}`), &net)
+		err := parseEntryData([]byte(`{"name":"test","meshCIDR":"10.200.0.0/16"}`), &net, nil)
 		if err != nil {
 			t.Fatalf("error: %v", err)
 		}
@@ -173,7 +177,7 @@ func TestParseEntryData(t *testing.T) {
 	t.Run("wrapped encodedData", func(t *testing.T) {
 		wrapped := `{"recordsWrite":{"encodedData":"eyJuYW1lIjoid3JhcHBlZCIsIm1lc2hDSURSIjoiMTAuMjAwLjAuMC8xNiJ9"}}`
 		var net NetworkConfig
-		err := parseEntryData([]byte(wrapped), &net)
+		err := parseEntryData([]byte(wrapped), &net, nil)
 		if err != nil {
 			t.Fatalf("error: %v", err)
 		}
@@ -184,9 +188,58 @@ func TestParseEntryData(t *testing.T) {
 
 	t.Run("nil entry", func(t *testing.T) {
 		var net NetworkConfig
-		err := parseEntryData(nil, &net)
+		err := parseEntryData(nil, &net, nil)
 		if !errors.Is(err, ErrNoEntry) {
 			t.Errorf("got %v, want %v", err, ErrNoEntry)
+		}
+	})
+
+	t.Run("wrapped encrypted data", func(t *testing.T) {
+		// Test that encrypted data is decrypted when a decryptor is provided.
+		rootPriv, _, err := dwncrypto.GenerateX25519KeyPair()
+		if err != nil {
+			t.Fatalf("generating key: %v", err)
+		}
+
+		mgr := &dwncrypto.EncryptionKeyManager{
+			RootPrivateKey: rootPriv,
+			RootKeyID:      "did:test#enc",
+			ProtocolURI:    "https://example.com/proto",
+		}
+
+		recipients, err := mgr.DeriveWriteEncryption("network/member")
+		if err != nil {
+			t.Fatalf("deriving encryption: %v", err)
+		}
+
+		plaintext := []byte(`{"name":"encrypted","meshCIDR":"10.200.0.0/16"}`)
+		ciphertext, enc, err := dwncrypto.EncryptData(plaintext, recipients)
+		if err != nil {
+			t.Fatalf("encrypting: %v", err)
+		}
+
+		// Build a wrapped entry with encryption.
+		encodedData := base64.RawURLEncoding.EncodeToString(ciphertext)
+		encJSON, _ := json.Marshal(enc)
+
+		entry := []byte(`{"recordsWrite":{"encodedData":"` + encodedData + `","encryption":` + string(encJSON) + `}}`)
+
+		// Decrypt using the key manager.
+		decryptor := func(ct []byte, e *dwncrypto.Encryption) ([]byte, error) {
+			privKey, err := mgr.DeriveDecryptionKey("network/member")
+			if err != nil {
+				return nil, err
+			}
+			return dwncrypto.DecryptData(ct, e, privKey, mgr.RootKeyID)
+		}
+
+		var net NetworkConfig
+		err = parseEntryData(entry, &net, decryptor)
+		if err != nil {
+			t.Fatalf("error: %v", err)
+		}
+		if net.Name != "encrypted" {
+			t.Errorf("name = %q, want %q", net.Name, "encrypted")
 		}
 	})
 }

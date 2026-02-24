@@ -13,10 +13,12 @@ import (
 
 	"github.com/enboxorg/dwn-mesh/internal/did"
 	"github.com/enboxorg/dwn-mesh/internal/dwn"
+	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
 	"github.com/enboxorg/dwn-mesh/internal/engine"
 	"github.com/enboxorg/dwn-mesh/internal/state"
 	"github.com/enboxorg/dwn-mesh/pkg/dids"
 	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
+	"github.com/enboxorg/dwn-mesh/protocols"
 )
 
 const usage = `dwn-mesh - Decentralized WireGuard mesh networking via DWN
@@ -239,7 +241,16 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 	api := dwn.NewDwnAPI(agent)
 
 	// 1. Install the wireguard-mesh protocol on the DWN.
-	protocolDef := meshProtocolDefinition()
+	// Inject derived encryption keys into the protocol definition.
+	protocolDef, err := dwncrypto.InjectEncryptionDirectives(
+		protocols.MeshProtocolJSON,
+		identity.EncryptionPrivateKey,
+		identity.EncryptionKeyID(),
+	)
+	if err != nil {
+		return fmt.Errorf("injecting encryption keys: %w", err)
+	}
+
 	status, err := api.ConfigureProtocol(ctx, identity.URI, protocolDef)
 	if err != nil {
 		return fmt.Errorf("configuring protocol: %w", err)
@@ -248,14 +259,23 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 		// 409 = already configured, which is fine.
 		return fmt.Errorf("protocol configure failed: %d %s", status.Code, status.Detail)
 	}
-	fmt.Printf("  Protocol installed on DWN.\n")
+	fmt.Printf("  Protocol installed on DWN (with encryption keys).\n")
+
+	// Set up encryption key manager for encrypted writes.
+	encMgr := &dwncrypto.EncryptionKeyManager{
+		RootPrivateKey: identity.EncryptionPrivateKey,
+		RootKeyID:      identity.EncryptionKeyID(),
+		ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+	}
 
 	// 2. Create the network record.
+	// The "network" type does NOT have encryptionRequired — it's publicly
+	// readable as the anchor record. No encryption on this write.
 	meshCIDR := "10.200.0.0/16"
 	networkData, _ := json.Marshal(map[string]any{
-		"name":    name,
+		"name":     name,
 		"meshCIDR": meshCIDR,
-		"created": time.Now().UTC().Format(time.RFC3339),
+		"created":  time.Now().UTC().Format(time.RFC3339),
 	})
 
 	record, writeStatus, err := api.Write(ctx, identity.URI, dwn.WriteParams{
@@ -272,7 +292,40 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 		return fmt.Errorf("network create failed: %d %s", writeStatus.Code, writeStatus.Detail)
 	}
 
-	// 3. Persist network state.
+	// 3. Create self as admin member (encrypted).
+	memberRecipients, err := encMgr.DeriveWriteEncryption("network/member")
+	if err != nil {
+		return fmt.Errorf("deriving member encryption: %w", err)
+	}
+
+	memberData, _ := json.Marshal(map[string]any{
+		"joinedAt": time.Now().UTC().Format(time.RFC3339),
+		"label":    "admin",
+	})
+
+	_, memberStatus, err := api.Write(ctx, identity.URI, dwn.WriteParams{
+		Protocol:             "https://enbox.org/protocols/wireguard-mesh",
+		ProtocolPath:         "network/member",
+		Schema:               "https://enbox.org/schemas/wireguard-mesh/member",
+		DataFormat:           "application/json",
+		Recipient:            identity.URI,
+		ParentID:             record.ID,
+		ContextID:            record.ID,
+		Data:                 memberData,
+		Tags:                 map[string]any{"status": "active"},
+		EncryptionRecipients: memberRecipients,
+	})
+	if err != nil {
+		return fmt.Errorf("creating member record: %w", err)
+	}
+	if memberStatus.Code >= 300 {
+		fmt.Printf("  Warning: member record creation failed: %d %s\n",
+			memberStatus.Code, memberStatus.Detail)
+	} else {
+		fmt.Printf("  Created admin member record (encrypted).\n")
+	}
+
+	// 4. Persist network state.
 	ns := &state.NetworkState{
 		NetworkRecordID: record.ID,
 		AnchorDID:       identity.URI,
@@ -590,16 +643,17 @@ func cmdUp(ctx context.Context, args []string) error {
 	fmt.Printf("  Anchor: %s\n", ns.AnchorEndpoint)
 
 	eng, err := engine.New(engine.Config{
-		AnchorEndpoint:  ns.AnchorEndpoint,
-		AnchorTenant:    ns.AnchorDID,
-		NetworkRecordID: ns.NetworkRecordID,
-		SelfDID:         identity.URI,
-		Signer:          signer,
-		Resolver:        universalResolver{},
-		Domain:          ns.NetworkName,
-		ListenPort:      listenPort,
-		PollInterval:    pollInterval,
-		Logger:          logger,
+		AnchorEndpoint:       ns.AnchorEndpoint,
+		AnchorTenant:         ns.AnchorDID,
+		NetworkRecordID:      ns.NetworkRecordID,
+		SelfDID:              identity.URI,
+		Signer:               signer,
+		Resolver:             universalResolver{},
+		EncryptionKeyManager: newEncryptionKeyManager(identity),
+		Domain:               ns.NetworkName,
+		ListenPort:           listenPort,
+		PollInterval:         pollInterval,
+		Logger:               logger,
 	})
 	if err != nil {
 		return fmt.Errorf("creating engine: %w", err)
@@ -655,63 +709,13 @@ func loadIdentity(stateDir string) (*did.DID, error) {
 	return identity, nil
 }
 
-// meshProtocolDefinition returns the wireguard-mesh protocol definition.
-func meshProtocolDefinition() json.RawMessage {
-	// Minimal protocol definition — the full version is in protocols/wireguard-mesh.json
-	return json.RawMessage(`{
-		"protocol": "https://enbox.org/protocols/wireguard-mesh",
-		"published": true,
-		"types": {
-			"network": {
-				"schema": "https://enbox.org/schemas/wireguard-mesh/network",
-				"dataFormats": ["application/json"]
-			},
-			"member": {
-				"schema": "https://enbox.org/schemas/wireguard-mesh/member",
-				"dataFormats": ["application/json"]
-			},
-			"nodeInfo": {
-				"schema": "https://enbox.org/schemas/wireguard-mesh/node-info",
-				"dataFormats": ["application/json"]
-			},
-			"endpoint": {
-				"schema": "https://enbox.org/schemas/wireguard-mesh/endpoint",
-				"dataFormats": ["application/json"]
-			},
-			"admin": {
-				"schema": "https://enbox.org/schemas/wireguard-mesh/admin",
-				"dataFormats": ["application/json"]
-			},
-			"aclPolicy": {
-				"schema": "https://enbox.org/schemas/wireguard-mesh/acl-policy",
-				"dataFormats": ["application/json"]
-			},
-			"relay": {
-				"schema": "https://enbox.org/schemas/wireguard-mesh/relay",
-				"dataFormats": ["application/json"]
-			},
-			"preAuthKey": {
-				"schema": "https://enbox.org/schemas/wireguard-mesh/pre-auth-key",
-				"dataFormats": ["application/json"]
-			},
-			"event": {
-				"schema": "https://enbox.org/schemas/wireguard-mesh/event",
-				"dataFormats": ["application/json"]
-			}
-		},
-		"structure": {
-			"network": {
-				"member": {},
-				"nodeInfo": {},
-				"endpoint": {},
-				"admin": {},
-				"aclPolicy": {},
-				"relay": {},
-				"preAuthKey": {},
-				"event": {}
-			}
-		}
-	}`)
+// newEncryptionKeyManager creates an EncryptionKeyManager from a DID identity.
+func newEncryptionKeyManager(identity *did.DID) *dwncrypto.EncryptionKeyManager {
+	return &dwncrypto.EncryptionKeyManager{
+		RootPrivateKey: identity.EncryptionPrivateKey,
+		RootKeyID:      identity.EncryptionKeyID(),
+		ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+	}
 }
 
 // universalResolver adapts the pkg/dids universal resolver to the

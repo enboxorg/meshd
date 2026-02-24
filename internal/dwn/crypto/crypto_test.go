@@ -1479,6 +1479,388 @@ func TestConcatKDFWithNonEmptyPartyInfo(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Protocol $encryption injection tests
+// =============================================================================
+
+func TestInjectEncryptionDirectives(t *testing.T) {
+	// Generate a root X25519 key pair.
+	rootPriv, _, err := GenerateX25519KeyPair()
+	if err != nil {
+		t.Fatalf("generating root key: %v", err)
+	}
+	rootKeyID := "did:dht:test123#enc"
+
+	definition := json.RawMessage(`{
+		"protocol": "https://example.com/proto",
+		"published": true,
+		"types": {
+			"network": {"schema": "https://example.com/schemas/network", "dataFormats": ["application/json"]},
+			"member": {"schema": "https://example.com/schemas/member", "dataFormats": ["application/json"], "encryptionRequired": true},
+			"nodeInfo": {"schema": "https://example.com/schemas/node-info", "dataFormats": ["application/json"], "encryptionRequired": true},
+			"endpoint": {"schema": "https://example.com/schemas/endpoint", "dataFormats": ["application/json"], "encryptionRequired": true}
+		},
+		"structure": {
+			"network": {
+				"$actions": [{"who": "anyone", "can": ["read"]}],
+				"member": {
+					"$role": true,
+					"$actions": [{"role": "network/member", "can": ["read"]}]
+				},
+				"nodeInfo": {
+					"$actions": [{"role": "network/member", "can": ["create", "read"]}],
+					"endpoint": {
+						"$actions": [{"role": "network/member", "can": ["read"]}]
+					}
+				}
+			}
+		}
+	}`)
+
+	result, err := InjectEncryptionDirectives(definition, rootPriv, rootKeyID)
+	if err != nil {
+		t.Fatalf("InjectEncryptionDirectives: %v", err)
+	}
+
+	// Parse result to verify.
+	var defMap map[string]any
+	if err := json.Unmarshal(result, &defMap); err != nil {
+		t.Fatalf("parsing result: %v", err)
+	}
+
+	structure := defMap["structure"].(map[string]any)
+	network := structure["network"].(map[string]any)
+
+	// network itself should have $encryption injected.
+	networkEnc, ok := network["$encryption"].(map[string]any)
+	if !ok {
+		t.Fatal("network missing $encryption")
+	}
+	if networkEnc["rootKeyId"] != rootKeyID {
+		t.Fatalf("network.$encryption.rootKeyId = %v, want %v", networkEnc["rootKeyId"], rootKeyID)
+	}
+	networkPubJwk := networkEnc["publicKeyJwk"].(map[string]any)
+	if networkPubJwk["kty"] != "OKP" || networkPubJwk["crv"] != "X25519" {
+		t.Fatalf("unexpected network publicKeyJwk: %v", networkPubJwk)
+	}
+	networkPubX := networkPubJwk["x"].(string)
+	if networkPubX == "" {
+		t.Fatal("network publicKeyJwk.x is empty")
+	}
+
+	// member should have $encryption.
+	member := network["member"].(map[string]any)
+	memberEnc, ok := member["$encryption"].(map[string]any)
+	if !ok {
+		t.Fatal("member missing $encryption")
+	}
+	memberPubJwk := memberEnc["publicKeyJwk"].(map[string]any)
+	memberPubX := memberPubJwk["x"].(string)
+	if memberPubX == "" || memberPubX == networkPubX {
+		t.Fatalf("member publicKeyJwk.x should differ from network: member=%s, network=%s", memberPubX, networkPubX)
+	}
+
+	// nodeInfo should have $encryption.
+	nodeInfo := network["nodeInfo"].(map[string]any)
+	nodeInfoEnc, ok := nodeInfo["$encryption"].(map[string]any)
+	if !ok {
+		t.Fatal("nodeInfo missing $encryption")
+	}
+	nodeInfoPubX := nodeInfoEnc["publicKeyJwk"].(map[string]any)["x"].(string)
+	if nodeInfoPubX == "" || nodeInfoPubX == networkPubX || nodeInfoPubX == memberPubX {
+		t.Fatal("nodeInfo publicKeyJwk.x should be unique")
+	}
+
+	// endpoint (child of nodeInfo) should have $encryption.
+	endpoint := nodeInfo["endpoint"].(map[string]any)
+	endpointEnc, ok := endpoint["$encryption"].(map[string]any)
+	if !ok {
+		t.Fatal("endpoint missing $encryption")
+	}
+	endpointPubX := endpointEnc["publicKeyJwk"].(map[string]any)["x"].(string)
+	if endpointPubX == "" || endpointPubX == nodeInfoPubX {
+		t.Fatal("endpoint publicKeyJwk.x should differ from nodeInfo")
+	}
+
+	// $actions should be preserved.
+	if _, ok := network["$actions"]; !ok {
+		t.Fatal("network.$actions was lost")
+	}
+	if _, ok := member["$role"]; !ok {
+		t.Fatal("member.$role was lost")
+	}
+}
+
+func TestInjectEncryptionDirectives_DeterministicKeys(t *testing.T) {
+	rootPriv, _, err := GenerateX25519KeyPair()
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	definition := json.RawMessage(`{
+		"protocol": "https://example.com/proto",
+		"types": {"a": {}, "b": {}},
+		"structure": {"a": {"b": {}}}
+	}`)
+
+	result1, err := InjectEncryptionDirectives(definition, rootPriv, "did:test#enc")
+	if err != nil {
+		t.Fatalf("first injection: %v", err)
+	}
+
+	result2, err := InjectEncryptionDirectives(definition, rootPriv, "did:test#enc")
+	if err != nil {
+		t.Fatalf("second injection: %v", err)
+	}
+
+	// Same root key + same definition = same derived keys.
+	if !bytes.Equal(result1, result2) {
+		t.Fatal("injection should be deterministic")
+	}
+}
+
+func TestInjectEncryptionDirectives_HierarchicalProperty(t *testing.T) {
+	// The parent private key should be able to derive the child private key.
+	rootPriv, _, err := GenerateX25519KeyPair()
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	protocolURI := "https://example.com/proto"
+
+	// Derive the "a" level key.
+	aPath := BuildProtocolPathDerivation(protocolURI, "a")
+	aPriv, aPub, err := DerivePrivateKey(rootPriv, aPath)
+	if err != nil {
+		t.Fatalf("deriving a key: %v", err)
+	}
+
+	// Derive the "a/b" level key from root.
+	abPathFromRoot := BuildProtocolPathDerivation(protocolURI, "a", "b")
+	_, abPubFromRoot, err := DerivePrivateKey(rootPriv, abPathFromRoot)
+	if err != nil {
+		t.Fatalf("deriving a/b key from root: %v", err)
+	}
+
+	// Derive the "b" level key from "a" private key (single HKDF step).
+	abPrivFromParent, abPubFromParent, err := DerivePrivateKey(aPriv, []string{"b"})
+	if err != nil {
+		t.Fatalf("deriving b key from a: %v", err)
+	}
+
+	// The public keys should match.
+	if !bytes.Equal(abPubFromRoot, abPubFromParent) {
+		t.Fatal("hierarchical derivation mismatch: root->a->b != root->a/b")
+	}
+
+	// Verify the "a" public key.
+	_ = aPub
+	_ = abPrivFromParent
+}
+
+func TestEncryptionKeyManager_DeriveWriteEncryption(t *testing.T) {
+	rootPriv, _, err := GenerateX25519KeyPair()
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	mgr := &EncryptionKeyManager{
+		RootPrivateKey: rootPriv,
+		RootKeyID:      "did:dht:test#enc",
+		ProtocolURI:    "https://example.com/proto",
+	}
+
+	tests := map[string]struct {
+		path string
+	}{
+		"root level": {path: "network"},
+		"child level": {path: "network/member"},
+		"deep level": {path: "network/nodeInfo/endpoint"},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			recipients, err := mgr.DeriveWriteEncryption(tc.path)
+			if err != nil {
+				t.Fatalf("DeriveWriteEncryption: %v", err)
+			}
+
+			if len(recipients) != 1 {
+				t.Fatalf("expected 1 recipient, got %d", len(recipients))
+			}
+
+			r := recipients[0]
+			if r.PublicKeyID != mgr.RootKeyID {
+				t.Fatalf("publicKeyID = %q, want %q", r.PublicKeyID, mgr.RootKeyID)
+			}
+			if len(r.PublicKey) != X25519KeySize {
+				t.Fatalf("public key length = %d, want %d", len(r.PublicKey), X25519KeySize)
+			}
+			if r.DerivationScheme != DerivationSchemeProtocolPath {
+				t.Fatalf("derivationScheme = %q, want %q", r.DerivationScheme, DerivationSchemeProtocolPath)
+			}
+		})
+	}
+}
+
+func TestEncryptionKeyManager_RoundTrip(t *testing.T) {
+	// Verify that encrypting with DeriveWriteEncryption and decrypting
+	// with DeriveDecryptionKey produces the original plaintext.
+	rootPriv, _, err := GenerateX25519KeyPair()
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	mgr := &EncryptionKeyManager{
+		RootPrivateKey: rootPriv,
+		RootKeyID:      "did:dht:test#enc",
+		ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+	}
+
+	paths := []string{
+		"network",
+		"network/member",
+		"network/nodeInfo",
+		"network/nodeInfo/endpoint",
+		"network/admin",
+		"network/aclPolicy",
+		"network/relay",
+	}
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			plaintext := []byte(fmt.Sprintf(`{"test": "data for %s"}`, path))
+
+			// Encrypt.
+			recipients, err := mgr.DeriveWriteEncryption(path)
+			if err != nil {
+				t.Fatalf("DeriveWriteEncryption: %v", err)
+			}
+
+			ciphertext, enc, err := EncryptData(plaintext, recipients)
+			if err != nil {
+				t.Fatalf("EncryptData: %v", err)
+			}
+
+			// Decrypt.
+			decryptPriv, err := mgr.DeriveDecryptionKey(path)
+			if err != nil {
+				t.Fatalf("DeriveDecryptionKey: %v", err)
+			}
+
+			got, err := DecryptData(ciphertext, enc, decryptPriv, mgr.RootKeyID)
+			if err != nil {
+				t.Fatalf("DecryptData: %v", err)
+			}
+
+			if !bytes.Equal(got, plaintext) {
+				t.Fatalf("decrypted = %s, want %s", got, plaintext)
+			}
+		})
+	}
+}
+
+func TestEncryptionKeyManager_InjectedKeysMatchWriteKeys(t *testing.T) {
+	// Verify that the public keys injected into the protocol definition
+	// by InjectEncryptionDirectives match the keys produced by
+	// DeriveWriteEncryption.
+	rootPriv, _, err := GenerateX25519KeyPair()
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+
+	rootKeyID := "did:dht:test#enc"
+	protocolURI := "https://example.com/proto"
+
+	definition := json.RawMessage(`{
+		"protocol": "` + protocolURI + `",
+		"types": {"a": {}, "b": {}, "c": {}},
+		"structure": {"a": {"b": {"c": {}}}}
+	}`)
+
+	result, err := InjectEncryptionDirectives(definition, rootPriv, rootKeyID)
+	if err != nil {
+		t.Fatalf("InjectEncryptionDirectives: %v", err)
+	}
+
+	mgr := &EncryptionKeyManager{
+		RootPrivateKey: rootPriv,
+		RootKeyID:      rootKeyID,
+		ProtocolURI:    protocolURI,
+	}
+
+	// Parse result and verify each level.
+	var defMap map[string]any
+	if err := json.Unmarshal(result, &defMap); err != nil {
+		t.Fatalf("parsing result: %v", err)
+	}
+
+	type pathCheck struct {
+		name string
+		path string
+		get  func() map[string]any
+	}
+
+	structure := defMap["structure"].(map[string]any)
+	a := structure["a"].(map[string]any)
+	b := a["b"].(map[string]any)
+	c := b["c"].(map[string]any)
+
+	checks := []pathCheck{
+		{"a", "a", func() map[string]any { return a["$encryption"].(map[string]any)["publicKeyJwk"].(map[string]any) }},
+		{"a/b", "a/b", func() map[string]any { return b["$encryption"].(map[string]any)["publicKeyJwk"].(map[string]any) }},
+		{"a/b/c", "a/b/c", func() map[string]any { return c["$encryption"].(map[string]any)["publicKeyJwk"].(map[string]any) }},
+	}
+
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			// Get the public key from the injected definition.
+			injectedJwk := check.get()
+			injectedPubB64 := injectedJwk["x"].(string)
+			injectedPub, err := base64.RawURLEncoding.DecodeString(injectedPubB64)
+			if err != nil {
+				t.Fatalf("decoding injected key: %v", err)
+			}
+
+			// Get the public key from DeriveWriteEncryption.
+			recipients, err := mgr.DeriveWriteEncryption(check.path)
+			if err != nil {
+				t.Fatalf("DeriveWriteEncryption: %v", err)
+			}
+
+			if !bytes.Equal(injectedPub, recipients[0].PublicKey) {
+				t.Fatalf("injected key != DeriveWriteEncryption key for path %q", check.path)
+			}
+		})
+	}
+}
+
+func TestSplitProtocolPath(t *testing.T) {
+	tests := map[string]struct {
+		input    string
+		expected []string
+	}{
+		"single segment": {input: "network", expected: []string{"network"}},
+		"two segments": {input: "network/member", expected: []string{"network", "member"}},
+		"three segments": {input: "network/nodeInfo/endpoint", expected: []string{"network", "nodeInfo", "endpoint"}},
+		"empty": {input: "", expected: nil},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := splitProtocolPath(tc.input)
+			if len(got) != len(tc.expected) {
+				t.Fatalf("splitProtocolPath(%q) = %v, want %v", tc.input, got, tc.expected)
+			}
+			for i, s := range got {
+				if s != tc.expected[i] {
+					t.Fatalf("segment %d: got %q, want %q", i, s, tc.expected[i])
+				}
+			}
+		})
+	}
+}
+
 // RFC 3394 Section 4.3 — AES-192 KEK with 192-bit key data.
 func TestAESKeyWrapRFC3394Vector192(t *testing.T) {
 	kek, _ := hex.DecodeString("000102030405060708090A0B0C0D0E0F1011121314151617")

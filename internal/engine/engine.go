@@ -10,6 +10,7 @@ import (
 
 	"github.com/enboxorg/dwn-mesh/internal/control"
 	"github.com/enboxorg/dwn-mesh/internal/dwn"
+	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
 
 	"github.com/enboxorg/meshnet/control/controlclient"
 	"github.com/enboxorg/meshnet/ipn"
@@ -72,6 +73,10 @@ type Config struct {
 	// PollInterval is how often to re-read DWN state. Default: 30s.
 	PollInterval time.Duration
 
+	// EncryptionKeyManager manages derived encryption keys for decrypting
+	// protocol records. If nil, encrypted records cannot be read.
+	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
+
 	// Logger is the structured logger. Nil = default.
 	Logger *slog.Logger
 }
@@ -121,6 +126,9 @@ func New(cfg Config) (*Engine, error) {
 	controlOpts := []control.Option{control.WithLogger(l)}
 	if cfg.Resolver != nil {
 		controlOpts = append(controlOpts, control.WithResolver(cfg.Resolver))
+	}
+	if cfg.EncryptionKeyManager != nil {
+		controlOpts = append(controlOpts, control.WithEncryptionKeyManager(cfg.EncryptionKeyManager))
 	}
 	dwnClient := control.NewDWNClient(
 		cfg.AnchorEndpoint,
