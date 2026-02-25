@@ -61,6 +61,13 @@ type DWNControlConfig struct {
 	// mode (direct endpoints only, no DERP relay).
 	DiscoKeyRegistry DiscoKeyRegistry
 
+	// OnCreated is called after the DWNControl instance is created but
+	// before the poll loop starts. This lets the caller capture a reference
+	// to the DWNControl for calling Notify() from subscription handlers.
+	//
+	// If nil, no callback is made.
+	OnCreated func(cc *DWNControl)
+
 	// Logf is the logging function. If nil, log.Printf is used.
 	Logf logger.Logf
 }
@@ -177,6 +184,11 @@ func NewDWNControl(config *DWNControlConfig, opts Options) (*DWNControl, error) 
 	if !cc.disco.IsZero() && cc.config.DiscoKeyRegistry != nil {
 		cc.config.DiscoKeyRegistry.SetDisco(cc.persist.PrivateNodeKey.Public(), cc.disco)
 		logf("dwn-control: published initial disco key %s for nodeKey %s", cc.disco.ShortString(), cc.persist.PrivateNodeKey.Public().ShortString())
+	}
+
+	// Notify the caller so it can capture a reference for calling Notify().
+	if config.OnCreated != nil {
+		config.OnCreated(cc)
 	}
 
 	if !opts.SkipStartForTests {
