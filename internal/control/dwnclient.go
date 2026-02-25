@@ -10,10 +10,17 @@ import (
 	"net/netip"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 )
+
+// DefaultPeerStaleThreshold is the duration after which a peer is considered
+// offline if no endpoint record update has been received. This is roughly
+// 10x the default poll interval (30s), giving ample time for normal
+// endpoint refreshes to arrive even with network jitter.
+const DefaultPeerStaleThreshold = 5 * time.Minute
 
 // Protocol URIs used by meshd.
 const (
@@ -425,6 +432,14 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 }
 
 func nodeInfoToNode(id int64, did string, info *NodeInfoData) *Node {
+	return nodeInfoToNodeWithThreshold(id, did, info, DefaultPeerStaleThreshold, time.Now())
+}
+
+// nodeInfoToNodeWithThreshold converts a NodeInfoData to a Node, using the
+// given staleness threshold and reference time. The reference time is passed
+// as a parameter (instead of calling time.Now()) to make the function
+// deterministically testable.
+func nodeInfoToNodeWithThreshold(id int64, did string, info *NodeInfoData, staleThreshold time.Duration, now time.Time) *Node {
 	node := &Node{
 		ID:           id,
 		Name:         info.Hostname,
@@ -433,7 +448,6 @@ func nodeInfoToNode(id int64, did string, info *NodeInfoData) *Node {
 		DiscoKey:     info.DiscoKey,
 		OS:           info.OS,
 		Capabilities: info.Capabilities,
-		Online:       true,
 	}
 
 	if ip, err := netip.ParseAddr(info.MeshIP); err == nil {
@@ -446,6 +460,9 @@ func nodeInfoToNode(id int64, did string, info *NodeInfoData) *Node {
 			node.AllowedIPs = append(node.AllowedIPs, prefix)
 		}
 	}
+
+	// Track the most recent endpoint update time to determine online status.
+	var lastSeen time.Time
 
 	for _, ep := range info.Endpoints {
 		for _, pub := range ep.PublicEndpoints {
@@ -460,6 +477,24 @@ func nodeInfoToNode(id int64, did string, info *NodeInfoData) *Node {
 		if ep.DiscoKey != "" {
 			node.DiscoKey = ep.DiscoKey
 		}
+		// Track the most recent endpoint update.
+		if ep.UpdatedAt != "" {
+			if t, err := time.Parse(time.RFC3339, ep.UpdatedAt); err == nil {
+				if t.After(lastSeen) {
+					lastSeen = t
+				}
+			}
+		}
+	}
+
+	node.LastSeen = lastSeen
+
+	// Determine online status from the most recent endpoint update.
+	// A peer is online if it has endpoint data updated within the
+	// staleness threshold. Peers with no endpoint data are considered
+	// offline (they registered but never started the engine).
+	if !lastSeen.IsZero() && now.Sub(lastSeen) <= staleThreshold {
+		node.Online = true
 	}
 
 	// Default to DERP region 1 if no endpoint provided a preference.

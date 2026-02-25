@@ -163,9 +163,12 @@ func (c *Converter) convertNode(n *control.Node) (*tailcfg.Node, error) {
 		MachineAuthorized: true,
 	}
 
-	if n.Online {
-		online := true
-		node.Online = &online
+	online := n.Online
+	node.Online = &online
+
+	if !n.LastSeen.IsZero() {
+		lastSeen := n.LastSeen
+		node.LastSeen = &lastSeen
 	}
 
 	// Parse WireGuard public key. The key is stored as base64 in DWN records.
