@@ -40,6 +40,7 @@ import (
 //   - DWNClient reads mesh state from DWN records
 //   - Converter transforms it into meshnet NetworkMap
 //   - meshnet's LocalBackend runs WireGuard with the DWN-backed control client
+//   - SubscriptionWatcher triggers real-time updates via DWN WebSocket
 //
 // Engine is the core of `meshd up`.
 type Engine struct {
@@ -51,6 +52,7 @@ type Engine struct {
 	dialer          *tsdial.Dialer
 	ns              *netstack.Impl
 	autoKeyDelivery *AutoKeyDelivery
+	subWatcher      *SubscriptionWatcher
 	logger          *slog.Logger
 
 	// tunDev is the real TUN device when running in TUN mode.
@@ -353,6 +355,17 @@ func New(cfg Config) (*Engine, error) {
 		return nil, fmt.Errorf("starting netstack: %w", err)
 	}
 
+	// Create subscription watcher for real-time DWN updates.
+	// This replaces pure polling with event-driven updates when the DWN
+	// server supports WebSocket subscriptions.
+	subWatcher := NewSubscriptionWatcher(SubscriptionWatcherConfig{
+		AnchorEndpoint:  cfg.AnchorEndpoint,
+		AnchorTenant:    cfg.AnchorTenant,
+		NetworkRecordID: cfg.NetworkRecordID,
+		Signer:          cfg.Signer,
+		Logger:          l,
+	})
+
 	// Wire the DWN control client into the LocalBackend.
 	// MapResponseFunc closes over our DWNClient and Converter to produce
 	// NetworkMaps from DWN records. If auto key delivery is configured,
@@ -362,6 +375,9 @@ func New(cfg Config) (*Engine, error) {
 		MapResponseFunc: mapFn,
 		PollInterval:    pollInterval,
 		Logf:            logf,
+		// Capture the DWNControl reference so the subscription watcher
+		// can call Notify() to trigger immediate re-polls.
+		OnCreated: subWatcher.SetDWNControl,
 	}
 
 	// If the caller provided a WireGuard private key (already published to
@@ -397,6 +413,7 @@ func New(cfg Config) (*Engine, error) {
 		dialer:          dial,
 		ns:              ns,
 		autoKeyDelivery: cfg.AutoKeyDelivery,
+		subWatcher:      subWatcher,
 		tunDev:          tunDev,
 		tunName:         tunName,
 		logger:          l,
@@ -409,6 +426,7 @@ func New(cfg Config) (*Engine, error) {
 //  1. Call the DWN MapResponseFunc to load initial mesh state
 //  2. Configure WireGuard peers from the NetworkMap
 //  3. Begin polling DWN for state changes
+//  4. Subscribe to DWN record changes for real-time updates
 func (e *Engine) Start(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -432,6 +450,18 @@ func (e *Engine) Start(ctx context.Context) error {
 		return fmt.Errorf("starting backend: %w", err)
 	}
 
+	// Start the subscription watcher for real-time updates.
+	// This is best-effort: if the DWN server doesn't support WebSocket
+	// subscriptions, we fall back to polling only. The watcher will
+	// auto-reconnect on transient failures.
+	if e.subWatcher != nil {
+		if err := e.subWatcher.Start(ctx); err != nil {
+			e.logger.Warn("failed to start subscription watcher, falling back to polling",
+				slog.Any("error", err),
+			)
+		}
+	}
+
 	e.running = true
 	e.logger.InfoContext(ctx, "meshd engine started")
 	return nil
@@ -450,6 +480,11 @@ func (e *Engine) Stop() error {
 
 	if e.cancel != nil {
 		e.cancel()
+	}
+
+	// Stop subscription watcher first (stops WebSocket connections).
+	if e.subWatcher != nil {
+		e.subWatcher.Stop()
 	}
 
 	// Shutdown order matters: backend first (stops control polling),
