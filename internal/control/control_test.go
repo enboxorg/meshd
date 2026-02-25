@@ -146,6 +146,61 @@ func TestNodeInfoToNode(t *testing.T) {
 	})
 }
 
+func TestDefaultDERPRegions(t *testing.T) {
+	regions := defaultDERPRegions()
+
+	t.Run("has bootstrap regions", func(t *testing.T) {
+		if len(regions) == 0 {
+			t.Fatal("no default DERP regions")
+		}
+		if len(regions) < 2 {
+			t.Errorf("want at least 2 regions, got %d", len(regions))
+		}
+	})
+
+	t.Run("each region has nodes", func(t *testing.T) {
+		for id, r := range regions {
+			if len(r.Nodes) == 0 {
+				t.Errorf("region %d has no nodes", id)
+			}
+			for _, n := range r.Nodes {
+				if n.HostName == "" {
+					t.Errorf("region %d node %q has no hostname", id, n.Name)
+				}
+				if n.DERPPort == 0 {
+					t.Errorf("region %d node %q has no DERP port", id, n.Name)
+				}
+				if n.STUNPort == 0 {
+					t.Errorf("region %d node %q has no STUN port", id, n.Name)
+				}
+			}
+		}
+	})
+}
+
+func TestBuildDERPMapFallback(t *testing.T) {
+	// A client with no relays should fall back to default DERP regions.
+	c := &DWNClient{
+		relays: nil,
+	}
+	dm := c.buildDERPMap()
+	if len(dm.Regions) == 0 {
+		t.Fatal("expected default DERP regions when no relays configured")
+	}
+
+	// A client with custom relays should NOT use defaults.
+	c.relays = []*RelayData{
+		{URL: "relay.example.com", Region: "custom", STUNPort: 3478},
+	}
+	dm = c.buildDERPMap()
+	if len(dm.Regions) != 1 {
+		t.Fatalf("want 1 custom region, got %d", len(dm.Regions))
+	}
+	if dm.Regions[1].Nodes[0].HostName != "relay.example.com" {
+		t.Errorf("hostname = %q", dm.Regions[1].Nodes[0].HostName)
+	}
+}
+
 func TestDefaultFilterRules(t *testing.T) {
 	rules := defaultFilterRules()
 	if len(rules) != 1 {
@@ -159,6 +214,119 @@ func TestDefaultFilterRules(t *testing.T) {
 	}
 	if rules[0].DstPorts[0].Ports.First != 0 || rules[0].DstPorts[0].Ports.Last != 65535 {
 		t.Error("should allow all ports")
+	}
+}
+
+func TestExtractEntryMetadata(t *testing.T) {
+	t.Run("wrapped format with tags and recipient", func(t *testing.T) {
+		entry := json.RawMessage(`{
+			"recordsWrite": {
+				"recordId": "bafyreiabc123",
+				"descriptor": {
+					"interface": "Records",
+					"method": "Write",
+					"protocol": "https://enbox.org/protocols/wireguard-mesh",
+					"protocolPath": "network/nodeInfo",
+					"recipient": "did:dht:anchor123",
+					"tags": {
+						"did": "did:dht:node456",
+						"hostname": "myhost",
+						"os": "linux"
+					}
+				},
+				"encodedData": "dGVzdA"
+			}
+		}`)
+
+		meta := extractEntryMetadata(entry)
+
+		if meta.RecordID != "bafyreiabc123" {
+			t.Errorf("RecordID = %q, want %q", meta.RecordID, "bafyreiabc123")
+		}
+		if meta.Recipient != "did:dht:anchor123" {
+			t.Errorf("Recipient = %q, want %q", meta.Recipient, "did:dht:anchor123")
+		}
+		if did, ok := meta.Tags["did"].(string); !ok || did != "did:dht:node456" {
+			t.Errorf("Tags[did] = %v, want %q", meta.Tags["did"], "did:dht:node456")
+		}
+	})
+
+	t.Run("flat format", func(t *testing.T) {
+		entry := json.RawMessage(`{
+			"recordId": "bafyreiflat",
+			"descriptor": {
+				"recipient": "did:dht:member789",
+				"tags": {"did": "did:dht:member789"}
+			}
+		}`)
+
+		meta := extractEntryMetadata(entry)
+
+		if meta.RecordID != "bafyreiflat" {
+			t.Errorf("RecordID = %q, want %q", meta.RecordID, "bafyreiflat")
+		}
+		if meta.Recipient != "did:dht:member789" {
+			t.Errorf("Recipient = %q, want %q", meta.Recipient, "did:dht:member789")
+		}
+	})
+
+	t.Run("empty entry", func(t *testing.T) {
+		meta := extractEntryMetadata(json.RawMessage(`{}`))
+		if meta.RecordID != "" || meta.Recipient != "" {
+			t.Errorf("expected empty metadata, got %+v", meta)
+		}
+	})
+
+	t.Run("nil entry", func(t *testing.T) {
+		meta := extractEntryMetadata(nil)
+		if meta.RecordID != "" || meta.Recipient != "" {
+			t.Errorf("expected empty metadata, got %+v", meta)
+		}
+	})
+}
+
+func TestDetectDerivationScheme(t *testing.T) {
+	tests := map[string]struct {
+		enc  *dwncrypto.Encryption
+		want string
+	}{
+		"nil encryption": {
+			enc:  nil,
+			want: "",
+		},
+		"protocolPath scheme": {
+			enc: &dwncrypto.Encryption{
+				Recipients: []dwncrypto.Recipient{
+					{Header: dwncrypto.RecipientHeader{DerivationScheme: "protocolPath"}},
+				},
+			},
+			want: "protocolPath",
+		},
+		"protocolContext scheme": {
+			enc: &dwncrypto.Encryption{
+				Recipients: []dwncrypto.Recipient{
+					{Header: dwncrypto.RecipientHeader{DerivationScheme: "protocolContext"}},
+				},
+			},
+			want: "protocolContext",
+		},
+		"no scheme defaults to protocolPath": {
+			enc: &dwncrypto.Encryption{
+				Recipients: []dwncrypto.Recipient{
+					{Header: dwncrypto.RecipientHeader{}},
+				},
+			},
+			want: "protocolPath",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := detectDerivationScheme(tc.enc)
+			if got != tc.want {
+				t.Errorf("detectDerivationScheme = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -824,16 +824,69 @@ func cmdUp(ctx context.Context, args []string) error {
 
 	encMgr := newEncryptionKeyManager(identity)
 
+	// For non-anchor nodes: fetch the context key from the anchor so we
+	// can encrypt records with Protocol Context scheme (which the anchor
+	// can decrypt using the shared context key).
+	useContextEncryption := false
+	if ns.AnchorDID != identity.URI {
+		contextKey, err := fetchContextKey(ctx, identity, ns)
+		if err != nil {
+			slog.Warn("context key fetch failed (will retry on next up)",
+				slog.Any("error", err),
+			)
+		} else if contextKey != nil {
+			privBytes, err := contextKey.PrivateKeyBytes()
+			if err != nil {
+				return fmt.Errorf("extracting context key bytes: %w", err)
+			}
+			encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
+			useContextEncryption = true
+			fmt.Printf("  Context key: received (Protocol Context encryption enabled)\n")
+		} else {
+			fmt.Printf("  Context key: not yet delivered (run 'peer approve' on anchor)\n")
+			fmt.Printf("  Records will be written with Protocol Path encryption.\n")
+		}
+	}
+
 	fmt.Printf("Starting dwn-mesh...\n")
 	fmt.Printf("  Network: %s\n", ns.NetworkName)
 	fmt.Printf("  DID: %s\n", identity.URI)
 	fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
 	fmt.Printf("  Anchor: %s\n", ns.AnchorEndpoint)
 
+	// If we have a context key, re-register nodeInfo with Protocol Context
+	// encryption. The initial registration during "network join" used Protocol
+	// Path encryption (our own key) which the anchor can't decrypt. Re-writing
+	// with Protocol Context encryption allows the anchor to read our nodeInfo.
+	// The $squash directive means this overwrites the existing record.
+	if useContextEncryption && ns.NodeInfoRecordID != "" {
+		reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
+			AnchorEndpoint:       ns.AnchorEndpoint,
+			AnchorDID:            ns.AnchorDID,
+			NetworkRecordID:      ns.NetworkRecordID,
+			SelfDID:              identity.URI,
+			Signer:               signer,
+			EncryptionKeyManager: encMgr,
+			WireGuardPubKey:      ns.WireGuardPublicKey,
+			MeshIP:               ns.MeshIP,
+			ProtocolRole:         "network/member",
+			UseContextEncryption: true,
+			ExistingNodeInfoRecordID: ns.NodeInfoRecordID,
+		})
+		if err != nil {
+			logger.Warn("nodeInfo re-registration with context encryption failed",
+				slog.Any("error", err),
+			)
+		} else {
+			fmt.Printf("  NodeInfo re-encrypted with context key.\n")
+			_ = reg // recordID unchanged due to $squash
+		}
+	}
+
 	// Write/update endpoint record (encrypted) before starting the engine.
 	if ns.NodeInfoRecordID != "" {
 		localEndpoints := mesh.DiscoverLocalEndpoints(listenPort)
-		err = mesh.WriteEndpoint(ctx, mesh.WriteEndpointParams{
+		wpParams := mesh.WriteEndpointParams{
 			AnchorEndpoint:       ns.AnchorEndpoint,
 			AnchorDID:            ns.AnchorDID,
 			NetworkRecordID:      ns.NetworkRecordID,
@@ -842,7 +895,13 @@ func cmdUp(ctx context.Context, args []string) error {
 			EncryptionKeyManager: encMgr,
 			LocalEndpoints:       localEndpoints,
 			NATType:              "unknown",
-		})
+			UseContextEncryption: useContextEncryption,
+		}
+		// Non-anchor nodes must invoke their role for authorization.
+		if ns.AnchorDID != identity.URI {
+			wpParams.ProtocolRole = "network/member"
+		}
+		err = mesh.WriteEndpoint(ctx, wpParams)
 		if err != nil {
 			logger.Warn("endpoint write failed (non-fatal)", slog.Any("error", err))
 		} else {
@@ -875,7 +934,9 @@ func cmdUp(ctx context.Context, args []string) error {
 		Signer:               signer,
 		Resolver:             universalResolver{},
 		EncryptionKeyManager: encMgr,
+		NodeInfoRecordID:     ns.NodeInfoRecordID,
 		AutoKeyDelivery:      autoKeyDelivery,
+		UseContextEncryption: useContextEncryption,
 		Domain:               ns.NetworkName,
 		ListenPort:           listenPort,
 		PollInterval:         pollInterval,
@@ -942,6 +1003,41 @@ func newEncryptionKeyManager(identity *did.DID) *dwncrypto.EncryptionKeyManager 
 		RootKeyID:      identity.EncryptionKeyID(),
 		ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
 	}
+}
+
+// fetchContextKey fetches the Protocol Context key from the anchor's DWN
+// for the current network. This allows a non-anchor node to encrypt records
+// using the Protocol Context scheme, which the anchor can decrypt.
+//
+// Returns nil (no error) if no context key has been delivered yet.
+func fetchContextKey(ctx context.Context, identity *did.DID, ns *state.NetworkState) (*dwncrypto.DerivedPrivateJwk, error) {
+	signer := &dwn.Signer{
+		DID:        identity.URI,
+		PrivateKey: identity.SigningKey,
+	}
+
+	// Derive the decryption key for the key-delivery protocol's contextKey
+	// path. The anchor encrypted the contextKey record using Protocol Path
+	// scheme for the key-delivery protocol, so we need our own root key to
+	// derive the key-delivery decryption key.
+	decryptionKey, err := dwncrypto.DeriveKeyDeliveryDecryptionKey(
+		identity.EncryptionPrivateKey,
+		protocols.KeyDeliveryProtocolURI,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("deriving key-delivery decryption key: %w", err)
+	}
+
+	return mesh.FetchContextKey(ctx, mesh.FetchContextKeyParams{
+		AnchorEndpoint:       ns.AnchorEndpoint,
+		AnchorDID:            ns.AnchorDID,
+		SelfDID:              identity.URI,
+		Signer:               signer,
+		SourceProtocol:       protocols.MeshProtocolURI,
+		ContextID:            ns.NetworkRecordID,
+		DecryptionPrivateKey: decryptionKey,
+		DecryptionKeyID:      identity.EncryptionKeyID(),
+	})
 }
 
 // universalResolver adapts the pkg/dids universal resolver to the

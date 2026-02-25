@@ -65,6 +65,13 @@ type RegisterNodeParams struct {
 	// ProtocolRole is the role to invoke for authorization (e.g., "network/member").
 	// Required when writing to another party's DWN as a non-owner.
 	ProtocolRole string
+
+	// UseContextEncryption enables Protocol Context encryption instead of
+	// Protocol Path encryption. Non-anchor nodes MUST set this to true so
+	// the anchor can decrypt their records using the shared context key.
+	// When true, the EncryptionKeyManager must have the context key stored
+	// (via StoreContextKey) for the NetworkRecordID.
+	UseContextEncryption bool
 }
 
 // RegisterNode writes or updates the node's nodeInfo record (encrypted) on
@@ -93,10 +100,21 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 		return nil, fmt.Errorf("marshaling nodeInfo: %w", err)
 	}
 
-	// Derive encryption recipients for "network/nodeInfo" path.
-	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption("network/nodeInfo")
-	if err != nil {
-		return nil, fmt.Errorf("deriving nodeInfo encryption: %w", err)
+	// Derive encryption recipients.
+	// Non-anchor nodes use Protocol Context scheme (shared context key) so the
+	// anchor can decrypt. The anchor uses Protocol Path scheme (derived from
+	// its own root key).
+	var recipients []dwncrypto.KeyEncryptionInput
+	if params.UseContextEncryption {
+		recipients, err = params.EncryptionKeyManager.DeriveContextWriteEncryption(params.NetworkRecordID)
+		if err != nil {
+			return nil, fmt.Errorf("deriving nodeInfo context encryption: %w", err)
+		}
+	} else {
+		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/nodeInfo")
+		if err != nil {
+			return nil, fmt.Errorf("deriving nodeInfo encryption: %w", err)
+		}
 	}
 
 	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
@@ -158,10 +176,18 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 		return fmt.Errorf("marshaling endpoint: %w", err)
 	}
 
-	// Derive encryption recipients for "network/nodeInfo/endpoint" path.
-	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption("network/nodeInfo/endpoint")
-	if err != nil {
-		return fmt.Errorf("deriving endpoint encryption: %w", err)
+	// Derive encryption recipients.
+	var recipients []dwncrypto.KeyEncryptionInput
+	if params.UseContextEncryption {
+		recipients, err = params.EncryptionKeyManager.DeriveContextWriteEncryption(params.NetworkRecordID)
+		if err != nil {
+			return fmt.Errorf("deriving endpoint context encryption: %w", err)
+		}
+	} else {
+		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/nodeInfo/endpoint")
+		if err != nil {
+			return fmt.Errorf("deriving endpoint encryption: %w", err)
+		}
 	}
 
 	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
@@ -202,6 +228,10 @@ type WriteEndpointParams struct {
 	LocalEndpoints       []string
 	NATType              string
 	ProtocolRole         string
+
+	// UseContextEncryption enables Protocol Context encryption instead of
+	// Protocol Path encryption. See RegisterNodeParams.UseContextEncryption.
+	UseContextEncryption bool
 }
 
 // PublicEndpoint describes a publicly reachable endpoint.
@@ -226,9 +256,17 @@ func CreateMember(ctx context.Context, params CreateMemberParams) error {
 		return fmt.Errorf("marshaling member: %w", err)
 	}
 
-	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption("network/member")
-	if err != nil {
-		return fmt.Errorf("deriving member encryption: %w", err)
+	var recipients []dwncrypto.KeyEncryptionInput
+	if params.UseContextEncryption {
+		recipients, err = params.EncryptionKeyManager.DeriveContextWriteEncryption(params.NetworkRecordID)
+		if err != nil {
+			return fmt.Errorf("deriving member context encryption: %w", err)
+		}
+	} else {
+		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/member")
+		if err != nil {
+			return fmt.Errorf("deriving member encryption: %w", err)
+		}
 	}
 
 	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
@@ -264,6 +302,10 @@ type CreateMemberParams struct {
 	Label                string
 	Signer               *dwn.Signer
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
+
+	// UseContextEncryption enables Protocol Context encryption instead of
+	// Protocol Path encryption. See RegisterNodeParams.UseContextEncryption.
+	UseContextEncryption bool
 }
 
 // DiscoverLocalEndpoints discovers local network endpoints for this node.

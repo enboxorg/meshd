@@ -178,12 +178,30 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	memberDecryptor := c.makeDecryptor("network/member")
 	c.mu.Lock()
 	for _, entry := range entries {
+		// Extract DID from descriptor metadata (not encrypted).
+		meta := extractEntryMetadata(entry)
+		memberDID := meta.Recipient // member records use recipient as the member DID
+
 		var member MemberInfo
 		if err := parseEntryData(entry, &member, memberDecryptor); err != nil {
-			c.logger.WarnContext(ctx, "parsing member entry", slog.Any("error", err))
+			c.logger.WarnContext(ctx, "parsing member entry",
+				slog.Any("error", err),
+				slog.String("memberDID", memberDID),
+			)
+			// Even if we can't decrypt the data, we can still track the member
+			// by DID from the unencrypted descriptor fields.
+			if memberDID != "" {
+				member.DID = memberDID
+				member.RecordID = meta.RecordID
+				c.members[memberDID] = &member
+			}
 			continue
 		}
-		c.members[member.DID] = &member
+		member.DID = memberDID
+		member.RecordID = meta.RecordID
+		if memberDID != "" {
+			c.members[memberDID] = &member
+		}
 	}
 	c.mu.Unlock()
 
@@ -206,12 +224,34 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	nodeDecryptor := c.makeDecryptor("network/nodeInfo")
 	c.mu.Lock()
 	for _, entry := range nodeEntries {
+		// Extract DID from descriptor tags (not encrypted).
+		meta := extractEntryMetadata(entry)
+		nodeDID := ""
+		if did, ok := meta.Tags["did"].(string); ok {
+			nodeDID = did
+		}
+
 		var node NodeInfoData
 		if err := parseEntryData(entry, &node, nodeDecryptor); err != nil {
-			c.logger.WarnContext(ctx, "parsing node entry", slog.Any("error", err))
+			c.logger.WarnContext(ctx, "parsing node entry",
+				slog.Any("error", err),
+				slog.String("nodeDID", nodeDID),
+			)
+			// Even if we can't decrypt the data payload, track the node DID
+			// from the unencrypted tags. This allows peer discovery and auto
+			// key delivery to work even before context key exchange completes.
+			if nodeDID != "" {
+				node.DID = nodeDID
+				node.RecordID = meta.RecordID
+				c.nodes[nodeDID] = &node
+			}
 			continue
 		}
-		c.nodes[node.DID] = &node
+		node.DID = nodeDID
+		node.RecordID = meta.RecordID
+		if nodeDID != "" {
+			c.nodes[nodeDID] = &node
+		}
 	}
 	c.mu.Unlock()
 
@@ -383,7 +423,59 @@ func (c *DWNClient) buildDERPMap() *DERPMap {
 		}
 	}
 
+	// If no custom relays are configured, inject bootstrap DERP regions
+	// so peers behind NAT have a relay path. These use Tailscale's public
+	// DERP servers which speak the same protocol meshnet expects.
+	if len(dm.Regions) == 0 {
+		dm.Regions = defaultDERPRegions()
+	}
+
 	return dm
+}
+
+// defaultDERPRegions returns a set of bootstrap DERP relay regions.
+// These are Tailscale's publicly available DERP servers which use the
+// same protocol as meshnet. They provide relay connectivity (for NAT
+// traversal) and STUN (for endpoint discovery) out of the box.
+//
+// Operators can override these by registering custom relay records
+// on the anchor DWN. Once any relay record exists, these defaults
+// are not used.
+func defaultDERPRegions() map[int]*DERPRegion {
+	return map[int]*DERPRegion{
+		1: {
+			RegionID:   1,
+			RegionCode: "nyc",
+			RegionName: "New York City",
+			Nodes: []DERPNode{
+				{Name: "1a", RegionID: 1, HostName: "derp1.tailscale.com", DERPPort: 443, STUNPort: 3478},
+			},
+		},
+		2: {
+			RegionID:   2,
+			RegionCode: "sfo",
+			RegionName: "San Francisco",
+			Nodes: []DERPNode{
+				{Name: "2a", RegionID: 2, HostName: "derp2.tailscale.com", DERPPort: 443, STUNPort: 3478},
+			},
+		},
+		3: {
+			RegionID:   3,
+			RegionCode: "sin",
+			RegionName: "Singapore",
+			Nodes: []DERPNode{
+				{Name: "3a", RegionID: 3, HostName: "derp3.tailscale.com", DERPPort: 443, STUNPort: 3478},
+			},
+		},
+		4: {
+			RegionID:   4,
+			RegionCode: "fra",
+			RegionName: "Frankfurt",
+			Nodes: []DERPNode{
+				{Name: "4a", RegionID: 4, HostName: "derp4.tailscale.com", DERPPort: 443, STUNPort: 3478},
+			},
+		},
+	}
 }
 
 func (c *DWNClient) buildDNSConfig() *DNSConfig {
@@ -431,6 +523,59 @@ func defaultFilterRules() []FilterRule {
 			},
 		},
 	}
+}
+
+// entryMetadata holds descriptor-level fields extracted from a DWN record
+// entry. These fields are NOT encrypted and are always accessible.
+type entryMetadata struct {
+	RecordID  string         `json:"recordId"`
+	Recipient string         `json:"recipient"`
+	Tags      map[string]any `json:"tags"`
+}
+
+// extractEntryMetadata extracts non-encrypted descriptor metadata from
+// a DWN record entry. This works even when the data payload is encrypted
+// and cannot be decrypted.
+//
+// The function inspects both wrapped format (recordsWrite.descriptor)
+// and flat format (descriptor) entries.
+func extractEntryMetadata(entry json.RawMessage) entryMetadata {
+	var meta entryMetadata
+
+	// Try wrapped format: {"recordsWrite": {"descriptor": {...}}}
+	var wrapped struct {
+		RecordsWrite struct {
+			RecordID   string `json:"recordId"`
+			Descriptor struct {
+				Recipient string         `json:"recipient"`
+				Tags      map[string]any `json:"tags"`
+			} `json:"descriptor"`
+		} `json:"recordsWrite"`
+	}
+	if err := json.Unmarshal(entry, &wrapped); err == nil {
+		meta.RecordID = wrapped.RecordsWrite.RecordID
+		meta.Recipient = wrapped.RecordsWrite.Descriptor.Recipient
+		meta.Tags = wrapped.RecordsWrite.Descriptor.Tags
+		if meta.RecordID != "" || meta.Recipient != "" {
+			return meta
+		}
+	}
+
+	// Try flat format: {"recordId": "...", "descriptor": {...}}
+	var flat struct {
+		RecordID   string `json:"recordId"`
+		Descriptor struct {
+			Recipient string         `json:"recipient"`
+			Tags      map[string]any `json:"tags"`
+		} `json:"descriptor"`
+	}
+	if err := json.Unmarshal(entry, &flat); err == nil {
+		meta.RecordID = flat.RecordID
+		meta.Recipient = flat.Descriptor.Recipient
+		meta.Tags = flat.Descriptor.Tags
+	}
+
+	return meta
 }
 
 // parseEntryData extracts the data from a DWN read response entry.
