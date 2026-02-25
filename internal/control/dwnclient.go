@@ -287,6 +287,49 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	}
 	c.mu.Unlock()
 
+	// 5. Query endpoint records for each node.
+	// Endpoint records are children of nodeInfo records. We query all
+	// endpoint records in the network context and attach them to their
+	// parent nodeInfo via the parentId descriptor field.
+	endpointResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
+		Protocol:     ProtocolMesh,
+		ProtocolPath: "network/nodeInfo/endpoint",
+		ContextID:    c.networkRecordID,
+	}, "createdDescending", nil, "network/member")
+	if err != nil {
+		// Non-fatal: endpoints are optional. Log and continue.
+		c.logger.DebugContext(ctx, "querying endpoints failed", slog.Any("error", err))
+	} else {
+		endpointEntries, err := dwn.QueryResult(endpointResp)
+		if err != nil {
+			c.logger.DebugContext(ctx, "parsing endpoint results", slog.Any("error", err))
+		} else {
+			endpointDecryptor := c.makeDecryptor("network/nodeInfo/endpoint")
+			c.mu.Lock()
+			for _, entry := range endpointEntries {
+				meta := extractEntryMetadata(entry)
+				var ep EndpointData
+				if err := parseEntryData(entry, &ep, endpointDecryptor); err != nil {
+					c.logger.DebugContext(ctx, "parsing endpoint entry", slog.Any("error", err))
+					continue
+				}
+
+				// Find the parent nodeInfo by matching the parentId from
+				// the endpoint's descriptor to a node's recordID.
+				parentID := meta.ParentID
+				for _, node := range c.nodes {
+					if node.RecordID != "" && node.RecordID == parentID {
+						node.Endpoints = append(node.Endpoints, ep)
+						break
+					}
+				}
+			}
+			c.mu.Unlock()
+
+			c.logger.DebugContext(ctx, "loaded endpoints", slog.Int("count", len(endpointEntries)))
+		}
+	}
+
 	c.logger.DebugContext(ctx, "mesh state loaded",
 		slog.String("network", network.Name),
 		slog.Int("members", len(c.members)),
@@ -387,6 +430,7 @@ func nodeInfoToNode(id int64, did string, info *NodeInfoData) *Node {
 		Name:         info.Hostname,
 		DID:          did,
 		Key:          info.WireGuardPublicKey,
+		DiscoKey:     info.DiscoKey,
 		OS:           info.OS,
 		Capabilities: info.Capabilities,
 		Online:       true,
@@ -410,6 +454,11 @@ func nodeInfoToNode(id int64, did string, info *NodeInfoData) *Node {
 		node.Endpoints = append(node.Endpoints, ep.LocalEndpoints...)
 		if ep.PreferredDERP != 0 {
 			node.PreferredDERP = ep.PreferredDERP
+		}
+		// Endpoint records may carry a more recent disco key than
+		// the nodeInfo record. Use the latest non-empty disco key.
+		if ep.DiscoKey != "" {
+			node.DiscoKey = ep.DiscoKey
 		}
 	}
 
@@ -551,6 +600,7 @@ func defaultFilterRules() []FilterRule {
 // entry. These fields are NOT encrypted and are always accessible.
 type entryMetadata struct {
 	RecordID  string         `json:"recordId"`
+	ParentID  string         `json:"parentId"`
 	Recipient string         `json:"recipient"`
 	Tags      map[string]any `json:"tags"`
 }
@@ -569,6 +619,7 @@ func extractEntryMetadata(entry json.RawMessage) entryMetadata {
 		RecordsWrite struct {
 			RecordID   string `json:"recordId"`
 			Descriptor struct {
+				ParentID  string         `json:"parentId"`
 				Recipient string         `json:"recipient"`
 				Tags      map[string]any `json:"tags"`
 			} `json:"descriptor"`
@@ -576,6 +627,7 @@ func extractEntryMetadata(entry json.RawMessage) entryMetadata {
 	}
 	if err := json.Unmarshal(entry, &wrapped); err == nil {
 		meta.RecordID = wrapped.RecordsWrite.RecordID
+		meta.ParentID = wrapped.RecordsWrite.Descriptor.ParentID
 		meta.Recipient = wrapped.RecordsWrite.Descriptor.Recipient
 		meta.Tags = wrapped.RecordsWrite.Descriptor.Tags
 		if meta.RecordID != "" || meta.Recipient != "" {
@@ -587,12 +639,14 @@ func extractEntryMetadata(entry json.RawMessage) entryMetadata {
 	var flat struct {
 		RecordID   string `json:"recordId"`
 		Descriptor struct {
+			ParentID  string         `json:"parentId"`
 			Recipient string         `json:"recipient"`
 			Tags      map[string]any `json:"tags"`
 		} `json:"descriptor"`
 	}
 	if err := json.Unmarshal(entry, &flat); err == nil {
 		meta.RecordID = flat.RecordID
+		meta.ParentID = flat.Descriptor.ParentID
 		meta.Recipient = flat.Descriptor.Recipient
 		meta.Tags = flat.Descriptor.Tags
 	}

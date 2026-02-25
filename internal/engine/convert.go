@@ -177,6 +177,21 @@ func (c *Converter) convertNode(n *control.Node) (*tailcfg.Node, error) {
 		node.Key = nodeKey
 	}
 
+	// Parse disco public key. The disco key enables DERP relay and direct
+	// connection upgrades between peers. It is exchanged via DWN
+	// nodeInfo/endpoint records as base64.
+	if n.DiscoKey != "" {
+		dk, err := parseDiscoKey(n.DiscoKey)
+		if err != nil {
+			c.logger.Debug("skipping invalid disco key",
+				slog.String("node", n.Name),
+				slog.Any("error", err),
+			)
+		} else {
+			node.DiscoKey = dk
+		}
+	}
+
 	// Convert addresses (mesh IP as /32 or /128 prefix).
 	if n.MeshIP.IsValid() {
 		prefix := netip.PrefixFrom(n.MeshIP, n.MeshIP.BitLen())
@@ -225,6 +240,23 @@ func parseWireGuardKey(b64Key string) (key.NodePublic, error) {
 		return key.NodePublic{}, fmt.Errorf("WireGuard key must be 32 bytes, got %d", len(raw))
 	}
 	return key.NodePublicFromRaw32(mem.B(raw)), nil
+}
+
+// parseDiscoKey parses a base64-encoded disco public key (32 bytes)
+// into a meshnet key.DiscoPublic.
+func parseDiscoKey(b64Key string) (key.DiscoPublic, error) {
+	raw, err := base64.StdEncoding.DecodeString(b64Key)
+	if err != nil {
+		// Try raw (no padding) base64.
+		raw, err = base64.RawStdEncoding.DecodeString(b64Key)
+		if err != nil {
+			return key.DiscoPublic{}, fmt.Errorf("base64 decode: %w", err)
+		}
+	}
+	if len(raw) != 32 {
+		return key.DiscoPublic{}, fmt.Errorf("disco key must be 32 bytes, got %d", len(raw))
+	}
+	return key.DiscoPublicFromRaw32(mem.B(raw)), nil
 }
 
 // fqdn converts a hostname to an FQDN with trailing dot, as meshnet expects.

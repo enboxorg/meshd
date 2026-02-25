@@ -57,6 +57,11 @@ type RegisterNodeParams struct {
 	// WireGuardPubKey is this node's WireGuard public key (base64).
 	WireGuardPubKey string
 
+	// DiscoKey is this node's disco public key (base64). The disco key
+	// enables DERP relay and direct connection upgrades between peers.
+	// Optional: if empty, the disco key is omitted from the nodeInfo record.
+	DiscoKey string
+
 	// MeshIP is this node's allocated mesh IP.
 	MeshIP string
 
@@ -108,12 +113,16 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 		hostname, _ = os.Hostname()
 	}
 
-	nodeInfoData, err := json.Marshal(map[string]any{
+	nodeInfo := map[string]any{
 		"wireguardPublicKey": params.WireGuardPubKey,
 		"meshIP":             params.MeshIP,
 		"hostname":           hostname,
 		"os":                 runtime.GOOS,
-	})
+	}
+	if params.DiscoKey != "" {
+		nodeInfo["discoKey"] = params.DiscoKey
+	}
+	nodeInfoData, err := json.Marshal(nodeInfo)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling nodeInfo: %w", err)
 	}
@@ -193,12 +202,16 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 		return fmt.Errorf("EncryptionKeyManager is required for encrypted writes")
 	}
 
-	endpointData, err := json.Marshal(map[string]any{
+	epMap := map[string]any{
 		"publicEndpoints": params.PublicEndpoints,
 		"localEndpoints":  params.LocalEndpoints,
 		"natType":         params.NATType,
 		"updatedAt":       time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	if params.DiscoKey != "" {
+		epMap["discoKey"] = params.DiscoKey
+	}
+	endpointData, err := json.Marshal(epMap)
 	if err != nil {
 		return fmt.Errorf("marshaling endpoint: %w", err)
 	}
@@ -256,6 +269,11 @@ type WriteEndpointParams struct {
 	LocalEndpoints       []string
 	NATType              string
 	ProtocolRole         string
+
+	// DiscoKey is this node's current disco public key (base64).
+	// Included in the endpoint record so peers can discover the disco key
+	// alongside the network endpoints for DERP relay and hole punching.
+	DiscoKey string
 
 	// UseContextEncryption enables Protocol Context encryption instead of
 	// Protocol Path encryption. See RegisterNodeParams.UseContextEncryption.
