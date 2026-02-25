@@ -11,6 +11,7 @@ package control
 
 import (
 	"net/netip"
+	"time"
 )
 
 // Node represents a peer in the mesh network.
@@ -45,7 +46,13 @@ type Node struct {
 	PreferredDERP int
 
 	// Online indicates whether the node is currently reachable.
+	// Determined by whether the most recent endpoint record update
+	// is within the staleness threshold (DefaultPeerStaleThreshold).
 	Online bool
+
+	// LastSeen is the time of the most recent endpoint record update.
+	// Zero value means no endpoint data is available.
+	LastSeen time.Time
 
 	// OS is the operating system.
 	OS string

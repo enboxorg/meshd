@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/netip"
 	"testing"
+	"time"
 
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 )
@@ -84,6 +85,9 @@ func TestBuildStaticMapResponse(t *testing.T) {
 }
 
 func TestNodeInfoToNode(t *testing.T) {
+	now := time.Now().UTC()
+	recentUpdate := now.Add(-2 * time.Minute).Format(time.RFC3339)
+
 	info := &NodeInfoData{
 		WireGuardPublicKey: "testkey==",
 		MeshIP:             "10.200.0.5",
@@ -98,11 +102,12 @@ func TestNodeInfoToNode(t *testing.T) {
 				},
 				LocalEndpoints: []string{"192.168.1.5:41641"},
 				PreferredDERP:  2,
+				UpdatedAt:      recentUpdate,
 			},
 		},
 	}
 
-	node := nodeInfoToNode(42, "did:dht:test", info)
+	node := nodeInfoToNodeWithThreshold(42, "did:dht:test", info, DefaultPeerStaleThreshold, now)
 
 	tests := map[string]struct {
 		got  any
@@ -114,6 +119,7 @@ func TestNodeInfoToNode(t *testing.T) {
 		"MeshIP":        {got: node.MeshIP, want: netip.MustParseAddr("10.200.0.5")},
 		"Name":          {got: node.Name, want: "myhost"},
 		"PreferredDERP": {got: node.PreferredDERP, want: 2},
+		"Online":        {got: node.Online, want: true},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -122,6 +128,12 @@ func TestNodeInfoToNode(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("LastSeen", func(t *testing.T) {
+		if node.LastSeen.IsZero() {
+			t.Fatal("expected non-zero LastSeen")
+		}
+	})
 
 	t.Run("AllowedIPs", func(t *testing.T) {
 		// mesh IP /32 + additional subnet
@@ -144,6 +156,136 @@ func TestNodeInfoToNode(t *testing.T) {
 			t.Errorf("[1] = %q", node.Endpoints[1])
 		}
 	})
+}
+
+func TestNodeOnlineStatus(t *testing.T) {
+	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
+	threshold := 5 * time.Minute
+
+	tests := []struct {
+		name       string
+		endpoints  []EndpointData
+		wantOnline bool
+		wantSeen   bool // whether LastSeen should be non-zero
+	}{
+		{
+			name:       "no endpoints — offline",
+			endpoints:  nil,
+			wantOnline: false,
+			wantSeen:   false,
+		},
+		{
+			name: "no updatedAt — offline",
+			endpoints: []EndpointData{
+				{LocalEndpoints: []string{"192.168.1.5:41641"}},
+			},
+			wantOnline: false,
+			wantSeen:   false,
+		},
+		{
+			name: "recent update — online",
+			endpoints: []EndpointData{
+				{
+					LocalEndpoints: []string{"192.168.1.5:41641"},
+					UpdatedAt:      now.Add(-2 * time.Minute).Format(time.RFC3339),
+				},
+			},
+			wantOnline: true,
+			wantSeen:   true,
+		},
+		{
+			name: "exactly at threshold — online",
+			endpoints: []EndpointData{
+				{
+					LocalEndpoints: []string{"192.168.1.5:41641"},
+					UpdatedAt:      now.Add(-threshold).Format(time.RFC3339),
+				},
+			},
+			wantOnline: true,
+			wantSeen:   true,
+		},
+		{
+			name: "just past threshold — offline",
+			endpoints: []EndpointData{
+				{
+					LocalEndpoints: []string{"192.168.1.5:41641"},
+					UpdatedAt:      now.Add(-threshold - time.Second).Format(time.RFC3339),
+				},
+			},
+			wantOnline: false,
+			wantSeen:   true,
+		},
+		{
+			name: "stale update — offline",
+			endpoints: []EndpointData{
+				{
+					LocalEndpoints: []string{"192.168.1.5:41641"},
+					UpdatedAt:      now.Add(-30 * time.Minute).Format(time.RFC3339),
+				},
+			},
+			wantOnline: false,
+			wantSeen:   true,
+		},
+		{
+			name: "multiple endpoints uses most recent",
+			endpoints: []EndpointData{
+				{
+					LocalEndpoints: []string{"192.168.1.5:41641"},
+					UpdatedAt:      now.Add(-30 * time.Minute).Format(time.RFC3339),
+				},
+				{
+					LocalEndpoints: []string{"10.0.0.1:41641"},
+					UpdatedAt:      now.Add(-1 * time.Minute).Format(time.RFC3339),
+				},
+			},
+			wantOnline: true,
+			wantSeen:   true,
+		},
+		{
+			name: "malformed updatedAt — offline",
+			endpoints: []EndpointData{
+				{
+					LocalEndpoints: []string{"192.168.1.5:41641"},
+					UpdatedAt:      "not-a-timestamp",
+				},
+			},
+			wantOnline: false,
+			wantSeen:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			info := &NodeInfoData{
+				WireGuardPublicKey: "testkey==",
+				MeshIP:             "10.200.0.5",
+				Hostname:           "peer",
+				Endpoints:          tc.endpoints,
+			}
+
+			node := nodeInfoToNodeWithThreshold(1, "did:dht:test", info, threshold, now)
+
+			if node.Online != tc.wantOnline {
+				t.Errorf("Online = %v, want %v", node.Online, tc.wantOnline)
+			}
+			if tc.wantSeen && node.LastSeen.IsZero() {
+				t.Error("expected non-zero LastSeen")
+			}
+			if !tc.wantSeen && !node.LastSeen.IsZero() {
+				t.Errorf("expected zero LastSeen, got %v", node.LastSeen)
+			}
+		})
+	}
+}
+
+func TestDefaultPeerStaleThreshold(t *testing.T) {
+	// Verify the constant is reasonable (between 1 minute and 1 hour).
+	if DefaultPeerStaleThreshold < time.Minute {
+		t.Errorf("threshold %v is too short", DefaultPeerStaleThreshold)
+	}
+	if DefaultPeerStaleThreshold > time.Hour {
+		t.Errorf("threshold %v is too long", DefaultPeerStaleThreshold)
+	}
 }
 
 func TestDefaultDERPRegions(t *testing.T) {
