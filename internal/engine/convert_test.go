@@ -4,7 +4,7 @@ import (
 	"net/netip"
 	"testing"
 
-	"github.com/enboxorg/dwn-mesh/internal/control"
+	"github.com/enboxorg/meshd/internal/control"
 	"github.com/enboxorg/meshnet/types/key"
 )
 

@@ -9,7 +9,7 @@ import (
 // InMemoryDiscoRegistry is a shared in-memory disco key registry.
 //
 // In normal Tailscale, the control server distributes disco keys between peers.
-// In dwn-mesh, engines use this registry to exchange disco keys. For engines
+// In meshd, engines use this registry to exchange disco keys. For engines
 // running in the same process (tests, embedded use), a single shared registry
 // is sufficient. For engines on different machines, disco keys will be
 // exchanged via DWN endpoint records.

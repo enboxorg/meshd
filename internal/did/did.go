@@ -1,4 +1,4 @@
-// Package did provides DID generation and resolution for dwn-mesh nodes.
+// Package did provides DID generation and resolution for meshd nodes.
 //
 // Each machine in the mesh is identified by a DID (Decentralized Identifier)
 // using the did:dht method. A node's DID document contains:

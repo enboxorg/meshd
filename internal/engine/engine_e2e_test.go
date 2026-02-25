@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/enboxorg/dwn-mesh/internal/control"
-	"github.com/enboxorg/dwn-mesh/internal/dwn"
+	"github.com/enboxorg/meshd/internal/control"
+	"github.com/enboxorg/meshd/internal/dwn"
 )
 
 // testSigner creates a Signer with a real Ed25519 key for testing.

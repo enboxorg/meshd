@@ -2,9 +2,9 @@
 package dns
 
 import (
-	"github.com/enboxorg/dwn-mesh/pkg/crypto/dsa"
-	"github.com/enboxorg/dwn-mesh/pkg/crypto/dsa/eddsa"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
+	"github.com/enboxorg/meshd/pkg/crypto/dsa"
+	"github.com/enboxorg/meshd/pkg/crypto/dsa/eddsa"
+	"github.com/enboxorg/meshd/pkg/dids/didcore"
 )
 
 // vmPurposeDNStoDID maps the DNS representation of the

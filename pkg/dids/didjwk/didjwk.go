@@ -6,9 +6,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 
-	"github.com/enboxorg/dwn-mesh/pkg/dids/did"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
-	"github.com/enboxorg/dwn-mesh/pkg/jwk"
+	"github.com/enboxorg/meshd/pkg/dids/did"
+	"github.com/enboxorg/meshd/pkg/dids/didcore"
+	"github.com/enboxorg/meshd/pkg/jwk"
 )
 
 // Resolver is a type to implement resolution

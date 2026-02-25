@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/enboxorg/dwn-mesh/internal/did"
-	"github.com/enboxorg/dwn-mesh/internal/dwn"
-	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
-	"github.com/enboxorg/dwn-mesh/internal/mesh"
-	"github.com/enboxorg/dwn-mesh/protocols"
+	"github.com/enboxorg/meshd/internal/did"
+	"github.com/enboxorg/meshd/internal/dwn"
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/internal/mesh"
+	"github.com/enboxorg/meshd/protocols"
 )
 
-// End-to-end integration test for dwn-mesh: creates a network with two
+// End-to-end integration test for meshd: creates a network with two
 // nodes, writes encrypted records, and verifies that records are
 // visible and decryptable by both participants.
 //

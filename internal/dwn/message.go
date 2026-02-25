@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 )
 
 // Sentinel errors.

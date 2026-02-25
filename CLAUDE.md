@@ -1,4 +1,4 @@
-# CLAUDE.md — Agent Instructions for dwn-mesh
+# CLAUDE.md — Agent Instructions for meshd
 
 ## Workflow: Git Worktrees
 
@@ -10,7 +10,7 @@ All work MUST be done in fresh git worktrees. Never work directly on `main`.
 2. Create a fresh worktree from the latest `main`:
    ```sh
    git fetch origin
-   git worktree add ../dwn-mesh-<short-name> -b <branch-name> origin/main
+   git worktree add ../meshd-<short-name> -b <branch-name> origin/main
    ```
    Branch naming: `feat/<topic>`, `fix/<topic>`, or `chore/<topic>`.
 3. Work inside the worktree directory for all changes.
@@ -39,7 +39,7 @@ All new or changed behavior must have corresponding tests. Do not skip tests.
 
 1. Delete the worktree and the local branch:
    ```sh
-   git worktree remove ../dwn-mesh-<short-name>
+   git worktree remove ../meshd-<short-name>
    git branch -d <branch-name>
    ```
 2. New work starts in a new fresh worktree. Never reuse old worktrees.
@@ -47,11 +47,11 @@ All new or changed behavior must have corresponding tests. Do not skip tests.
 ## Project Context
 
 - **Language**: Go 1.25+.
-- **Module**: `github.com/enboxorg/dwn-mesh`.
+- **Module**: `github.com/enboxorg/meshd`.
 - **Vendored deps**: `GOFLAGS=-mod=vendor`. Run `go mod vendor` after dependency changes.
 - **Private dependency**: `github.com/enboxorg/meshnet` (WireGuard engine fork). Requires `GOPRIVATE=github.com/enboxorg/*`.
 - **Structure**:
-  - `cmd/dwn-mesh/` — main binary
+  - `cmd/meshd/` — main binary
   - `internal/control/` — DWN-based control client (replaces Tailscale coordination)
   - `internal/dwn/` — DWN protocol operations
   - `internal/mesh/` — mesh network orchestration

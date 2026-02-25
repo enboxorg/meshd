@@ -1,5 +1,5 @@
-// Package engine bridges dwn-mesh's control layer to the meshnet networking
-// engine. It converts dwn-mesh's [control.MapResponse] into meshnet's
+// Package engine bridges meshd's control layer to the meshnet networking
+// engine. It converts meshd's [control.MapResponse] into meshnet's
 // [netmap.NetworkMap] and provides the [MapResponseFunc] callback that
 // meshnet's DWNControl polls.
 package engine
@@ -12,7 +12,7 @@ import (
 	"net/netip"
 	"sort"
 
-	"github.com/enboxorg/dwn-mesh/internal/control"
+	"github.com/enboxorg/meshd/internal/control"
 
 	"github.com/enboxorg/meshnet/tailcfg"
 	"github.com/enboxorg/meshnet/types/dnstype"
@@ -23,7 +23,7 @@ import (
 	"go4.org/mem"
 )
 
-// Converter holds config for converting dwn-mesh types to meshnet types.
+// Converter holds config for converting meshd types to meshnet types.
 type Converter struct {
 	// Domain is the mesh domain name (e.g. "my-mesh").
 	Domain string
@@ -57,7 +57,7 @@ func NewConverter(domain string, opts ...ConverterOption) *Converter {
 	return c
 }
 
-// Convert transforms a dwn-mesh MapResponse into a meshnet NetworkMap.
+// Convert transforms a meshd MapResponse into a meshnet NetworkMap.
 //
 // The returned NetworkMap has all the fields meshnet's LocalBackend needs
 // to configure WireGuard peers, DERP relays, DNS, and packet filters.
@@ -149,7 +149,7 @@ func (c *Converter) Convert(resp *control.MapResponse) (*netmap.NetworkMap, erro
 	return nm, nil
 }
 
-// convertNode converts a dwn-mesh Node to a meshnet tailcfg.Node.
+// convertNode converts a meshd Node to a meshnet tailcfg.Node.
 func (c *Converter) convertNode(n *control.Node) (*tailcfg.Node, error) {
 	node := &tailcfg.Node{
 		ID:       tailcfg.NodeID(n.ID),
@@ -239,7 +239,7 @@ func (c *Converter) fqdn(hostname string) string {
 	return hostname + "." + suffix + "."
 }
 
-// convertDERPMap converts a dwn-mesh DERPMap to a meshnet tailcfg.DERPMap.
+// convertDERPMap converts a meshd DERPMap to a meshnet tailcfg.DERPMap.
 func (c *Converter) convertDERPMap(dm *control.DERPMap) *tailcfg.DERPMap {
 	result := &tailcfg.DERPMap{
 		Regions:            make(map[int]*tailcfg.DERPRegion, len(dm.Regions)),
@@ -272,7 +272,7 @@ func (c *Converter) convertDERPMap(dm *control.DERPMap) *tailcfg.DERPMap {
 	return result
 }
 
-// convertDNSConfig converts a dwn-mesh DNSConfig to a meshnet tailcfg.DNSConfig.
+// convertDNSConfig converts a meshd DNSConfig to a meshnet tailcfg.DNSConfig.
 func (c *Converter) convertDNSConfig(dns *control.DNSConfig) tailcfg.DNSConfig {
 	cfg := tailcfg.DNSConfig{
 		Proxied: true, // Enable MagicDNS.
@@ -295,7 +295,7 @@ func (c *Converter) convertDNSConfig(dns *control.DNSConfig) tailcfg.DNSConfig {
 	return cfg
 }
 
-// convertFilterRules converts dwn-mesh filter rules to meshnet tailcfg.FilterRule.
+// convertFilterRules converts meshd filter rules to meshnet tailcfg.FilterRule.
 func (c *Converter) convertFilterRules(rules []control.FilterRule) []tailcfg.FilterRule {
 	result := make([]tailcfg.FilterRule, 0, len(rules))
 	for _, r := range rules {
@@ -319,7 +319,7 @@ func (c *Converter) convertFilterRules(rules []control.FilterRule) []tailcfg.Fil
 // MapResponseFunc creates a meshnet-compatible MapResponseFunc that reads
 // mesh state from DWN and converts it to a NetworkMap.
 //
-// This function is the bridge between dwn-mesh's DWN control client and
+// This function is the bridge between meshd's DWN control client and
 // meshnet's DWNControl polling loop. It is passed to DWNControlConfig.MapResponseFunc.
 //
 // If autoDelivery is non-nil, it is triggered after each successful state

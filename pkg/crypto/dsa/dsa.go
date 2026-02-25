@@ -4,9 +4,9 @@ package dsa
 import (
 	"fmt"
 
-	"github.com/enboxorg/dwn-mesh/pkg/crypto/dsa/ecdsa"
-	"github.com/enboxorg/dwn-mesh/pkg/crypto/dsa/eddsa"
-	"github.com/enboxorg/dwn-mesh/pkg/jwk"
+	"github.com/enboxorg/meshd/pkg/crypto/dsa/ecdsa"
+	"github.com/enboxorg/meshd/pkg/crypto/dsa/eddsa"
+	"github.com/enboxorg/meshd/pkg/jwk"
 )
 
 const (

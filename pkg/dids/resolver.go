@@ -5,11 +5,11 @@ import (
 	"context"
 	"sync"
 
-	"github.com/enboxorg/dwn-mesh/pkg/dids/did"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/diddht"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didjwk"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didweb"
+	"github.com/enboxorg/meshd/pkg/dids/did"
+	"github.com/enboxorg/meshd/pkg/dids/didcore"
+	"github.com/enboxorg/meshd/pkg/dids/diddht"
+	"github.com/enboxorg/meshd/pkg/dids/didjwk"
+	"github.com/enboxorg/meshd/pkg/dids/didweb"
 )
 
 // Resolve resolves the provided DID URI. This function is capable of resolving

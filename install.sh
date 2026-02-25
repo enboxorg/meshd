@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-APP='dwn-mesh'
-REPO='enboxorg/dwn-mesh'
+APP='meshd'
+REPO='enboxorg/meshd'
 INSTALL_DIR="${HOME}/.${APP}/bin"
 REQUESTED_VERSION="${VERSION:-}"
 NO_MODIFY_PATH=false
@@ -18,7 +18,7 @@ trap cleanup EXIT INT TERM
 
 usage() {
   cat <<'EOF'
-dwn-mesh installer
+meshd installer
 
 Usage: install.sh [options]
 
@@ -158,7 +158,7 @@ add_to_path() {
   fi
 
   if [ -w "$config" ]; then
-    printf '\n# dwn-mesh\n%s\n' "$line" >> "$config"
+    printf '\n# meshd\n%s\n' "$line" >> "$config"
     printf 'Updated PATH in %s\n' "$config"
     return
   fi
@@ -201,9 +201,9 @@ main() {
 
   local archive=''
   if [ "$os" = 'windows' ]; then
-    archive="dwn-mesh-${os}-${arch}.zip"
+    archive="meshd-${os}-${arch}.zip"
   else
-    archive="dwn-mesh-${os}-${arch}.tar.gz"
+    archive="meshd-${os}-${arch}.tar.gz"
   fi
 
   local url
@@ -211,7 +211,7 @@ main() {
 
   TMP_DIR="$(mktemp -d)"
 
-  printf '==> Installing dwn-mesh %s\n' "$tag"
+  printf '==> Installing meshd %s\n' "$tag"
   download_file "$url" "${TMP_DIR}/${archive}"
   extract_archive "${TMP_DIR}/${archive}" "$TMP_DIR" "$os"
 
@@ -222,16 +222,16 @@ main() {
     suffix='.exe'
   fi
 
-  cp "${TMP_DIR}/dwn-mesh${suffix}" "${INSTALL_DIR}/dwn-mesh${suffix}"
-  chmod +x "${INSTALL_DIR}/dwn-mesh${suffix}"
+  cp "${TMP_DIR}/meshd${suffix}" "${INSTALL_DIR}/meshd${suffix}"
+  chmod +x "${INSTALL_DIR}/meshd${suffix}"
 
   if [ "$NO_MODIFY_PATH" = false ] && [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
     add_to_path
   fi
 
   printf '==> Installed to %s\n' "$INSTALL_DIR"
-  "${INSTALL_DIR}/dwn-mesh${suffix}" --version || true
-  printf 'Run: dwn-mesh init\n'
+  "${INSTALL_DIR}/meshd${suffix}" --version || true
+  printf 'Run: meshd init\n'
 }
 
 main "$@"

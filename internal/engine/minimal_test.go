@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/enboxorg/dwn-mesh/internal/control"
+	"github.com/enboxorg/meshd/internal/control"
 
 	"github.com/enboxorg/meshnet/control/controlclient"
 	"github.com/enboxorg/meshnet/derp/derpserver"

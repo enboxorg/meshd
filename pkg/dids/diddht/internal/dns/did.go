@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/enboxorg/dwn-mesh/pkg/crypto/dsa"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
+	"github.com/enboxorg/meshd/pkg/crypto/dsa"
+	"github.com/enboxorg/meshd/pkg/dids/didcore"
 	"golang.org/x/net/dns/dnsmessage"
 )
 

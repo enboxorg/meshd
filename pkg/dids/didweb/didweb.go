@@ -11,8 +11,8 @@ import (
 	liburl "net/url"
 	"strings"
 
-	_did "github.com/enboxorg/dwn-mesh/pkg/dids/did"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
+	_did "github.com/enboxorg/meshd/pkg/dids/did"
+	"github.com/enboxorg/meshd/pkg/dids/didcore"
 )
 
 // TransformID takes a did:web's identifier (the third part, after the method) and returns the web URL per the [spec]

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/enboxorg/dwn-mesh/pkg/dids/did"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
+	"github.com/enboxorg/meshd/pkg/dids/did"
+	"github.com/enboxorg/meshd/pkg/dids/didcore"
 )
 
 // Resolver resolves DIDs to DID Documents. This abstraction allows the control

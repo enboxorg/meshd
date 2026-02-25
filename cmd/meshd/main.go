@@ -12,21 +12,21 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/enboxorg/dwn-mesh/internal/did"
-	"github.com/enboxorg/dwn-mesh/internal/dwn"
-	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
-	"github.com/enboxorg/dwn-mesh/internal/engine"
-	"github.com/enboxorg/dwn-mesh/internal/mesh"
-	"github.com/enboxorg/dwn-mesh/internal/state"
-	"github.com/enboxorg/dwn-mesh/pkg/dids"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
-	"github.com/enboxorg/dwn-mesh/protocols"
+	"github.com/enboxorg/meshd/internal/did"
+	"github.com/enboxorg/meshd/internal/dwn"
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/internal/engine"
+	"github.com/enboxorg/meshd/internal/mesh"
+	"github.com/enboxorg/meshd/internal/state"
+	"github.com/enboxorg/meshd/pkg/dids"
+	"github.com/enboxorg/meshd/pkg/dids/didcore"
+	"github.com/enboxorg/meshd/protocols"
 )
 
-const usage = `dwn-mesh - Decentralized WireGuard mesh networking via DWN
+const usage = `meshd - Decentralized WireGuard mesh networking via DWN
 
 Usage:
-  dwn-mesh <command> [arguments]
+  meshd <command> [arguments]
 
 Commands:
   init              Generate DID identity and publish to DHT
@@ -50,7 +50,7 @@ Flags:
   -v, --version     Show version information
 
 Environment:
-  DWN_MESH_STATE_DIR    State directory (default: ~/.dwn-mesh)
+  MESHD_STATE_DIR    State directory (default: ~/.meshd)
   DWN_ENDPOINT          Default DWN endpoint URL
 `
 
@@ -83,7 +83,7 @@ func main() {
 		fmt.Print(usage)
 		return
 	case "-v", "--version", "version":
-		fmt.Printf("dwn-mesh %s\n", version)
+		fmt.Printf("meshd %s\n", version)
 		return
 	case "init":
 		err = cmdInit(ctx, args)
@@ -104,13 +104,13 @@ func main() {
 	case "down":
 		err = cmdDown(ctx, args)
 	default:
-		fmt.Fprintf(os.Stderr, "dwn-mesh: unknown command %q\n", cmd)
-		fmt.Fprintf(os.Stderr, "Run 'dwn-mesh --help' for usage.\n")
+		fmt.Fprintf(os.Stderr, "meshd: unknown command %q\n", cmd)
+		fmt.Fprintf(os.Stderr, "Run 'meshd --help' for usage.\n")
 		os.Exit(1)
 	}
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dwn-mesh: %v\n", err)
+		fmt.Fprintf(os.Stderr, "meshd: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -210,10 +210,10 @@ func publishDID(ctx context.Context, identity *did.DID, dwnEndpoint, gateway str
 
 // cmdNetworkCreate creates a new mesh network.
 //
-// Usage: dwn-mesh network create <name> --endpoint <dwn-url>
+// Usage: meshd network create <name> --endpoint <dwn-url>
 func cmdNetworkCreate(ctx context.Context, args []string) error {
 	if len(args) < 3 {
-		return fmt.Errorf("usage: dwn-mesh network create <name> --endpoint <dwn-url>")
+		return fmt.Errorf("usage: meshd network create <name> --endpoint <dwn-url>")
 	}
 
 	name := args[0]
@@ -235,7 +235,7 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 	}
 
 	if state.HasNetwork(stateDir) {
-		return fmt.Errorf("already in a network. Use 'dwn-mesh network leave' first.")
+		return fmt.Errorf("already in a network. Use 'meshd network leave' first.")
 	}
 
 	signer := &dwn.Signer{
@@ -407,7 +407,7 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 	fmt.Printf("  Record: %s\n", record.ID)
 	fmt.Printf("  Anchor: %s\n", endpoint)
 	fmt.Printf("\nShare this join token with peers:\n")
-	fmt.Printf("  dwn-mesh network join --endpoint %s --anchor %s --network %s\n",
+	fmt.Printf("  meshd network join --endpoint %s --anchor %s --network %s\n",
 		endpoint, identity.URI, record.ID)
 
 	return nil
@@ -415,7 +415,7 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 
 // cmdNetworkJoin joins an existing mesh network.
 //
-// Usage: dwn-mesh network join --endpoint <url> --anchor <did> --network <id>
+// Usage: meshd network join --endpoint <url> --anchor <did> --network <id>
 func cmdNetworkJoin(ctx context.Context, args []string) error {
 	var endpoint, anchorDID, networkID string
 	for i := 0; i < len(args); i++ {
@@ -439,7 +439,7 @@ func cmdNetworkJoin(ctx context.Context, args []string) error {
 	}
 
 	if endpoint == "" || anchorDID == "" || networkID == "" {
-		return fmt.Errorf("usage: dwn-mesh network join --endpoint <url> --anchor <did> --network <id>")
+		return fmt.Errorf("usage: meshd network join --endpoint <url> --anchor <did> --network <id>")
 	}
 
 	stateDir := state.DefaultStateDir()
@@ -449,7 +449,7 @@ func cmdNetworkJoin(ctx context.Context, args []string) error {
 	}
 
 	if state.HasNetwork(stateDir) {
-		return fmt.Errorf("already in a network. Use 'dwn-mesh network leave' first.")
+		return fmt.Errorf("already in a network. Use 'meshd network leave' first.")
 	}
 
 	signer := &dwn.Signer{
@@ -560,7 +560,7 @@ func cmdNetworkJoin(ctx context.Context, args []string) error {
 	fmt.Printf("  CIDR: %s\n", networkData.MeshCIDR)
 	fmt.Printf("  Mesh IP: %s\n", meshIP)
 	fmt.Printf("  Anchor: %s\n", anchorDID)
-	fmt.Printf("\nRun 'dwn-mesh up' to start the mesh.\n")
+	fmt.Printf("\nRun 'meshd up' to start the mesh.\n")
 
 	return nil
 }
@@ -604,7 +604,7 @@ func cmdPeerList(ctx context.Context, args []string) error {
 		return fmt.Errorf("loading network state: %w", err)
 	}
 	if ns == nil {
-		return fmt.Errorf("not in a network. Use 'dwn-mesh network join' first.")
+		return fmt.Errorf("not in a network. Use 'meshd network join' first.")
 	}
 
 	signer := &dwn.Signer{
@@ -663,10 +663,10 @@ func cmdPeerList(ctx context.Context, args []string) error {
 // cmdPeerApprove delivers encryption keys to a peer so they can decrypt
 // mesh records. This must be run by the network anchor (owner).
 //
-// Usage: dwn-mesh peer approve <did>
+// Usage: meshd peer approve <did>
 func cmdPeerApprove(ctx context.Context, args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: dwn-mesh peer approve <did>")
+		return fmt.Errorf("usage: meshd peer approve <did>")
 	}
 
 	peerDID := args[0]
@@ -682,7 +682,7 @@ func cmdPeerApprove(ctx context.Context, args []string) error {
 		return fmt.Errorf("loading network state: %w", err)
 	}
 	if ns == nil {
-		return fmt.Errorf("not in a network. Use 'dwn-mesh network create' first.")
+		return fmt.Errorf("not in a network. Use 'meshd network create' first.")
 	}
 
 	// Only the anchor (network owner) can deliver context keys.
@@ -723,7 +723,7 @@ func cmdStatus(ctx context.Context, args []string) error {
 
 	// Identity.
 	if !did.Exists(stateDir) {
-		fmt.Println("Not initialized. Run 'dwn-mesh init' first.")
+		fmt.Println("Not initialized. Run 'meshd init' first.")
 		return nil
 	}
 
@@ -742,7 +742,7 @@ func cmdStatus(ctx context.Context, args []string) error {
 		return fmt.Errorf("loading network state: %w", err)
 	}
 	if ns == nil {
-		fmt.Printf("\nNetwork: none (run 'dwn-mesh network create' or 'network join')\n")
+		fmt.Printf("\nNetwork: none (run 'meshd network create' or 'network join')\n")
 		return nil
 	}
 
@@ -784,7 +784,7 @@ func cmdUp(ctx context.Context, args []string) error {
 		return fmt.Errorf("loading network state: %w", err)
 	}
 	if ns == nil {
-		return fmt.Errorf("not in a network. Use 'dwn-mesh network create' or 'network join' first.")
+		return fmt.Errorf("not in a network. Use 'meshd network create' or 'network join' first.")
 	}
 
 	// Parse optional flags.
@@ -853,7 +853,7 @@ func cmdUp(ctx context.Context, args []string) error {
 		}
 	}
 
-	fmt.Printf("Starting dwn-mesh...\n")
+	fmt.Printf("Starting meshd...\n")
 	fmt.Printf("  Network: %s\n", ns.NetworkName)
 	fmt.Printf("  DID: %s\n", identity.URI)
 	fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
@@ -999,21 +999,21 @@ func cmdUp(ctx context.Context, args []string) error {
 
 // cmdDown stops the mesh agent daemon.
 //
-// Currently this sends SIGTERM to a running `dwn-mesh up` process.
+// Currently this sends SIGTERM to a running `meshd up` process.
 // In the future, this will communicate with a proper daemon via Unix socket.
 func cmdDown(ctx context.Context, args []string) error {
 	// For now, `down` is a placeholder. The `up` command runs in the foreground
 	// and can be stopped with Ctrl+C. A proper daemon mode with `down` support
 	// will be added when we implement the IPN socket-based architecture.
-	fmt.Println("dwn-mesh down: not yet implemented for daemon mode.")
-	fmt.Println("Stop the running 'dwn-mesh up' process with Ctrl+C or SIGTERM.")
+	fmt.Println("meshd down: not yet implemented for daemon mode.")
+	fmt.Println("Stop the running 'meshd up' process with Ctrl+C or SIGTERM.")
 	return nil
 }
 
 // loadIdentity loads the DID identity, or returns an error if not initialized.
 func loadIdentity(stateDir string) (*did.DID, error) {
 	if !did.Exists(stateDir) {
-		return nil, fmt.Errorf("not initialized. Run 'dwn-mesh init' first.")
+		return nil, fmt.Errorf("not initialized. Run 'meshd init' first.")
 	}
 	identity, err := did.Load(stateDir)
 	if err != nil {

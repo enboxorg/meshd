@@ -1,4 +1,4 @@
-# dwn-mesh
+# meshd
 
 Mesh VPN with no accounts, no servers, no company.
 
@@ -11,44 +11,44 @@ sign up for. Nothing to self-host. Nothing to trust.
 ## Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/enboxorg/dwn-mesh/main/install.sh | bash
+curl -fsSL https://meshd.sh/install | bash
 ```
 
 The installer works on Linux, macOS, and Windows (Git Bash/WSL). It installs
-the latest prebuilt `dwn-mesh` release binary.
+the latest prebuilt `meshd` release binary.
 
 ```bash
 # Manual install (if you prefer to run steps yourself)
-go install github.com/enboxorg/dwn-mesh/cmd/dwn-mesh@latest
+go install github.com/enboxorg/meshd/cmd/meshd@latest
 ```
 
 ## What is this?
 
-dwn-mesh is a WireGuard mesh network where there is no coordination server.
+meshd is a WireGuard mesh network where there is no coordination server.
 No Tailscale account. No self-hosted Headscale. Your devices discover each
 other, exchange keys, and establish encrypted tunnels -- all coordinated
 through cryptographically signed records on a
 [Decentralized Web Node](https://github.com/enboxorg/dwn-spec).
 
-You don't need to know what that means. `dwn-mesh init` handles everything.
+You don't need to know what that means. `meshd init` handles everything.
 
 ## Quick start (planned)
 
 ```bash
 # On your first machine
-dwn-mesh init
-dwn-mesh network create --name "my-network"
+meshd init
+meshd network create --name "my-network"
 
 # On your second machine
-dwn-mesh init
+meshd init
 # prints: Your device identity: did:dht:k5f8...
 
 # Back on the first machine, add the second
-dwn-mesh peer add did:dht:k5f8...
+meshd peer add did:dht:k5f8...
 
 # On the second machine, join
-dwn-mesh network join did:dht:abc1... <network-id>
-dwn-mesh up
+meshd network join did:dht:abc1... <network-id>
+meshd up
 
 # That's it. The machines can reach each other at 100.64.0.x
 # through encrypted WireGuard tunnels. NAT traversal is automatic.
@@ -62,7 +62,7 @@ dwn-mesh up
 Tailscale       control            nothing             Tailscale Inc.
 Headscale       less control       a server            your server
 WireGuard       nothing            everything          yourself
-dwn-mesh        nothing            nothing             cryptography
+meshd        nothing            nothing             cryptography
 ```
 
 **vs Tailscale / Headscale:** No account. No server. No company in the
@@ -80,7 +80,7 @@ Behind NATs, on different continents, on cellular -- it just works.
 
 **No infrastructure to run.** There is no coordination server. Your
 devices coordinate directly using signed, encrypted records. The
-"server" is an embedded component that starts when you run `dwn-mesh up`.
+"server" is an embedded component that starts when you run `meshd up`.
 
 **Add people, not just devices.** Invite collaborators into your mesh.
 They bring their own devices. You control access with ACL policies.
@@ -93,14 +93,14 @@ or what the rules are.
 
 ## If you already have a DID and DWN
 
-dwn-mesh becomes something more: **private infrastructure for your DWN
+meshd becomes something more: **private infrastructure for your DWN
 identity**.
 
 Your DID document lists your public DWN. But what about your backup
 NAS, your laptop, your staging instance? They shouldn't be in your DID
 document. They shouldn't have public IPs. But they need to sync.
 
-dwn-mesh creates the private layer underneath your public identity:
+meshd creates the private layer underneath your public identity:
 
 ```
 Public (what the world sees):
@@ -129,13 +129,13 @@ See [DESIGN.md](DESIGN.md) for the complete architecture.
 
 ## How it works under the hood
 
-**Networking:** dwn-mesh uses [dexnet](https://github.com/WebP2P/dexnet)
+**Networking:** meshd uses [dexnet](https://github.com/WebP2P/dexnet)
 as its networking engine -- a fork of Tailscale's open-source client with
 its own IP space (`10.200.0.0/16`) so it runs side-by-side with Tailscale.
 This gives us battle-tested WireGuard management, NAT traversal, STUN,
 DERP relay, and UDP hole punching out of the box.
 
-**Coordination:** dwn-mesh replaces Tailscale's coordination server with
+**Coordination:** meshd replaces Tailscale's coordination server with
 DWN protocols. Every device gets a **DID** (a cryptographic identity --
 think self-signed certificate the whole internet can verify) and runs an
 embedded **DWN** (a tiny personal data store). Devices discover each other
@@ -148,7 +148,7 @@ entire Tailscale data plane without modification -- we only replace the
 part that answers "who are my peers and how do I reach them?"
 
 ```
-dwn-mesh = DWN coordination (identity, membership, ACLs, encryption)
+meshd = DWN coordination (identity, membership, ACLs, encryption)
          + dexnet engine (WireGuard, NAT traversal, DERP, hole punching)
 ```
 
@@ -166,12 +166,12 @@ dexnet uses `10.200.0.0/16` (IPv4) and `fd0d:e100:d3c5::/48` (IPv6),
 while Tailscale uses `100.64.0.0/10` and `fd7a:115c:a1e0::/48`. Different
 socket names (`dexnetd` vs `tailscaled`), different state directories.
 You can run both simultaneously on the same machine -- Tailscale for work,
-dwn-mesh for your personal infrastructure.
+meshd for your personal infrastructure.
 
 ## Project structure
 
 ```
-cmd/dwn-mesh/           CLI entrypoint
+cmd/meshd/           CLI entrypoint
 internal/
   did/                  DID generation (did:dht), key derivation, persistence
   dwn/                  DWN HTTP client, JWS signing, CID computation, subscriptions

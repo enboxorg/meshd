@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/enboxorg/dwn-mesh/pkg/dids/diddht/internal/bep44"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/diddht/internal/pkarr"
+	"github.com/enboxorg/meshd/pkg/dids/diddht/internal/bep44"
+	"github.com/enboxorg/meshd/pkg/dids/diddht/internal/pkarr"
 )
 
 const defaultGatewayURL = "https://enbox-did-dht.fly.dev"

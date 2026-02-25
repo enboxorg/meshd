@@ -1,6 +1,6 @@
-// Package state manages the on-disk state for a dwn-mesh node.
+// Package state manages the on-disk state for a meshd node.
 //
-// State is stored in a directory (default: ~/.dwn-mesh/) containing:
+// State is stored in a directory (default: ~/.meshd/) containing:
 //   - identity.json: DID private key (from the did package)
 //   - network.json: current network membership info
 //   - cursors.json: EventLog cursors for crash-safe subscription reconnection
@@ -15,9 +15,9 @@ import (
 )
 
 // DefaultStateDir returns the default state directory path.
-// Linux/macOS: ~/.dwn-mesh
+// Linux/macOS: ~/.meshd
 func DefaultStateDir() string {
-	if d := os.Getenv("DWN_MESH_STATE_DIR"); d != "" {
+	if d := os.Getenv("MESHD_STATE_DIR"); d != "" {
 		return d
 	}
 	home, err := os.UserHomeDir()
@@ -25,9 +25,9 @@ func DefaultStateDir() string {
 		home = "."
 	}
 	if runtime.GOOS == "darwin" {
-		return filepath.Join(home, "Library", "Application Support", "dwn-mesh")
+		return filepath.Join(home, "Library", "Application Support", "meshd")
 	}
-	return filepath.Join(home, ".dwn-mesh")
+	return filepath.Join(home, ".meshd")
 }
 
 // NetworkState holds the persisted network membership information.
