@@ -28,7 +28,7 @@ github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa
 # github.com/dgryski/go-metro v0.0.0-20180109044635-280f6062b5bc
 ## explicit
 github.com/dgryski/go-metro
-# github.com/enboxorg/meshnet v0.0.0-20260223190217-72d896c787af
+# github.com/enboxorg/meshnet v0.0.0-20260225210728-462f103f8bcc
 ## explicit; go 1.25.5
 github.com/enboxorg/meshnet
 github.com/enboxorg/meshnet/appc

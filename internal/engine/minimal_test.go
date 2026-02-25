@@ -316,7 +316,7 @@ func newMinimalStack(
 	l *slog.Logger,
 	nodeKey key.NodePrivate,
 	mapFn func(context.Context) (*netmap.NetworkMap, error),
-	discoReg controlclient.DiscoKeyRegistry,
+	discoReg DiscoKeyRegistry,
 ) (*minimalStack, error) {
 	t.Helper()
 
@@ -403,7 +403,7 @@ func newMinimalStack(
 	}
 
 	// Wire DWNControl with hard-coded map and disco registry.
-	dwnCfg := &controlclient.DWNControlConfig{
+	dwnCfg := &DWNControlConfig{
 		MapResponseFunc: mapFn,
 		PollInterval:    30 * time.Second, // slow polling — initial push is enough for static config
 		NodePrivateKey:  nodeKey,
@@ -412,7 +412,7 @@ func newMinimalStack(
 	}
 
 	lb.SetControlClientGetterForTesting(
-		controlclient.NewDWNControlFactory(dwnCfg),
+		NewDWNControlFactory(dwnCfg),
 	)
 
 	return &minimalStack{
