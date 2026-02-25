@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/enboxorg/dwn-mesh/main/install.sh |
 ```
 
 The installer works on Linux, macOS, and Windows (Git Bash/WSL). It installs
-Go when needed and then installs the latest `dwn-mesh` CLI from source.
+the latest prebuilt `dwn-mesh` release binary.
 
 ```bash
 # Manual install (if you prefer to run steps yourself)
