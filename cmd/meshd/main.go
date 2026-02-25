@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/enboxorg/meshd/internal/daemon"
 	"github.com/enboxorg/meshd/internal/did"
 	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
@@ -867,6 +868,8 @@ func cmdPeerApprove(ctx context.Context, args []string, flagProfile string) erro
 }
 
 // cmdStatus shows the current mesh status and identity info.
+//
+// If a daemon is running, it also queries live status via the control socket.
 func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 	stateDir, err := resolveStateDir(flagProfile)
 	if err != nil {
@@ -912,6 +915,24 @@ func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 	}
 	if ns.NodeInfoRecordID != "" {
 		fmt.Printf("  NodeInfo Record: %s\n", ns.NodeInfoRecordID)
+	}
+
+	// Query live daemon status if running.
+	client := daemon.NewClient(daemon.DefaultSocketPath())
+	if client.IsRunning() {
+		live, err := client.GetStatus(ctx)
+		if err != nil {
+			fmt.Printf("\nDaemon: running (status query failed: %v)\n", err)
+		} else {
+			fmt.Printf("\nDaemon:\n")
+			fmt.Printf("  Running: yes (PID %d)\n", live.PID)
+			fmt.Printf("  Uptime: %s\n", live.Uptime)
+			if live.TUNDevice != "" {
+				fmt.Printf("  TUN device: %s\n", live.TUNDevice)
+			}
+		}
+	} else {
+		fmt.Printf("\nDaemon: not running\n")
 	}
 
 	return nil
@@ -1218,6 +1239,23 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		return fmt.Errorf("starting engine: %w", err)
 	}
 
+	// ── Step 4: Start the daemon control socket ────────────────────
+	socketPath := daemon.DefaultSocketPath()
+	daemonSrv := daemon.NewServer(socketPath, func() daemon.Status {
+		return daemon.Status{
+			TUNDevice: eng.TUNDeviceName(),
+			MeshIP:    ns.MeshIP,
+			Network:   ns.NetworkName,
+		}
+	}, logger)
+
+	if err := daemonSrv.Start(); err != nil {
+		// Non-fatal: the mesh still works without the control socket.
+		logger.Warn("daemon control socket failed to start", slog.Any("error", err))
+	} else {
+		defer daemonSrv.Stop()
+	}
+
 	fmt.Printf("  Status: running\n")
 	if devName := eng.TUNDeviceName(); devName != "" {
 		fmt.Printf("  TUN device: %s\n", devName)
@@ -1227,12 +1265,16 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	if ns.MeshIP != "" {
 		fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
 	}
-	fmt.Printf("\nPress Ctrl+C to stop.\n")
+	fmt.Printf("  Socket: %s\n", socketPath)
+	fmt.Printf("\nPress Ctrl+C or run 'meshd down' to stop.\n")
 
-	// Block until interrupted.
+	// Block until interrupted by signal or daemon shutdown request.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	select {
+	case <-sigCh:
+	case <-daemonSrv.ShutdownCh():
+	}
 
 	fmt.Printf("\nShutting down...\n")
 	if err := eng.Stop(); err != nil {
@@ -1439,16 +1481,36 @@ func interactiveJoin(ctx context.Context, f upFlags, stateDir string, identity *
 	return setupJoinNetwork(ctx, f, stateDir, identity)
 }
 
-// cmdDown stops the mesh agent daemon.
+// cmdDown stops the mesh agent daemon by sending a shutdown request via the
+// Unix control socket.
 //
-// Currently this sends SIGTERM to a running `meshd up` process.
-// In the future, this will communicate with a proper daemon via Unix socket.
+// Usage: meshd down
 func cmdDown(ctx context.Context, args []string) error {
-	// For now, `down` is a placeholder. The `up` command runs in the foreground
-	// and can be stopped with Ctrl+C. A proper daemon mode with `down` support
-	// will be added when we implement the IPN socket-based architecture.
-	fmt.Println("meshd down: not yet implemented for daemon mode.")
-	fmt.Println("Stop the running 'meshd up' process with Ctrl+C or SIGTERM.")
+	socketPath := daemon.DefaultSocketPath()
+	client := daemon.NewClient(socketPath)
+
+	if !client.IsRunning() {
+		fmt.Println("meshd is not running.")
+		return nil
+	}
+
+	fmt.Printf("Stopping meshd (socket: %s)...\n", socketPath)
+	if err := client.Shutdown(ctx); err != nil {
+		return fmt.Errorf("shutdown failed: %w", err)
+	}
+
+	// Wait for the daemon to actually stop (socket goes away).
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if !client.IsRunning() {
+			fmt.Println("Stopped.")
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	fmt.Println("Shutdown request sent but daemon is still running.")
+	fmt.Println("You may need to send SIGTERM manually.")
 	return nil
 }
 
