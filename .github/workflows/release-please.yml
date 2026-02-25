@@ -12,8 +12,99 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           release-type: go
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  build-artifacts:
+    name: Build ${{ matrix.os }}-${{ matrix.arch }}
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: x64
+            goos: linux
+            goarch: amd64
+            ext: tar.gz
+          - os: linux
+            arch: arm64
+            goos: linux
+            goarch: arm64
+            ext: tar.gz
+          - os: darwin
+            arch: x64
+            goos: darwin
+            goarch: amd64
+            ext: tar.gz
+          - os: darwin
+            arch: arm64
+            goos: darwin
+            goarch: arm64
+            ext: tar.gz
+          - os: windows
+            arch: x64
+            goos: windows
+            goarch: amd64
+            ext: zip
+          - os: windows
+            arch: arm64
+            goos: windows
+            goarch: arm64
+            ext: zip
+          - os: freebsd
+            arch: x64
+            goos: freebsd
+            goarch: amd64
+            ext: tar.gz
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist/release
+          out='dist/release/meshd'
+          if [ "${{ matrix.os }}" = 'windows' ]; then
+            out='dist/release/meshd.exe'
+          fi
+          version="${{ needs.release-please.outputs.tag_name }}"
+          version="${version#v}"
+          go build -trimpath -ldflags="-s -w -X main.version=${version}" -o "$out" ./cmd/meshd
+
+      - name: Package artifact
+        run: |
+          artifact="meshd-${{ matrix.os }}-${{ matrix.arch }}.${{ matrix.ext }}"
+          if [ "${{ matrix.ext }}" = 'zip' ]; then
+            (cd dist/release && zip -q "../../${artifact}" meshd.exe)
+          else
+            (cd dist/release && tar -czf "../../${artifact}" meshd)
+          fi
+          echo "artifact=${artifact}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: ${{ env.artifact }}
