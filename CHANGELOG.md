@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.3](https://github.com/enboxorg/meshd/compare/v0.0.2...v0.0.3) (2026-02-25)
+
+
+### Bug Fixes
+
+* inline binary builds into release-please workflow ([4127891](https://github.com/enboxorg/meshd/commit/41278914a23cc969914d90e57fc305fb9c020dd1))
+* inline binary builds into release-please workflow ([7450b8b](https://github.com/enboxorg/meshd/commit/7450b8b886ca352eeac1c4e172d1c0117cdf2659))
+
 ## [0.0.2](https://github.com/enboxorg/dwn-mesh/compare/v0.0.1...v0.0.2) (2026-02-25)
 
 
