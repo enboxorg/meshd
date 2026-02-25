@@ -2,12 +2,11 @@ package did
 
 import (
 	"crypto/ed25519"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
-	"github.com/tv42/zbase32"
+	"github.com/enboxorg/meshd/pkg/dids/didjwk"
 )
 
 func TestGenerate(t *testing.T) {
@@ -17,27 +16,17 @@ func TestGenerate(t *testing.T) {
 	}
 
 	t.Run("URI prefix", func(t *testing.T) {
-		if !strings.HasPrefix(d.URI, "did:dht:") {
-			t.Errorf("URI = %q, want did:dht: prefix", d.URI)
-		}
-	})
-
-	t.Run("identifier decodes to public key", func(t *testing.T) {
-		decoded, err := zbase32.DecodeString(d.Identifier())
-		if err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		if len(decoded) != ed25519.PublicKeySize {
-			t.Errorf("decoded %d bytes, want %d", len(decoded), ed25519.PublicKeySize)
-		}
-		if string(decoded) != string(d.SigningPublicKey) {
-			t.Error("decoded identifier does not match public key")
+		if !strings.HasPrefix(d.URI, "did:jwk:") {
+			t.Errorf("URI = %q, want did:jwk: prefix", d.URI)
 		}
 	})
 
 	t.Run("key sizes", func(t *testing.T) {
 		if len(d.SigningKey) != ed25519.PrivateKeySize {
 			t.Errorf("signing key: %d bytes, want %d", len(d.SigningKey), ed25519.PrivateKeySize)
+		}
+		if len(d.SigningPublicKey) != ed25519.PublicKeySize {
+			t.Errorf("signing public key: %d bytes, want %d", len(d.SigningPublicKey), ed25519.PublicKeySize)
 		}
 		if len(d.EncryptionPublicKey) != 32 {
 			t.Errorf("encryption public key: %d bytes, want 32", len(d.EncryptionPublicKey))
@@ -50,6 +39,23 @@ func TestGenerate(t *testing.T) {
 	t.Run("KeyID", func(t *testing.T) {
 		if d.KeyID() != d.URI+"#0" {
 			t.Errorf("KeyID = %q, want %q", d.KeyID(), d.URI+"#0")
+		}
+	})
+
+	t.Run("EncryptionKeyID", func(t *testing.T) {
+		if d.EncryptionKeyID() != d.URI+"#1" {
+			t.Errorf("EncryptionKeyID = %q, want %q", d.EncryptionKeyID(), d.URI+"#1")
+		}
+	})
+
+	t.Run("X25519 matches didjwk derivation", func(t *testing.T) {
+		// DeriveX25519PublicKey from the URI should match our encryption key.
+		derived, err := didjwk.DeriveX25519PublicKey(d.URI)
+		if err != nil {
+			t.Fatalf("DeriveX25519PublicKey: %v", err)
+		}
+		if string(derived) != string(d.EncryptionPublicKey) {
+			t.Error("X25519 public key from DeriveX25519PublicKey does not match EncryptionPublicKey")
 		}
 	})
 }
@@ -137,12 +143,12 @@ func TestParseURI(t *testing.T) {
 
 	t.Run("errors", func(t *testing.T) {
 		tests := map[string]struct {
-			uri       string
-			wantErr   error
+			uri     string
+			wantErr error
 		}{
-			"empty":         {uri: "", wantErr: ErrInvalidURI},
-			"wrong method":  {uri: "did:web:example.com", wantErr: ErrInvalidURI},
-			"no identifier": {uri: "did:dht:", wantErr: ErrInvalidURI},
+			"empty":        {uri: "", wantErr: ErrInvalidURI},
+			"wrong method": {uri: "did:dht:abc123", wantErr: ErrInvalidURI},
+			"no identifier": {uri: "did:jwk:", wantErr: ErrInvalidURI},
 		}
 		for name, tc := range tests {
 			t.Run(name, func(t *testing.T) {
@@ -154,52 +160,6 @@ func TestParseURI(t *testing.T) {
 					t.Errorf("got error %v, want %v", err, tc.wantErr)
 				}
 			})
-		}
-	})
-}
-
-func TestDocument(t *testing.T) {
-	d, err := Generate()
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-
-	t.Run("with service", func(t *testing.T) {
-		doc := d.Document("http://localhost:8787")
-
-		if doc.ID != d.URI {
-			t.Errorf("ID = %q, want %q", doc.ID, d.URI)
-		}
-		if len(doc.VerificationMethod) != 2 {
-			t.Fatalf("want 2 verification methods, got %d", len(doc.VerificationMethod))
-		}
-		if doc.VerificationMethod[0].PublicKeyJwk.CRV != "Ed25519" {
-			t.Error("vm[0] should be Ed25519")
-		}
-		if doc.VerificationMethod[1].PublicKeyJwk.CRV != "X25519" {
-			t.Error("vm[1] should be X25519")
-		}
-		if len(doc.KeyAgreement) != 1 || doc.KeyAgreement[0] != d.URI+"#enc" {
-			t.Errorf("keyAgreement = %v", doc.KeyAgreement)
-		}
-		if len(doc.Service) != 1 || doc.Service[0].Type != "DecentralizedWebNode" {
-			t.Error("missing DWN service")
-		}
-
-		// Serializable to JSON.
-		data, err := json.Marshal(doc)
-		if err != nil {
-			t.Fatalf("json.Marshal: %v", err)
-		}
-		if len(data) == 0 {
-			t.Error("empty JSON")
-		}
-	})
-
-	t.Run("without service", func(t *testing.T) {
-		doc := d.Document("")
-		if len(doc.Service) != 0 {
-			t.Errorf("expected no services, got %d", len(doc.Service))
 		}
 	})
 }

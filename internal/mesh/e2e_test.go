@@ -50,21 +50,14 @@ type nodeIdentity struct {
 	API    *dwn.DwnAPI
 }
 
-// newNode creates a fresh node identity, publishes it to the DHT,
-// registers it as a tenant, and returns a fully wired node.
+// newNode creates a fresh node identity, registers it as a tenant, and
+// returns a fully wired node.
 func newNode(t *testing.T, endpoint string) *nodeIdentity {
 	t.Helper()
 
 	identity, err := did.Generate()
 	if err != nil {
 		t.Fatalf("generating DID: %v", err)
-	}
-
-	// Publish DID to DHT so the server can resolve it for JWS verification.
-	pubCtx, pubCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer pubCancel()
-	if err := identity.Publish(pubCtx, endpoint); err != nil {
-		t.Fatalf("publishing DID: %v", err)
 	}
 
 	signer := &dwn.Signer{

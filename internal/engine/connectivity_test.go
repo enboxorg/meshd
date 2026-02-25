@@ -892,21 +892,14 @@ type testNode struct {
 	api      *dwn.DwnAPI
 }
 
-// newTestNode creates a fresh DID identity, publishes it to the DHT,
-// registers it as a tenant, and returns a fully wired test node.
+// newTestNode creates a fresh DID identity, registers it as a tenant,
+// and returns a fully wired test node.
 func newTestNode(t *testing.T, endpoint string) *testNode {
 	t.Helper()
 
 	identity, err := did.Generate()
 	if err != nil {
 		t.Fatalf("generating DID: %v", err)
-	}
-
-	// Publish DID to DHT so the server can resolve it for JWS verification.
-	pubCtx, pubCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer pubCancel()
-	if err := identity.Publish(pubCtx, endpoint); err != nil {
-		t.Fatalf("publishing DID: %v", err)
 	}
 
 	signer := &dwn.Signer{

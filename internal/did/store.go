@@ -75,10 +75,9 @@ func Load(stateDir string) (*DID, error) {
 		return nil, fmt.Errorf("reconstruct DID: %w", err)
 	}
 
-	// Sanity check: stored URI should match derived URI.
-	if state.URI != "" && state.URI != d.URI {
-		return nil, fmt.Errorf("stored URI %q does not match derived URI %q", state.URI, d.URI)
-	}
+	// The derived URI is authoritative. Old identity files may contain a
+	// did:dht URI for the same key — we silently upgrade to did:jwk.
+	// No backwards compatibility is needed (meshd is pre-release).
 
 	return d, nil
 }

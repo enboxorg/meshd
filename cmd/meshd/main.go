@@ -151,36 +151,8 @@ func main() {
 	}
 }
 
-// cmdInit generates a DID identity, stores it, and publishes it to the DHT.
+// cmdInit generates a did:jwk identity and stores it locally.
 func cmdInit(ctx context.Context, args []string, flagProfile string) error {
-	// Parse init flags.
-	var dwnEndpoint, gateway string
-	noPublish := false
-	forcePublish := false
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--dwn-endpoint":
-			if i+1 < len(args) {
-				dwnEndpoint = args[i+1]
-				i++
-			}
-		case "--gateway":
-			if i+1 < len(args) {
-				gateway = args[i+1]
-				i++
-			}
-		case "--no-publish":
-			noPublish = true
-		case "--force-publish":
-			forcePublish = true
-		}
-	}
-
-	// Fall back to DWN_ENDPOINT env var.
-	if dwnEndpoint == "" {
-		dwnEndpoint = os.Getenv("DWN_ENDPOINT")
-	}
-
 	stateDir, err := resolveStateDir(flagProfile)
 	if err != nil {
 		return err
@@ -194,13 +166,6 @@ func cmdInit(ctx context.Context, args []string, flagProfile string) error {
 		fmt.Printf("Already initialized.\n")
 		fmt.Printf("  DID: %s\n", identity.URI)
 		fmt.Printf("  State: %s\n", stateDir)
-
-		// Re-publish if forced.
-		if forcePublish && !noPublish {
-			if err := publishDID(ctx, identity, dwnEndpoint, gateway); err != nil {
-				return err
-			}
-		}
 		return nil
 	}
 
@@ -216,36 +181,10 @@ func cmdInit(ctx context.Context, args []string, flagProfile string) error {
 	fmt.Printf("Initialized new identity.\n")
 	fmt.Printf("  DID: %s\n", identity.URI)
 	fmt.Printf("  State: %s\n", stateDir)
-
-	// Publish to DHT unless opted out.
-	if !noPublish {
-		if err := publishDID(ctx, identity, dwnEndpoint, gateway); err != nil {
-			return err
-		}
-	}
-
 	return nil
 }
 
-// publishDID publishes the DID Document to the DHT via a Pkarr gateway.
-func publishDID(ctx context.Context, identity *did.DID, dwnEndpoint, gateway string) error {
-	var opts []did.PublishOption
-	if gateway != "" {
-		opts = append(opts, did.WithGatewayURL(gateway))
-	}
 
-	if dwnEndpoint != "" {
-		fmt.Printf("  DWN Endpoint: %s\n", dwnEndpoint)
-	}
-
-	fmt.Printf("  Publishing DID to DHT...")
-	if err := identity.Publish(ctx, dwnEndpoint, opts...); err != nil {
-		fmt.Printf(" failed\n")
-		return fmt.Errorf("publishing DID: %w", err)
-	}
-	fmt.Printf(" done\n")
-	return nil
-}
 
 // cmdNetworkCreate creates a new mesh network.
 //
@@ -1308,12 +1247,6 @@ func ensureIdentity(ctx context.Context, flagProfile, endpoint string) (*did.DID
 
 	fmt.Printf("  Profile: %s\n", profileName)
 	fmt.Printf("  DID:     %s\n", identity.URI)
-
-	// Publish DID to DHT.
-	if err := publishDID(ctx, identity, endpoint, ""); err != nil {
-		// Non-fatal: the DID works locally even without DHT publication.
-		fmt.Printf("  Warning: DID publication failed: %v\n", err)
-	}
 	fmt.Println()
 
 	return identity, nil
@@ -1588,28 +1521,12 @@ func resolveStateDir(flagProfile string) (string, error) {
 
 // cmdAuthLogin creates a new identity profile.
 //
-// Usage: meshd auth login [name] [--dwn-endpoint <url>] [--no-publish]
+// Usage: meshd auth login [name]
 func cmdAuthLogin(ctx context.Context, args []string) error {
-	var profileName, dwnEndpoint, gateway string
-	noPublish := false
+	var profileName string
 	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--dwn-endpoint":
-			if i+1 < len(args) {
-				dwnEndpoint = args[i+1]
-				i++
-			}
-		case "--gateway":
-			if i+1 < len(args) {
-				gateway = args[i+1]
-				i++
-			}
-		case "--no-publish":
-			noPublish = true
-		default:
-			if profileName == "" && !strings.HasPrefix(args[i], "-") {
-				profileName = args[i]
-			}
+		if profileName == "" && !strings.HasPrefix(args[i], "-") {
+			profileName = args[i]
 		}
 	}
 
@@ -1619,11 +1536,6 @@ func cmdAuthLogin(ctx context.Context, args []string) error {
 
 	if err := profile.ValidateName(profileName); err != nil {
 		return err
-	}
-
-	// Fall back to DWN_ENDPOINT env var.
-	if dwnEndpoint == "" {
-		dwnEndpoint = os.Getenv("DWN_ENDPOINT")
 	}
 
 	// Check if profile already exists.
@@ -1655,13 +1567,6 @@ func cmdAuthLogin(ctx context.Context, args []string) error {
 	fmt.Printf("Created profile %q.\n", profileName)
 	fmt.Printf("  DID:   %s\n", identity.URI)
 	fmt.Printf("  State: %s\n", dataPath)
-
-	// Publish DID to DHT.
-	if !noPublish {
-		if err := publishDID(ctx, identity, dwnEndpoint, gateway); err != nil {
-			return err
-		}
-	}
 
 	return nil
 }
