@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/diddht/internal/bep44"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/diddht/internal/dns"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/diddht/internal/pkarr"
+	"github.com/enboxorg/meshd/pkg/dids/didcore"
+	"github.com/enboxorg/meshd/pkg/dids/diddht/internal/bep44"
+	"github.com/enboxorg/meshd/pkg/dids/diddht/internal/dns"
+	"github.com/enboxorg/meshd/pkg/dids/diddht/internal/pkarr"
 )
 
 // Signer is a function that signs a payload with an Ed25519 private key

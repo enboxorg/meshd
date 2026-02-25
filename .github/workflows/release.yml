@@ -57,19 +57,20 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir -p dist/release
-          out='dist/release/dwn-mesh'
+          out='dist/release/meshd'
           if [ "${{ matrix.os }}" = 'windows' ]; then
-            out='dist/release/dwn-mesh.exe'
+            out='dist/release/meshd.exe'
           fi
-          go build -trimpath -ldflags='-s -w' -o "$out" ./cmd/dwn-mesh
+          version="${GITHUB_REF_NAME#v}"
+          go build -trimpath -ldflags="-s -w -X main.version=${version}" -o "$out" ./cmd/meshd
 
       - name: Package artifact
         run: |
-          artifact="dwn-mesh-${{ matrix.os }}-${{ matrix.arch }}.${{ matrix.ext }}"
+          artifact="meshd-${{ matrix.os }}-${{ matrix.arch }}.${{ matrix.ext }}"
           if [ "${{ matrix.ext }}" = 'zip' ]; then
-            (cd dist/release && zip -q "../../${artifact}" dwn-mesh.exe)
+            (cd dist/release && zip -q "../../${artifact}" meshd.exe)
           else
-            (cd dist/release && tar -czf "../../${artifact}" dwn-mesh)
+            (cd dist/release && tar -czf "../../${artifact}" meshd)
           fi
           echo "artifact=${artifact}" >> "$GITHUB_ENV"
 

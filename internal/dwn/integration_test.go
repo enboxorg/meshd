@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/enboxorg/dwn-mesh/internal/did"
-	"github.com/enboxorg/dwn-mesh/internal/dwn"
-	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/internal/did"
+	"github.com/enboxorg/meshd/internal/dwn"
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 )
 
 // These tests require a live DWN server.
@@ -143,7 +143,7 @@ func TestIntegrationRecordsWriteReadQuery(t *testing.T) {
 	}
 
 	// 2. Write a record.
-	noteData := []byte(`{"title":"Integration Test","body":"This was written by dwn-mesh Go client"}`)
+	noteData := []byte(`{"title":"Integration Test","body":"This was written by meshd Go client"}`)
 
 	record, writeStatus, err := api.Write(ctx, signer.DID, dwn.WriteParams{
 		Protocol:     "https://enbox.org/protocols/integration-test",

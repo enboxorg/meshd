@@ -3,7 +3,7 @@ package engine
 import (
 	"testing"
 
-	"github.com/enboxorg/dwn-mesh/internal/dwn"
+	"github.com/enboxorg/meshd/internal/dwn"
 )
 
 func TestNewEngineValidation(t *testing.T) {

@@ -3,7 +3,7 @@ package didcore
 import (
 	"testing"
 
-	"github.com/enboxorg/dwn-mesh/pkg/jwk"
+	"github.com/enboxorg/meshd/pkg/jwk"
 )
 
 func TestAddVerificationMethod(t *testing.T) {

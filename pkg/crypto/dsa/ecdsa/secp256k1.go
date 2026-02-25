@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/enboxorg/dwn-mesh/pkg/jwk"
+	"github.com/enboxorg/meshd/pkg/jwk"
 	_secp256k1 "github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 )

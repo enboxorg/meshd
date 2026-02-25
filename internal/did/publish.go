@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/diddht"
-	"github.com/enboxorg/dwn-mesh/pkg/jwk"
+	"github.com/enboxorg/meshd/pkg/dids/didcore"
+	"github.com/enboxorg/meshd/pkg/dids/diddht"
+	"github.com/enboxorg/meshd/pkg/jwk"
 )
 
 // PublishOptions configures DID DHT publication.

@@ -11,11 +11,11 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/enboxorg/dwn-mesh/internal/dwn"
-	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/internal/dwn"
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 )
 
-// Protocol URIs used by dwn-mesh.
+// Protocol URIs used by meshd.
 const (
 	ProtocolMesh = "https://enbox.org/protocols/wireguard-mesh"
 	ProtocolNode = "https://enbox.org/protocols/wireguard-node"

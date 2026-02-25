@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 )
 
 func newTestSigner(t *testing.T) *Signer {

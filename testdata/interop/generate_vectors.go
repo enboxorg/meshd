@@ -16,7 +16,7 @@ import (
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 
-	crypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
+	crypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 )
 
 // b64 encodes bytes as base64url (no padding).

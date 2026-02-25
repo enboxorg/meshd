@@ -1,10 +1,10 @@
-# dwn-mesh Design Document
+# meshd Design Document
 
 A private encrypted mesh for DWN infrastructure and collaboration.
 
 ## Two Audiences, One Product
 
-dwn-mesh serves two audiences that converge on the same product:
+meshd serves two audiences that converge on the same product:
 
 ### Audience 1: "I want a mesh VPN that nobody controls"
 
@@ -16,19 +16,19 @@ people who want WireGuard mesh networking without:
 - Manual key distribution and config management (raw WireGuard)
 
 They don't know what DIDs or DWNs are. They don't care. They want to
-run `dwn-mesh init` on two machines and have them connected.
+run `meshd init` on two machines and have them connected.
 
-**For this audience, dwn-mesh is a zero-account, zero-server mesh VPN.**
+**For this audience, meshd is a zero-account, zero-server mesh VPN.**
 
 The DID is "your device identity." The DWN is "an embedded component that
 handles coordination." The user never types either acronym.
 
 ```
-$ dwn-mesh init
+$ meshd init
 Device identity: did:dht:3fk8...xj2m
 WireGuard keys generated
 Coordination node started on port 8787
-Ready. Run 'dwn-mesh network create' to start a mesh.
+Ready. Run 'meshd network create' to start a mesh.
 ```
 
 ### Audience 2: "I have DWNs and need private infrastructure"
@@ -37,7 +37,7 @@ These are people already in the DWN ecosystem. They have DIDs, run DWNs,
 use protocols. They have a specific unmet need: private DWN replicas and
 encrypted cross-DWN collaboration.
 
-**For this audience, dwn-mesh is the private layer underneath their
+**For this audience, meshd is the private layer underneath their
 public DWN identity.**
 
 ### Where They Converge
@@ -47,7 +47,7 @@ DID and a DWN. The second audience comes for DWN infrastructure and gets
 a mesh VPN. Both end up in the same place: a private encrypted network
 coordinated by decentralized protocols.
 
-This is the strategic value: **dwn-mesh is a gateway into the DWN
+This is the strategic value: **meshd is a gateway into the DWN
 ecosystem.** People come for the mesh VPN. They stay because they now
 have a decentralized identity and personal data node that works with
 everything else in the ecosystem.
@@ -56,8 +56,8 @@ everything else in the ecosystem.
 Tailscale user journey:
   "I need a VPN" -> Tailscale -> locked into Tailscale's ecosystem
 
-dwn-mesh user journey:
-  "I need a mesh VPN" -> dwn-mesh -> they now have a DID and a DWN
+meshd user journey:
+  "I need a mesh VPN" -> meshd -> they now have a DID and a DWN
   -> "my device has a decentralized identity?"
   -> "I can store data on this and share it with protocols?"
   -> "other apps can use this identity too?"
@@ -107,7 +107,7 @@ point of failure.
 
 ## The Product: Private Infrastructure Mesh for DWN
 
-dwn-mesh creates an **encrypted WireGuard overlay network** that connects
+meshd creates an **encrypted WireGuard overlay network** that connects
 your DWN instances -- and the DWN instances of people you collaborate with --
 into a private mesh. Traffic between mesh members never touches the public
 internet unprotected.
@@ -176,7 +176,7 @@ reach them if Alice's ACLs allow it.
 ### Who This Is For
 
 **Anyone who wants a mesh VPN.** You don't need to know about DIDs or DWNs.
-Install dwn-mesh on your devices, create a network, add peers. It works like
+Install meshd on your devices, create a network, add peers. It works like
 Tailscale but with no account, no server, and no company.
 
 **Individual DWN operators.** You run your own DWN infrastructure. You want
@@ -442,7 +442,7 @@ When a member is removed:
 
 ### Threat Model
 
-| Attack                       | Tailscale          | dwn-mesh                                |
+| Attack                       | Tailscale          | meshd                                |
 | ---------------------------- | ------------------ | --------------------------------------- |
 | Coordination server tampered | Can inject keys    | Signatures prevent forgery              |
 | Storage compromised          | Data exposed       | Data encrypted; keys not on server      |
@@ -463,19 +463,19 @@ company. He tried Headscale but doesn't want to maintain a server.
 
 ```bash
 # On Dave's laptop
-dwn-mesh init
-dwn-mesh network create --name "dave-net"
+meshd init
+meshd network create --name "dave-net"
 
 # On Dave's home server
-dwn-mesh init
+meshd init
 # prints: Device identity: did:dht:srv1...
 
 # On Dave's laptop
-dwn-mesh peer add did:dht:srv1...
+meshd peer add did:dht:srv1...
 
 # On the home server
-dwn-mesh network join did:dht:dave... <network-id>
-dwn-mesh up
+meshd network join did:dht:dave... <network-id>
+meshd up
 
 # Same for the VPS. Now all three machines can reach each other
 # at 100.64.0.x over encrypted WireGuard tunnels.
@@ -485,7 +485,7 @@ dwn-mesh up
 Dave doesn't know he's using DIDs or DWNs. He just knows it works.
 
 Six months later, Dave sees a project that uses DIDs for authentication.
-He realizes his dwn-mesh identity works there too. He starts using his
+He realizes his meshd identity works there too. He starts using his
 DWN for other things. The mesh was the entry point.
 
 ### Scenario 1: Personal DWN Infrastructure
@@ -495,19 +495,19 @@ local-first access on her laptop.
 
 ```bash
 # On Alice's VPS (has her public DWN already running)
-dwn-mesh init                    # Uses her existing DID
-dwn-mesh network create \
+meshd init                    # Uses her existing DID
+meshd network create \
   --name "alice-infra" \
   --cidr 100.64.0.0/24
 
 # On Alice's NAS
-dwn-mesh init                    # Generates a device DID
+meshd init                    # Generates a device DID
 # Alice adds the NAS from her VPS:
-dwn-mesh peer add did:dht:nas...
+meshd peer add did:dht:nas...
 
 # On the NAS:
-dwn-mesh network join did:dht:alice... <network-id>
-dwn-mesh up
+meshd network join did:dht:alice... <network-id>
+meshd up
 
 # The NAS now has a mesh IP. Alice configures her NAS DWN to sync
 # with 100.64.0.1 (VPS mesh IP). Sync runs over the encrypted tunnel.
@@ -523,11 +523,11 @@ management. They want their DWNs to communicate privately.
 
 ```bash
 # Alice adds Bob to her mesh
-dwn-mesh peer add did:dht:bob...
+meshd peer add did:dht:bob...
 
 # Bob joins
-dwn-mesh network join did:dht:alice... <network-id>
-dwn-mesh up
+meshd network join did:dht:alice... <network-id>
+meshd up
 
 # Bob's DWN can now reach Alice's DWN (including private endpoints)
 # over the encrypted mesh. Protocol-level communication between their
@@ -541,20 +541,20 @@ a mesh for their infrastructure.
 
 ```bash
 # IT admin creates the org mesh
-dwn-mesh network create --name "acme-corp" --cidr 100.64.0.0/16
+meshd network create --name "acme-corp" --cidr 100.64.0.0/16
 
 # Add team members
-dwn-mesh peer add did:dht:employee1...
-dwn-mesh peer add did:dht:employee2...
+meshd peer add did:dht:employee1...
+meshd peer add did:dht:employee2...
 
 # Set ACL: developers can reach dev DWN, only ops can reach prod
-dwn-mesh acl set --file acl-policy.json
+meshd acl set --file acl-policy.json
 
 # Distribute pre-auth keys for headless servers
-dwn-mesh preauth create --label "ci-runner" --ephemeral
+meshd preauth create --label "ci-runner" --ephemeral
 
 # On CI runner:
-dwn-mesh network join --auth-key tskey-abc123...
+meshd network join --auth-key tskey-abc123...
 ```
 
 Internal DWN services are mesh-only. The public DWN handles external
@@ -565,8 +565,8 @@ interactions. ACLs enforce who can reach what.
 ### Bootstrap: Creating a Network
 
 ```
-1. Admin runs `dwn-mesh init` (uses existing DID or generates one)
-2. Admin runs `dwn-mesh network create`
+1. Admin runs `meshd init` (uses existing DID or generates one)
+2. Admin runs `meshd network create`
    a. Installs wireguard-mesh protocol on their DWN (anchor)
    b. Generates X25519 encryption keypair for Protocol Path encryption
    c. Writes network record (name, CIDR, relays)
@@ -577,12 +577,12 @@ interactions. ACLs enforce who can reach what.
 ### Joining a Node
 
 ```
-1. Node runs `dwn-mesh init` (generates device DID + WireGuard keys)
+1. Node runs `meshd init` (generates device DID + WireGuard keys)
 2. Node starts local DWN, installs wireguard-node protocol
-3. Admin runs `dwn-mesh peer add <node-did>` on anchor
+3. Admin runs `meshd peer add <node-did>` on anchor
    a. Writes member role record (recipient = node DID)
    b. Delivers context encryption key to the new member
-4. Node runs `dwn-mesh network join <admin-did> <network-id>`
+4. Node runs `meshd network join <admin-did> <network-id>`
    a. Reads network config from anchor DWN (decrypts with context key)
    b. Reads member list, discovers peer DIDs
    c. Reads ACL policy
@@ -612,7 +612,7 @@ interactions. ACLs enforce who can reach what.
 
 ## Infrastructure Dependencies: STUN, DERP, and Why There's No Provider
 
-A common question: does dwn-mesh require someone to run relay
+A common question: does meshd require someone to run relay
 infrastructure? The short answer is no. Here's the breakdown:
 
 ### STUN: Fully Commoditized (No Action Needed)
@@ -626,13 +626,13 @@ public STUN servers:
 - `stun.cloudflare.com:3478`
 - Many others maintained by the WebRTC/VoIP community
 
-dwn-mesh ships with a hardcoded list of well-known public STUN servers.
-Users can add their own. No dwn-mesh-specific STUN infrastructure is
+meshd ships with a hardcoded list of well-known public STUN servers.
+Users can add their own. No meshd-specific STUN infrastructure is
 needed.
 
 ### TURN: Not Needed
 
-TURN is the traditional relay protocol. dwn-mesh doesn't use it. DERP
+TURN is the traditional relay protocol. meshd doesn't use it. DERP
 serves the same role but better: it works over HTTPS (gets through more
 restrictive networks) and routes by WireGuard public key instead of
 allocated ports.
@@ -658,21 +658,21 @@ but not what was said).
 2. **The Headscale community runs hundreds of independent DERP servers.**
    There's a well-established culture of community-operated relays.
 
-3. **Any dwn-mesh node with a public IP can be a DERP relay.** An
+3. **Any meshd node with a public IP can be a DERP relay.** An
    embedded DERP server is part of the design. Running a relay is one
    flag:
 
    ```bash
-   dwn-mesh up --relay
+   meshd up --relay
    ```
 
    The node registers itself as a relay in the mesh protocol. Other
    members discover it automatically.
 
-**How relay discovery works in dwn-mesh:**
+**How relay discovery works in meshd:**
 
 In Tailscale, the DERP server list is hardcoded and controlled by
-Tailscale Inc. In dwn-mesh, relays are `relay` records in the mesh
+Tailscale Inc. In meshd, relays are `relay` records in the mesh
 protocol -- encrypted, signed, and discoverable by members:
 
 ```
@@ -684,13 +684,13 @@ When a member starts a relay, they write a `relay` record with the
 server's URL, geographic region, and STUN port. All members see it via
 their subscription to the anchor DWN and can use it for relay fallback.
 
-**The result: no dwn-mesh service provider is needed.** The combination
+**The result: no meshd service provider is needed.** The combination
 of free public STUN servers, open-source DERP, and the ability for any
 mesh node to become a relay means the infrastructure is fully
 self-sustaining. This is a concrete difference from Tailscale, where
 Tailscale Inc. operates all relay infrastructure.
 
-| Component | Tailscale                     | dwn-mesh                           |
+| Component | Tailscale                     | meshd                           |
 | --------- | ----------------------------- | ---------------------------------- |
 | STUN      | Tailscale-operated            | Public servers (Google, CF, etc.)  |
 | TURN      | Not used                      | Not used                           |
@@ -736,14 +736,14 @@ dexnet is the full Tailscale networking stack:
 | State dir       | `Tailscale/`          | `DexNet/`                     |
 
 The non-conflicting IP space means dexnet and Tailscale can coexist on
-the same machine. A user could have Tailscale for work and dwn-mesh for
+the same machine. A user could have Tailscale for work and meshd for
 their personal infrastructure simultaneously.
 
 ### What dexnet Does NOT Provide
 
 dexnet inherits Tailscale's control plane dependency. Out of the box, it
 still points to `controlplane.tailscale.com` and Tailscale's DERP servers.
-**This is exactly the gap dwn-mesh fills.** We replace:
+**This is exactly the gap meshd fills.** We replace:
 
 - The Tailscale control server → DWN protocols on an anchor DWN
 - The Tailscale DERP map → relay records in the mesh protocol
@@ -754,7 +754,7 @@ still points to `controlplane.tailscale.com` and Tailscale's DERP servers.
 
 ```
 ┌──────────────────────────────────────────────────┐
-│                    dwn-mesh                       │
+│                    meshd                       │
 │                                                   │
 │  ┌─────────────────────────────────────────────┐ │
 │  │          DWN Coordination Layer              │ │
@@ -785,10 +785,10 @@ client** in `control/controlclient/`, which communicates with the
 coordination server and produces `tailcfg.MapResponse` structures that
 the WireGuard engine consumes.
 
-dwn-mesh implements a **DWN-based control client** that replaces Tailscale's
+meshd implements a **DWN-based control client** that replaces Tailscale's
 `controlclient.Auto` with a `controlclient.DWN` implementation:
 
-| Tailscale control client       | dwn-mesh DWN control client                   |
+| Tailscale control client       | meshd DWN control client                   |
 | ------------------------------ | --------------------------------------------- |
 | Polls `controlplane.tailscale.com` | Subscribes to anchor DWN + peer DWNs       |
 | Gets `MapResponse` via HTTP    | Builds `MapResponse` from DWN records          |
@@ -817,7 +817,7 @@ and how do I reach them?"
 ### Forking to enboxorg
 
 The dexnet repo should be forked to the `enboxorg` GitHub organization
-so that the dwn-mesh project has write access and can make additional
+so that the meshd project has write access and can make additional
 changes as needed (custom DERP defaults, control client interface
 extraction, etc.). The module path would become
 `github.com/enboxorg/dexnet`.
@@ -834,7 +834,7 @@ extraction, etc.). The module path would become
 
 ### Phase 1: Two-Node Mesh (Weeks 3-4)
 
-- `dwn-mesh init` and `dwn-mesh network create`
+- `meshd init` and `meshd network create`
 - Protocol installation on DWNs (with encryption)
 - nodeInfo/endpoint record writing
 - Peer discovery (member list → DID resolution → nodeInfo read)
@@ -845,14 +845,14 @@ extraction, etc.). The module path would become
 
 - `RecordsSubscribe` for real-time updates
 - DWN control client pushes updated `MapResponse` on subscription events
-- `dwn-mesh peer add` / `peer remove`
-- Daemon mode (`dwn-mesh up`) wrapping dexnet's `tailscaled` engine
+- `meshd peer add` / `peer remove`
+- Daemon mode (`meshd up`) wrapping dexnet's `tailscaled` engine
 - Full NAT traversal via dexnet (STUN, hole punching, DERP — all inherited)
 
 ### Phase 3: DERP Infrastructure (Weeks 7-8)
 
 - Custom DERP map from DWN relay records (replace Tailscale defaults)
-- `dwn-mesh up --relay` runs embedded DERP server (dexnet's `cmd/derper`)
+- `meshd up --relay` runs embedded DERP server (dexnet's `cmd/derper`)
 - Self-registration of DERP servers in the mesh protocol
 - Community DERP server defaults
 
@@ -876,7 +876,7 @@ extraction, etc.). The module path would become
 
 ### The Onramp
 
-`dwn-mesh init` creates a DID and starts an embedded DWN. The user doesn't
+`meshd init` creates a DID and starts an embedded DWN. The user doesn't
 need to understand either concept. They see "device identity" and "the mesh
 works." But under the hood, they now have:
 
@@ -892,8 +892,8 @@ works." But under the hood, they now have:
 
 ### The Aha Moment
 
-The aha moment comes when the user realizes their dwn-mesh identity works
-outside of dwn-mesh:
+The aha moment comes when the user realizes their meshd identity works
+outside of meshd:
 
 1. **"I can use my mesh identity to log into things."** DIDs work as
    authentication. No passwords. No OAuth. The same keypair that
@@ -915,7 +915,7 @@ outside of dwn-mesh:
 
 ```
 Stage 1: Mesh VPN user
-  - Installs dwn-mesh for the VPN
+  - Installs meshd for the VPN
   - Gets a DID and embedded DWN (doesn't know/care)
   - Uses it to connect their devices
 
@@ -931,7 +931,7 @@ Stage 3: DWN-native user
 
 Stage 4: Infrastructure operator
   - Runs a full DWN, lists it in their DID document
-  - Uses dwn-mesh for private replication and collaboration
+  - Uses meshd for private replication and collaboration
   - Builds applications on DWN protocols
 ```
 
@@ -941,7 +941,7 @@ the foot in the door.
 
 ## Comparison with Alternatives
 
-| Aspect           | Tailscale       | Headscale        | dwn-mesh                     |
+| Aspect           | Tailscale       | Headscale        | meshd                     |
 | ---------------- | --------------- | ---------------- | ---------------------------- |
 | Coordination     | Centralized SaaS| Self-hosted      | Decentralized (DWN)          |
 | Data plane       | Tailscale client| Tailscale client | dexnet (Tailscale fork)      |

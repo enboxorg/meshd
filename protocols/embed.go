@@ -1,4 +1,4 @@
-// Package protocols provides embedded protocol definitions for dwn-mesh.
+// Package protocols provides embedded protocol definitions for meshd.
 package protocols
 
 import _ "embed"

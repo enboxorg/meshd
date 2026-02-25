@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 )
 
 //
@@ -183,7 +183,7 @@ type ProtocolsQueryParams struct {
 // SimpleAgent is a basic Agent implementation that uses a single DID/key pair
 // and an HTTP transport to a remote DWN server.
 //
-// This is the "batteries included" agent for simple use cases like dwn-mesh.
+// This is the "batteries included" agent for simple use cases like meshd.
 // For more complex scenarios (multi-identity, local DWN, sync), implement
 // the Agent interface directly.
 type SimpleAgent struct {

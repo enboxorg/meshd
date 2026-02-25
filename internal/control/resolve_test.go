@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didjwk"
-	"github.com/enboxorg/dwn-mesh/pkg/jwk"
+	"github.com/enboxorg/meshd/pkg/dids/didcore"
+	"github.com/enboxorg/meshd/pkg/dids/didjwk"
+	"github.com/enboxorg/meshd/pkg/jwk"
 )
 
 // mockResolver implements Resolver for testing.

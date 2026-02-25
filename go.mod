@@ -1,4 +1,4 @@
-module github.com/enboxorg/dwn-mesh
+module github.com/enboxorg/meshd
 
 go 1.25.5
 

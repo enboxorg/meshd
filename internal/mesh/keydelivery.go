@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/enboxorg/dwn-mesh/internal/dwn"
-	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
-	"github.com/enboxorg/dwn-mesh/protocols"
+	"github.com/enboxorg/meshd/internal/dwn"
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/protocols"
 )
 
 // KeyDeliveryManager handles writing and fetching contextKey records
@@ -89,7 +89,7 @@ func (m *KeyDeliveryManager) DeliverContextKey(ctx context.Context, params Deliv
 	//    ciphertext, the recipient needs the anchor's Protocol Path key
 	//    for key-delivery, which would need a separate key exchange.
 	//
-	//    The pragmatic approach for dwn-mesh: encrypt to the anchor's own
+	//    The pragmatic approach for meshd: encrypt to the anchor's own
 	//    key. The recipient queries the anchor's DWN, the server returns
 	//    ciphertext, the recipient either:
 	//    a) Has been given the anchor's key-delivery decryption key out-of-band

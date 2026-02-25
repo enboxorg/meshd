@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
-	"github.com/enboxorg/dwn-mesh/pkg/jwk"
+	"github.com/enboxorg/meshd/pkg/dids/didcore"
+	"github.com/enboxorg/meshd/pkg/jwk"
 )
 
 // makeEd25519JWK creates a known Ed25519 did:jwk URI for testing.

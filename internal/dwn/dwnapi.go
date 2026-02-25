@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 )
 
 // DwnAPI is the high-level consumer API for DWN operations.

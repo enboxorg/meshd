@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
-	"github.com/enboxorg/dwn-mesh/pkg/jwk"
+	"github.com/enboxorg/meshd/pkg/dids/didcore"
+	"github.com/enboxorg/meshd/pkg/jwk"
 )
 
 func makeTestJWKURI(t *testing.T) string {

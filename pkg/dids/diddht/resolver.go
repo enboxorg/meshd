@@ -5,10 +5,10 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/enboxorg/dwn-mesh/pkg/dids/did"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/didcore"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/diddht/internal/dns"
-	"github.com/enboxorg/dwn-mesh/pkg/dids/diddht/internal/pkarr"
+	"github.com/enboxorg/meshd/pkg/dids/did"
+	"github.com/enboxorg/meshd/pkg/dids/didcore"
+	"github.com/enboxorg/meshd/pkg/dids/diddht/internal/dns"
+	"github.com/enboxorg/meshd/pkg/dids/diddht/internal/pkarr"
 	"github.com/tv42/zbase32"
 )
 

@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/enboxorg/dwn-mesh/internal/dwn"
-	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
-	"github.com/enboxorg/dwn-mesh/internal/mesh"
-	"github.com/enboxorg/dwn-mesh/protocols"
+	"github.com/enboxorg/meshd/internal/dwn"
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/internal/mesh"
+	"github.com/enboxorg/meshd/protocols"
 )
 
 // AutoKeyDelivery monitors the mesh member list and automatically delivers

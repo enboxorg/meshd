@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/enboxorg/dwn-mesh/internal/control"
-	"github.com/enboxorg/dwn-mesh/internal/dwn"
-	dwncrypto "github.com/enboxorg/dwn-mesh/internal/dwn/crypto"
-	"github.com/enboxorg/dwn-mesh/internal/mesh"
+	"github.com/enboxorg/meshd/internal/control"
+	"github.com/enboxorg/meshd/internal/dwn"
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/internal/mesh"
 
 	"github.com/enboxorg/meshnet/control/controlclient"
 	"github.com/enboxorg/meshnet/ipn"
@@ -31,12 +31,12 @@ import (
 	go4mem "go4.org/mem"
 )
 
-// Engine orchestrates the full dwn-mesh stack:
+// Engine orchestrates the full meshd stack:
 //   - DWNClient reads mesh state from DWN records
 //   - Converter transforms it into meshnet NetworkMap
 //   - meshnet's LocalBackend runs WireGuard with the DWN-backed control client
 //
-// Engine is the core of `dwn-mesh up`.
+// Engine is the core of `meshd up`.
 type Engine struct {
 	dwnClient       *control.DWNClient
 	converter       *Converter
@@ -112,7 +112,7 @@ type Config struct {
 	WireGuardPrivateKey [32]byte
 
 	// DiscoKeyRegistry enables disco key exchange between engines. In normal
-	// Tailscale, the control server distributes disco keys. In dwn-mesh, this
+	// Tailscale, the control server distributes disco keys. In meshd, this
 	// registry fills that role. If nil, a no-op registry is used (disco keys
 	// won't be exchanged, which prevents DERP relay between peers).
 	DiscoKeyRegistry controlclient.DiscoKeyRegistry
@@ -159,7 +159,7 @@ func New(cfg Config) (*Engine, error) {
 
 	domain := cfg.Domain
 	if domain == "" {
-		domain = "dwn-mesh"
+		domain = "meshd"
 	}
 
 	// Create the DWN control client that reads mesh state.
@@ -179,7 +179,7 @@ func New(cfg Config) (*Engine, error) {
 		controlOpts...,
 	)
 
-	// Create the converter that bridges dwn-mesh types to meshnet types.
+	// Create the converter that bridges meshd types to meshnet types.
 	converter := NewConverter(domain, WithConverterLogger(l))
 	converter.MagicDNSSuffix = magicDNS
 
@@ -202,7 +202,7 @@ func New(cfg Config) (*Engine, error) {
 
 	// Disable lazy WireGuard peer config. In Tailscale, lazy WG trims
 	// inactive peers from the WG device to save memory on large networks.
-	// In dwn-mesh, networks are small and lazy WG causes a chicken-and-egg
+	// In meshd, networks are small and lazy WG causes a chicken-and-egg
 	// problem: peers are trimmed because they have no activity, but they
 	// can't become active without being in the WG config.
 	sys.ControlKnobs().KeepFullWGConfig.Store(true)
@@ -253,7 +253,7 @@ func New(cfg Config) (*Engine, error) {
 	ns.ProcessSubnets = true
 
 	// Wire the dialer through netstack so outbound connections from the
-	// dwn-mesh process go through the WireGuard tunnel.
+	// meshd process go through the WireGuard tunnel.
 	dial.UseNetstackForIP = func(ip netip.Addr) bool {
 		_, ok := eng.PeerForIP(ip)
 		return ok
@@ -348,7 +348,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	_, cancel := context.WithCancel(ctx)
 	e.cancel = cancel
 
-	e.logger.InfoContext(ctx, "starting dwn-mesh engine")
+	e.logger.InfoContext(ctx, "starting meshd engine")
 
 	err := e.backend.Start(ipn.Options{
 		UpdatePrefs: &ipn.Prefs{
@@ -361,7 +361,7 @@ func (e *Engine) Start(ctx context.Context) error {
 	}
 
 	e.running = true
-	e.logger.InfoContext(ctx, "dwn-mesh engine started")
+	e.logger.InfoContext(ctx, "meshd engine started")
 	return nil
 }
 
@@ -374,7 +374,7 @@ func (e *Engine) Stop() error {
 		return nil
 	}
 
-	e.logger.Info("stopping dwn-mesh engine")
+	e.logger.Info("stopping meshd engine")
 
 	if e.cancel != nil {
 		e.cancel()
@@ -389,7 +389,7 @@ func (e *Engine) Stop() error {
 	}
 
 	e.running = false
-	e.logger.Info("dwn-mesh engine stopped")
+	e.logger.Info("meshd engine stopped")
 	return nil
 }
 
