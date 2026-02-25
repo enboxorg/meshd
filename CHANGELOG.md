@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.0](https://github.com/enboxorg/meshd/compare/v0.0.3...v0.1.0) (2026-02-25)
+
+
+### Features
+
+* integrate enbox identity profiles (~/.enbox/) ([b6fd737](https://github.com/enboxorg/meshd/commit/b6fd73799126b832e5299eeef8abe8575131da2d))
+* integrate enbox identity profiles for shared ~/.enbox/ identity management ([90c89cb](https://github.com/enboxorg/meshd/commit/90c89cb1c9c90d6af662baffb3d4d6398030d7da))
+
 ## [0.0.3](https://github.com/enboxorg/meshd/compare/v0.0.2...v0.0.3) (2026-02-25)
 
 
