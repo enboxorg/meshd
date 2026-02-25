@@ -29,22 +29,15 @@ func testEndpoint(t *testing.T) string {
 	return endpoint
 }
 
-// testIdentity generates a new did:dht identity and publishes it to the DHT
-// so the DWN server can resolve the DID Document for JWS verification.
+// testIdentity generates a new did:jwk identity for testing.
+// did:jwk is self-resolving — no DHT publication needed.
 func testIdentity(t *testing.T, endpoint string) *did.DID {
 	t.Helper()
 	identity, err := did.Generate()
 	if err != nil {
 		t.Fatalf("generating DID: %v", err)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := identity.Publish(ctx, endpoint); err != nil {
-		t.Fatalf("publishing DID to DHT: %v", err)
-	}
-	t.Logf("Published DID: %s", identity.URI)
+	t.Logf("Generated DID: %s", identity.URI)
 
 	return identity
 }
