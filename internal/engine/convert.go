@@ -19,6 +19,7 @@ import (
 	"github.com/enboxorg/meshnet/types/key"
 	"github.com/enboxorg/meshnet/types/netmap"
 	"github.com/enboxorg/meshnet/types/views"
+	"github.com/enboxorg/meshnet/wgengine/filter"
 	"go4.org/mem"
 )
 
@@ -71,6 +72,9 @@ func (c *Converter) Convert(resp *control.MapResponse) (*netmap.NetworkMap, erro
 
 	// Convert self node.
 	if resp.Node != nil {
+		if resp.Node.Key == "" {
+			return nil, fmt.Errorf("self node has empty WireGuard key (DID=%s)", resp.Node.DID)
+		}
 		selfNode, err := c.convertNode(resp.Node)
 		if err != nil {
 			return nil, fmt.Errorf("converting self node: %w", err)
@@ -79,8 +83,18 @@ func (c *Converter) Convert(resp *control.MapResponse) (*netmap.NetworkMap, erro
 	}
 
 	// Convert peers, sorted by Node.ID.
+	// Skip peers with empty WireGuard keys — these are typically stale
+	// records that couldn't be decrypted (e.g., old Protocol Path
+	// encrypted records before a context encryption re-registration).
 	peers := make([]*tailcfg.Node, 0, len(resp.Peers))
 	for _, p := range resp.Peers {
+		if p.Key == "" {
+			c.logger.Warn("skipping peer with empty WireGuard key",
+				slog.String("did", p.DID),
+				slog.String("name", p.Name),
+			)
+			continue
+		}
 		peerNode, err := c.convertNode(p)
 		if err != nil {
 			c.logger.Warn("skipping peer conversion",
@@ -112,9 +126,24 @@ func (c *Converter) Convert(resp *control.MapResponse) (*netmap.NetworkMap, erro
 	}
 
 	// Convert packet filter rules.
+	// We must set BOTH PacketFilterRules (raw tailcfg.FilterRule) AND
+	// PacketFilter (compiled filtertype.Match). The LocalBackend's
+	// updateFilterLocked reads PacketFilter (not PacketFilterRules) to
+	// build the actual packet filter. In upstream Tailscale, the mapSession
+	// compiles rules via MatchesFromFilterRules; since we bypass mapSession,
+	// we must compile them ourselves.
 	if len(resp.PacketFilter) > 0 {
 		rules := c.convertFilterRules(resp.PacketFilter)
 		nm.PacketFilterRules = views.SliceOf(rules)
+
+		matches, err := filter.MatchesFromFilterRules(rules)
+		if err != nil {
+			c.logger.Warn("compiling packet filter rules",
+				slog.Any("error", err),
+				slog.Int("rules", len(rules)),
+			)
+		}
+		nm.PacketFilter = matches
 	}
 
 	return nm, nil
@@ -226,13 +255,14 @@ func (c *Converter) convertDERPMap(dm *control.DERPMap) *tailcfg.DERPMap {
 
 		for _, dn := range region.Nodes {
 			r.Nodes = append(r.Nodes, &tailcfg.DERPNode{
-				Name:     dn.Name,
-				RegionID: dn.RegionID,
-				HostName: dn.HostName,
-				IPv4:     dn.IPv4,
-				DERPPort: dn.DERPPort,
-				STUNPort: dn.STUNPort,
-				STUNOnly: dn.STUNOnly,
+				Name:             dn.Name,
+				RegionID:         dn.RegionID,
+				HostName:         dn.HostName,
+				IPv4:             dn.IPv4,
+				DERPPort:         dn.DERPPort,
+				STUNPort:         dn.STUNPort,
+				STUNOnly:         dn.STUNOnly,
+				InsecureForTests: dn.InsecureForTests,
 			})
 		}
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -393,6 +394,7 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 	}
 	if reg != nil {
 		ns.NodeInfoRecordID = reg.NodeInfoRecordID
+		ns.NodeInfoDateCreated = reg.DateCreated
 	}
 	if err := state.SaveNetworkState(stateDir, ns); err != nil {
 		return fmt.Errorf("saving network state: %w", err)
@@ -516,6 +518,7 @@ func cmdNetworkJoin(ctx context.Context, args []string) error {
 
 	// Register nodeInfo (encrypted), invoking the network/member role for authorization.
 	var nodeInfoRecordID string
+	var nodeInfoDateCreated string
 	reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            anchorDID,
@@ -531,6 +534,7 @@ func cmdNetworkJoin(ctx context.Context, args []string) error {
 		fmt.Printf("  Warning: nodeInfo registration failed: %v\n", err)
 	} else {
 		nodeInfoRecordID = reg.NodeInfoRecordID
+		nodeInfoDateCreated = reg.DateCreated
 		fmt.Printf("  Registered node (encrypted): IP=%s\n", meshIP)
 	}
 
@@ -545,6 +549,7 @@ func cmdNetworkJoin(ctx context.Context, args []string) error {
 		WireGuardPublicKey:  wgKeys.PublicKeyBase64(),
 		WireGuardPrivateKey: wgKeys.PrivateKeyBase64(),
 		NodeInfoRecordID:    nodeInfoRecordID,
+		NodeInfoDateCreated: nodeInfoDateCreated,
 	}
 	if err := state.SaveNetworkState(stateDir, ns); err != nil {
 		return fmt.Errorf("saving network state: %w", err)
@@ -858,28 +863,35 @@ func cmdUp(ctx context.Context, args []string) error {
 	// encryption. The initial registration during "network join" used Protocol
 	// Path encryption (our own key) which the anchor can't decrypt. Re-writing
 	// with Protocol Context encryption allows the anchor to read our nodeInfo.
-	// The $squash directive means this overwrites the existing record.
+	// This is a RecordsWrite update (same recordId, preserved dateCreated).
 	if useContextEncryption && ns.NodeInfoRecordID != "" {
 		reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
-			AnchorEndpoint:       ns.AnchorEndpoint,
-			AnchorDID:            ns.AnchorDID,
-			NetworkRecordID:      ns.NetworkRecordID,
-			SelfDID:              identity.URI,
-			Signer:               signer,
-			EncryptionKeyManager: encMgr,
-			WireGuardPubKey:      ns.WireGuardPublicKey,
-			MeshIP:               ns.MeshIP,
-			ProtocolRole:         "network/member",
-			UseContextEncryption: true,
+			AnchorEndpoint:          ns.AnchorEndpoint,
+			AnchorDID:               ns.AnchorDID,
+			NetworkRecordID:         ns.NetworkRecordID,
+			SelfDID:                 identity.URI,
+			Signer:                  signer,
+			EncryptionKeyManager:    encMgr,
+			WireGuardPubKey:         ns.WireGuardPublicKey,
+			MeshIP:                  ns.MeshIP,
+			ProtocolRole:            "network/member",
+			UseContextEncryption:    true,
 			ExistingNodeInfoRecordID: ns.NodeInfoRecordID,
+			ExistingDateCreated:     ns.NodeInfoDateCreated,
 		})
 		if err != nil {
 			logger.Warn("nodeInfo re-registration with context encryption failed",
 				slog.Any("error", err),
 			)
 		} else {
+			// Update state — recordId stays the same for updates, but store dateCreated.
+			if reg.NodeInfoRecordID != "" {
+				ns.NodeInfoRecordID = reg.NodeInfoRecordID
+			}
+			if reg.DateCreated != "" {
+				ns.NodeInfoDateCreated = reg.DateCreated
+			}
 			fmt.Printf("  NodeInfo re-encrypted with context key.\n")
-			_ = reg // recordID unchanged due to $squash
 		}
 	}
 
@@ -926,6 +938,19 @@ func cmdUp(ctx context.Context, args []string) error {
 		}
 	}
 
+	// Decode the WireGuard private key so the engine uses the same identity
+	// that was published to DWN records.
+	var wgPrivKey [32]byte
+	if ns.WireGuardPrivateKey != "" {
+		wgBytes, decErr := base64.StdEncoding.DecodeString(ns.WireGuardPrivateKey)
+		if decErr != nil {
+			return fmt.Errorf("decoding WireGuard private key: %w", decErr)
+		}
+		if len(wgBytes) == 32 {
+			copy(wgPrivKey[:], wgBytes)
+		}
+	}
+
 	eng, err := engine.New(engine.Config{
 		AnchorEndpoint:       ns.AnchorEndpoint,
 		AnchorTenant:         ns.AnchorDID,
@@ -937,6 +962,7 @@ func cmdUp(ctx context.Context, args []string) error {
 		NodeInfoRecordID:     ns.NodeInfoRecordID,
 		AutoKeyDelivery:      autoKeyDelivery,
 		UseContextEncryption: useContextEncryption,
+		WireGuardPrivateKey:  wgPrivKey,
 		Domain:               ns.NetworkName,
 		ListenPort:           listenPort,
 		PollInterval:         pollInterval,
@@ -1016,27 +1042,14 @@ func fetchContextKey(ctx context.Context, identity *did.DID, ns *state.NetworkSt
 		PrivateKey: identity.SigningKey,
 	}
 
-	// Derive the decryption key for the key-delivery protocol's contextKey
-	// path. The anchor encrypted the contextKey record using Protocol Path
-	// scheme for the key-delivery protocol, so we need our own root key to
-	// derive the key-delivery decryption key.
-	decryptionKey, err := dwncrypto.DeriveKeyDeliveryDecryptionKey(
-		identity.EncryptionPrivateKey,
-		protocols.KeyDeliveryProtocolURI,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("deriving key-delivery decryption key: %w", err)
-	}
-
+	// contextKey records are written unencrypted (access controlled by
+	// key-delivery protocol $actions). The recipient can query and read
+	// their own records via the DWN's implicit recipient authorization.
 	return mesh.FetchContextKey(ctx, mesh.FetchContextKeyParams{
-		AnchorEndpoint:       ns.AnchorEndpoint,
-		AnchorDID:            ns.AnchorDID,
-		SelfDID:              identity.URI,
-		Signer:               signer,
-		SourceProtocol:       protocols.MeshProtocolURI,
-		ContextID:            ns.NetworkRecordID,
-		DecryptionPrivateKey: decryptionKey,
-		DecryptionKeyID:      identity.EncryptionKeyID(),
+		AnchorEndpoint: ns.AnchorEndpoint,
+		AnchorDID:      ns.AnchorDID,
+		SelfDID:        identity.URI,
+		Signer:         signer,
 	})
 }
 

@@ -45,8 +45,34 @@ type DWNControlConfig struct {
 	// Default: 30 seconds.
 	PollInterval time.Duration
 
+	// NodePrivateKey, if set, overrides the auto-generated WireGuard node
+	// key with the given key. This is essential when the WireGuard key has
+	// already been published to a coordination store (e.g. DWN records) and
+	// the engine must use the same key so peers can route to it.
+	NodePrivateKey key.NodePrivate
+
+	// DiscoKeyRegistry, if set, is used to publish this node's disco key and
+	// to look up peer disco keys. When magicsock generates a disco key,
+	// DWNControl publishes it via SetDisco. When building network maps, the
+	// MapResponseFunc should call GetDisco on peers to populate their disco
+	// keys, enabling DERP relay and hole punching.
+	//
+	// If nil, disco keys are not exchanged and peers must use WireGuardOnly
+	// mode (direct endpoints only, no DERP relay).
+	DiscoKeyRegistry DiscoKeyRegistry
+
 	// Logf is the logging function. If nil, log.Printf is used.
 	Logf logger.Logf
+}
+
+// DiscoKeyRegistry enables disco key exchange between DWN-backed engines.
+// In normal Tailscale, the control server distributes disco keys. In DWN mode,
+// this registry fills that role.
+type DiscoKeyRegistry interface {
+	// SetDisco publishes the disco key for a node (identified by its public key).
+	SetDisco(nodeKey key.NodePublic, disco key.DiscoPublic)
+	// GetDisco returns the disco key for a node, or a zero key if unknown.
+	GetDisco(nodeKey key.NodePublic) key.DiscoPublic
 }
 
 // DWNControl is a controlclient.Client backed by DWN records.
@@ -109,8 +135,11 @@ func NewDWNControl(config *DWNControlConfig, opts Options) (*DWNControl, error) 
 		p = &persist.Persist{}
 	}
 
-	// Ensure we have a node key.
-	if p.PrivateNodeKey.IsZero() {
+	// Use the provided WireGuard key if set, otherwise generate one.
+	if !config.NodePrivateKey.IsZero() {
+		logf("dwn-control: using provided WireGuard node key")
+		p.PrivateNodeKey = config.NodePrivateKey
+	} else if p.PrivateNodeKey.IsZero() {
 		logf("dwn-control: generating new node key")
 		p.PrivateNodeKey = key.NewNode()
 	}
@@ -119,9 +148,12 @@ func NewDWNControl(config *DWNControlConfig, opts Options) (*DWNControl, error) 
 
 	cc := &DWNControl{
 		config: DWNControlConfig{
-			MapResponseFunc: config.MapResponseFunc,
-			PollInterval:    pollInterval,
-			Logf:            logf,
+			MapResponseFunc:  config.MapResponseFunc,
+			EndpointUpdateFunc: config.EndpointUpdateFunc,
+			PollInterval:     pollInterval,
+			NodePrivateKey:   config.NodePrivateKey,
+			DiscoKeyRegistry: config.DiscoKeyRegistry,
+			Logf:             logf,
 		},
 		observer: opts.Observer,
 		persist:  p,
@@ -137,6 +169,16 @@ func NewDWNControl(config *DWNControlConfig, opts Options) (*DWNControl, error) 
 	}
 	cc.disco = opts.DiscoPublicKey
 
+	// Publish the initial disco key to the registry so peers can discover
+	// it immediately. In normal Tailscale, the control server distributes
+	// disco keys. In DWN mode, the registry fills that role.
+	// SetDiscoPublicKey is only called on explicit key rotation, so we
+	// must publish the initial key here.
+	if !cc.disco.IsZero() && cc.config.DiscoKeyRegistry != nil {
+		cc.config.DiscoKeyRegistry.SetDisco(cc.persist.PrivateNodeKey.Public(), cc.disco)
+		logf("dwn-control: published initial disco key %s for nodeKey %s", cc.disco.ShortString(), cc.persist.PrivateNodeKey.Public().ShortString())
+	}
+
 	if !opts.SkipStartForTests {
 		go cc.pollLoop(ctx)
 	}
@@ -146,11 +188,46 @@ func NewDWNControl(config *DWNControlConfig, opts Options) (*DWNControl, error) 
 
 // pollLoop periodically reads DWN state and pushes NetworkMap updates.
 func (cc *DWNControl) pollLoop(ctx context.Context) {
+	// Brief startup delay to let the LocalBackend's event bus fully
+	// initialize before we send the first NetworkMap. Without this, the
+	// first SetControlClientStatus triggers authReconfigLocked which calls
+	// Reconfig → ParseEndpoint before magicsock has processed the
+	// NodeViewsUpdate event, causing "unknown peer" errors.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(50 * time.Millisecond):
+	}
+
 	// Initial login: load state and report logged-in.
 	cc.loadAndPush(ctx, true)
 
+	// Allow the event bus to propagate the initial NodeViewsUpdate to
+	// magicsock before any subsequent Reconfig from the notify feedback
+	// loop. The first loadAndPush publishes the netmap to the event bus
+	// (via setNetMapLocked), but authReconfigLocked runs before magicsock
+	// processes it. This sleep gives the event bus time to deliver.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(200 * time.Millisecond):
+	}
+	// Drain any queued notifications from the startup burst.
+	select {
+	case <-cc.notify:
+	default:
+	}
+	// Re-push now that magicsock knows about our peers.
+	cc.loadAndPush(ctx, false)
+
 	ticker := time.NewTicker(cc.config.PollInterval)
 	defer ticker.Stop()
+
+	// Minimum interval between polls to avoid a feedback loop where
+	// SetControlClientStatus triggers Login/Notify, causing another
+	// loadAndPush immediately.
+	const minPollInterval = 250 * time.Millisecond
+	lastPoll := time.Now()
 
 	for {
 		select {
@@ -163,11 +240,22 @@ func (cc *DWNControl) pollLoop(ctx context.Context) {
 				continue
 			}
 			cc.loadAndPush(ctx, false)
+			lastPoll = time.Now()
 		case <-cc.notify:
 			if cc.paused.Load() {
 				continue
 			}
+			// Debounce: ensure minimum interval between polls.
+			if elapsed := time.Since(lastPoll); elapsed < minPollInterval {
+				time.Sleep(minPollInterval - elapsed)
+			}
+			// Drain any queued notifications that accumulated during the sleep.
+			select {
+			case <-cc.notify:
+			default:
+			}
 			cc.loadAndPush(ctx, false)
+			lastPoll = time.Now()
 		}
 	}
 }
@@ -197,6 +285,32 @@ func (cc *DWNControl) loadAndPush(ctx context.Context, loginFinished bool) {
 
 	// Inject our node key into the NetworkMap.
 	nm.NodeKey = cc.persist.PrivateNodeKey.Public()
+
+	// If a disco key registry is available, inject disco keys into the
+	// network map. This replaces the role of the Tailscale control server
+	// which normally distributes disco keys to peers.
+	if cc.config.DiscoKeyRegistry != nil {
+		// Inject our own disco key into SelfNode.
+		cc.mu.Lock()
+		selfDisco := cc.disco
+		cc.mu.Unlock()
+		if !selfDisco.IsZero() && nm.SelfNode.Valid() {
+			sn := nm.SelfNode.AsStruct()
+			sn.DiscoKey = selfDisco
+			nm.SelfNode = sn.View()
+		}
+		// Inject peer disco keys.
+		for i, p := range nm.Peers {
+			if !p.Key().IsZero() {
+				dk := cc.config.DiscoKeyRegistry.GetDisco(p.Key())
+				if !dk.IsZero() {
+					ps := p.AsStruct()
+					ps.DiscoKey = dk
+					nm.Peers[i] = ps.View()
+				}
+			}
+		}
+	}
 
 	if cc.observer != nil {
 		s := Status{
@@ -295,7 +409,12 @@ func (cc *DWNControl) SetDiscoPublicKey(k key.DiscoPublic) {
 	cc.mu.Lock()
 	cc.disco = k
 	cc.mu.Unlock()
-	// TODO: publish disco key to DWN.
+
+	// Publish disco key so peers can discover it.
+	if cc.config.DiscoKeyRegistry != nil {
+		cc.config.DiscoKeyRegistry.SetDisco(cc.persist.PrivateNodeKey.Public(), k)
+		cc.logf("dwn-control: published disco key %s for nodeKey %s", k.ShortString(), cc.persist.PrivateNodeKey.Public().ShortString())
+	}
 }
 
 func (cc *DWNControl) ClientID() int64 {

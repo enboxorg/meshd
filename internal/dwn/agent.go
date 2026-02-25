@@ -116,6 +116,11 @@ type WriteParams struct {
 	// RecordID is set for updates (empty for initial writes).
 	RecordID string
 
+	// DateCreated is the original dateCreated timestamp from the initial write.
+	// Required for updates (when RecordID is set) because dateCreated is immutable.
+	// Leave empty for initial writes.
+	DateCreated string
+
 	// ParentContextID is the contextId of the parent record.
 	// For root records leave empty; for child records set to the parent's full contextId.
 	ParentContextID string
@@ -124,6 +129,12 @@ type WriteParams struct {
 	// role-based authorization (e.g., "network/member"). Leave empty
 	// for owner or actor-based writes.
 	ProtocolRole string
+
+	// Squash indicates this is a squash (snapshot) write. When true,
+	// the server atomically creates this new record and deletes all
+	// older sibling records at the same protocol path within the same
+	// parent context. Requires $squash: true on the protocol rule set.
+	Squash bool
 
 	// EncryptionRecipients enables encryption for this write.
 	// When set, the data is encrypted with A256GCM and the CEK is
@@ -254,7 +265,9 @@ func (a *SimpleAgent) sendRecordsWrite(ctx context.Context, target string, req D
 		Published:            params.Published,
 		Data:                 data,
 		RecordID:             params.RecordID,
+		DateCreated:         params.DateCreated,
 		ProtocolRole:         req.ProtocolRole,
+		Squash:               params.Squash,
 		EncryptionRecipients: params.EncryptionRecipients,
 	})
 	if err != nil {
