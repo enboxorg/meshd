@@ -7,6 +7,14 @@ REPO='enboxorg/dwn-mesh'
 INSTALL_DIR="${HOME}/.${APP}/bin"
 REQUESTED_VERSION="${VERSION:-}"
 NO_MODIFY_PATH=false
+TMP_DIR=''
+
+cleanup() {
+  if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
+    rm -rf "$TMP_DIR"
+  fi
+}
+trap cleanup EXIT INT TERM
 
 usage() {
   cat <<'EOF'
@@ -20,8 +28,8 @@ Options:
       --no-modify-path    Do not modify shell profile files
 
 Examples:
-  curl -fsSL https://raw.githubusercontent.com/enboxorg/dwn-mesh/main/install.sh | bash
-  curl -fsSL https://raw.githubusercontent.com/enboxorg/dwn-mesh/main/install.sh | bash -s -- --version 0.1.0
+  curl -fsSL https://meshd.sh/install | bash
+  curl -fsSL https://meshd.sh/install | bash -s -- --version 0.1.0
 EOF
 }
 
@@ -201,13 +209,11 @@ main() {
   local url
   url="https://github.com/${REPO}/releases/download/${tag}/${archive}"
 
-  local tmp_dir
-  tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "${tmp_dir}"' EXIT INT TERM
+  TMP_DIR="$(mktemp -d)"
 
   printf '==> Installing dwn-mesh %s\n' "$tag"
-  download_file "$url" "${tmp_dir}/${archive}"
-  extract_archive "${tmp_dir}/${archive}" "$tmp_dir" "$os"
+  download_file "$url" "${TMP_DIR}/${archive}"
+  extract_archive "${TMP_DIR}/${archive}" "$TMP_DIR" "$os"
 
   mkdir -p "$INSTALL_DIR"
 
@@ -216,7 +222,7 @@ main() {
     suffix='.exe'
   fi
 
-  cp "${tmp_dir}/dwn-mesh${suffix}" "${INSTALL_DIR}/dwn-mesh${suffix}"
+  cp "${TMP_DIR}/dwn-mesh${suffix}" "${INSTALL_DIR}/dwn-mesh${suffix}"
   chmod +x "${INSTALL_DIR}/dwn-mesh${suffix}"
 
   if [ "$NO_MODIFY_PATH" = false ] && [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
