@@ -412,6 +412,16 @@ func WithEncryption(recipients []dwncrypto.KeyEncryptionInput) WriteOption {
 	}
 }
 
+// WithSquash marks this write as a squash (snapshot) write.
+// The server atomically creates this new record and deletes all
+// older sibling records at the same protocol path within the same
+// parent context. Requires $squash: true on the protocol rule set.
+func WithSquash() WriteOption {
+	return func(p *WriteParams) {
+		p.Squash = true
+	}
+}
+
 // QueryOption configures a protocol-scoped Query operation.
 type QueryOption func(*QueryParams)
 

@@ -16,9 +16,9 @@ func TestBuildStaticMapResponse(t *testing.T) {
 		Name:   "laptop",
 		DID:    "did:dht:self123",
 		Key:    "AAAA==",
-		MeshIP: netip.MustParseAddr("10.200.0.1"),
+		MeshIP: netip.MustParseAddr("10.200.0.2"),
 		AllowedIPs: []netip.Prefix{
-			netip.MustParsePrefix("10.200.0.1/32"),
+			netip.MustParsePrefix("10.200.0.2/32"),
 		},
 		Endpoints: []string{"1.2.3.4:41641"},
 		OS:        "linux",
@@ -29,9 +29,9 @@ func TestBuildStaticMapResponse(t *testing.T) {
 		Name:   "server",
 		DID:    "did:dht:peer456",
 		Key:    "BBBB==",
-		MeshIP: netip.MustParseAddr("10.200.0.2"),
+		MeshIP: netip.MustParseAddr("10.200.0.3"),
 		AllowedIPs: []netip.Prefix{
-			netip.MustParsePrefix("10.200.0.2/32"),
+			netip.MustParsePrefix("10.200.0.3/32"),
 		},
 		Endpoints:     []string{"5.6.7.8:41641"},
 		PreferredDERP: 1,

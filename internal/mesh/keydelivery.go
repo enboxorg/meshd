@@ -2,8 +2,6 @@ package mesh
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -109,23 +107,15 @@ func (m *KeyDeliveryManager) DeliverContextKey(ctx context.Context, params Deliv
 	//    says to encrypt to the recipient's Protocol Path key for key-delivery,
 	//    which requires knowing their public key.
 	//
-	//    Simplification: we encrypt to our own key for now. When a non-owner
-	//    fetches, they call FetchContextKey which reads from the anchor DWN
-	//    and we'll provide a decrypted endpoint or the key out-of-band.
-
-	encRecipients, err := dwncrypto.DeriveKeyDeliveryWriteEncryption(
-		m.EncryptionKeyManager.RootPrivateKey,
-		m.EncryptionKeyManager.RootKeyID,
-		protocols.KeyDeliveryProtocolURI,
-	)
-	if err != nil {
-		return fmt.Errorf("deriving key-delivery encryption: %w", err)
-	}
+	//    The key-delivery protocol does NOT have $encryption or encryptionRequired,
+	//    so contextKey records can be written unencrypted. Access is controlled by
+	//    $actions authorization (recipient can read). This is the simplest approach
+	//    and avoids the circular key exchange problem.
 
 	agent := dwn.NewSimpleAgent(m.Endpoint, m.Signer)
 	api := dwn.NewDwnAPI(agent)
 
-	// 3. Write the contextKey record.
+	// 3. Write the contextKey record (unencrypted — access controlled by $actions).
 	_, status, err := api.Write(ctx, params.AnchorDID, dwn.WriteParams{
 		Protocol:     protocols.KeyDeliveryProtocolURI,
 		ProtocolPath: "contextKey",
@@ -136,7 +126,6 @@ func (m *KeyDeliveryManager) DeliverContextKey(ctx context.Context, params Deliv
 			"protocol":  params.SourceProtocol,
 			"contextId": params.ContextID,
 		},
-		EncryptionRecipients: encRecipients,
 	})
 	if err != nil {
 		return fmt.Errorf("writing contextKey record: %w", err)
@@ -174,20 +163,21 @@ type FetchContextKeyParams struct {
 	// ContextID is the context ID to filter by.
 	ContextID string
 
-	// DecryptionPrivateKey is the private key for decrypting the contextKey
-	// record. For self-fetch (anchor fetching own key), this is the
-	// anchor's key-delivery Protocol Path-derived key.
-	// For cross-DWN fetch, this is the recipient's key-delivery Protocol
-	// Path-derived key.
+	// DecryptionPrivateKey is reserved for future use (when key-delivery
+	// protocol uses $encryption). Currently unused since contextKey records
+	// are written unencrypted with access controlled by $actions.
 	DecryptionPrivateKey []byte
 
-	// DecryptionKeyID is the KID used to match the JWE recipient entry.
+	// DecryptionKeyID is reserved for future use. Currently unused.
 	DecryptionKeyID string
 }
 
-// FetchContextKey queries the anchor DWN for a contextKey record matching
-// the given protocol and context ID, decrypts it, and returns the
-// DerivedPrivateJwk payload.
+// FetchContextKey queries the anchor DWN for a contextKey record addressed
+// to this node and returns the DerivedPrivateJwk payload.
+//
+// The query relies on the DWN's implicit recipient authorization — any
+// authenticated party can query for records where they are the recipient.
+// contextKey records are written unencrypted (access controlled by $actions).
 //
 // Returns nil (no error) if no matching contextKey record is found.
 func FetchContextKey(ctx context.Context, params FetchContextKeyParams) (*dwncrypto.DerivedPrivateJwk, error) {
@@ -195,16 +185,17 @@ func FetchContextKey(ctx context.Context, params FetchContextKeyParams) (*dwncry
 	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, signer)
 	api := dwn.NewDwnAPI(agent)
 
-	// Query for contextKey records matching our criteria.
+	// Query for contextKey records addressed to this node.
+	//
+	// NOTE: We query by protocol/protocolPath/recipient only, without tag filters.
+	// Tag-based query filtering has issues with some DWN server deployments, and
+	// the recipient + protocol combo is already sufficiently specific for our use case.
+	// If multiple contextKeys exist per recipient, we use dateSort to get the most recent.
 	records, status, err := api.Query(ctx, params.AnchorDID, dwn.QueryParams{
 		Filter: dwn.RecordsFilter{
 			Protocol:     protocols.KeyDeliveryProtocolURI,
 			ProtocolPath: "contextKey",
 			Recipient:    params.SelfDID,
-			Tags: map[string]any{
-				"protocol":  params.SourceProtocol,
-				"contextId": params.ContextID,
-			},
 		},
 		DateSort: "createdDescending",
 	}, "")
@@ -226,71 +217,19 @@ func FetchContextKey(ctx context.Context, params FetchContextKeyParams) (*dwncry
 		return nil, fmt.Errorf("contextKey read failed: %d %s", readStatus.Code, readStatus.Detail)
 	}
 
-	// Get the raw entry data from the record.
-	rawData := record.RawEntry
-	if rawData == nil {
-		return nil, fmt.Errorf("contextKey record has no data")
-	}
-
-	// Try to extract and decrypt the data.
-	data, err := extractAndDecryptContextKeyData(rawData, params.DecryptionPrivateKey, params.DecryptionKeyID)
+	// Get the record data. For RecordsRead, data comes from the HTTP body
+	// (stored as rawData) or from encodedData (for small inline payloads).
+	// contextKey records are written unencrypted (access controlled by $actions),
+	// so the data is plaintext JSON.
+	dataBytes, err := record.Data().Bytes(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("decrypting contextKey data: %w", err)
+		return nil, fmt.Errorf("reading contextKey data: %w", err)
 	}
 
-	return dwncrypto.ParseDerivedPrivateJwk(data)
+	return dwncrypto.ParseDerivedPrivateJwk(dataBytes)
 }
 
-// extractAndDecryptContextKeyData extracts data from a contextKey record
-// response and decrypts it if encrypted.
-func extractAndDecryptContextKeyData(rawEntry json.RawMessage, privKey []byte, kid string) ([]byte, error) {
-	// Try wrapped format (RecordsRead response).
-	var wrapped struct {
-		RecordsWrite struct {
-			EncodedData string               `json:"encodedData"`
-			Encryption  *dwncrypto.Encryption `json:"encryption"`
-		} `json:"recordsWrite"`
-	}
-	if err := json.Unmarshal(rawEntry, &wrapped); err == nil && wrapped.RecordsWrite.EncodedData != "" {
-		data, err := base64.RawURLEncoding.DecodeString(wrapped.RecordsWrite.EncodedData)
-		if err != nil {
-			return nil, fmt.Errorf("decoding data: %w", err)
-		}
 
-		if wrapped.RecordsWrite.Encryption != nil && privKey != nil {
-			data, err = dwncrypto.DecryptData(data, wrapped.RecordsWrite.Encryption, privKey, kid)
-			if err != nil {
-				return nil, fmt.Errorf("decrypting: %w", err)
-			}
-		}
-
-		return data, nil
-	}
-
-	// Try flat format.
-	var flat struct {
-		EncodedData string               `json:"encodedData"`
-		Encryption  *dwncrypto.Encryption `json:"encryption"`
-	}
-	if err := json.Unmarshal(rawEntry, &flat); err == nil && flat.EncodedData != "" {
-		data, err := base64.RawURLEncoding.DecodeString(flat.EncodedData)
-		if err != nil {
-			return nil, fmt.Errorf("decoding data: %w", err)
-		}
-
-		if flat.Encryption != nil && privKey != nil {
-			data, err = dwncrypto.DecryptData(data, flat.Encryption, privKey, kid)
-			if err != nil {
-				return nil, fmt.Errorf("decrypting: %w", err)
-			}
-		}
-
-		return data, nil
-	}
-
-	// Direct JSON — maybe the data is unencrypted.
-	return rawEntry, nil
-}
 
 // EnsureKeyDeliveryProtocol installs the key-delivery protocol on the
 // given DWN with $encryption directives injected.

@@ -23,10 +23,12 @@ import (
 	"github.com/enboxorg/meshnet/net/tsdial"
 	"github.com/enboxorg/meshnet/tailcfg"
 	"github.com/enboxorg/meshnet/tsd"
+	"github.com/enboxorg/meshnet/types/key"
 	"github.com/enboxorg/meshnet/types/logid"
 	"github.com/enboxorg/meshnet/types/logger"
 	"github.com/enboxorg/meshnet/wgengine"
 	"github.com/enboxorg/meshnet/wgengine/netstack"
+	go4mem "go4.org/mem"
 )
 
 // Engine orchestrates the full dwn-mesh stack:
@@ -102,6 +104,18 @@ type Config struct {
 	// records using the shared context key. The EncryptionKeyManager must
 	// have the context key stored (via StoreContextKey) for NetworkRecordID.
 	UseContextEncryption bool
+
+	// WireGuardPrivateKey is the raw 32-byte Curve25519 private key that was
+	// published to DWN records. If set, the engine will use this key instead
+	// of generating a new one, ensuring the engine's WireGuard identity
+	// matches what peers see in DWN records.
+	WireGuardPrivateKey [32]byte
+
+	// DiscoKeyRegistry enables disco key exchange between engines. In normal
+	// Tailscale, the control server distributes disco keys. In dwn-mesh, this
+	// registry fills that role. If nil, a no-op registry is used (disco keys
+	// won't be exchanged, which prevents DERP relay between peers).
+	DiscoKeyRegistry controlclient.DiscoKeyRegistry
 
 	// Logger is the structured logger. Nil = default.
 	Logger *slog.Logger
@@ -185,6 +199,13 @@ func New(cfg Config) (*Engine, error) {
 	// Create the dialer that routes through netstack.
 	dial := &tsdial.Dialer{Logf: logf}
 	dial.SetBus(sys.Bus.Get())
+
+	// Disable lazy WireGuard peer config. In Tailscale, lazy WG trims
+	// inactive peers from the WG device to save memory on large networks.
+	// In dwn-mesh, networks are small and lazy WG causes a chicken-and-egg
+	// problem: peers are trimmed because they have no activity, but they
+	// can't become active without being in the WG config.
+	sys.ControlKnobs().KeepFullWGConfig.Store(true)
 
 	// Create the real userspace WireGuard engine.
 	// Tun: nil triggers fake-TUN mode — no real TUN device, no root required.
@@ -271,6 +292,21 @@ func New(cfg Config) (*Engine, error) {
 		MapResponseFunc: mapFn,
 		PollInterval:    pollInterval,
 		Logf:            logf,
+	}
+
+	// If the caller provided a WireGuard private key (already published to
+	// DWN), inject it so the engine uses the same key. Without this, meshnet
+	// generates a random key that won't match what peers see in DWN records,
+	// breaking WireGuard tunnel establishment.
+	if cfg.WireGuardPrivateKey != [32]byte{} {
+		dwnControlConfig.NodePrivateKey = key.NodePrivateFromRaw32(
+			go4mem.B(cfg.WireGuardPrivateKey[:]),
+		)
+	}
+
+	// Wire disco key registry for DERP relay support.
+	if cfg.DiscoKeyRegistry != nil {
+		dwnControlConfig.DiscoKeyRegistry = cfg.DiscoKeyRegistry
 	}
 
 	// Wire endpoint writeback: when magicsock discovers STUN endpoints,

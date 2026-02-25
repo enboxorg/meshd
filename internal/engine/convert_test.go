@@ -49,8 +49,8 @@ func TestConvertFullMapResponse(t *testing.T) {
 			Name:          "laptop",
 			DID:           "did:dht:self123",
 			Key:           wgKey,
-			MeshIP:        netip.MustParseAddr("10.200.0.1"),
-			AllowedIPs:    []netip.Prefix{netip.MustParsePrefix("10.200.0.1/32")},
+			MeshIP:        netip.MustParseAddr("10.200.0.2"),
+			AllowedIPs:    []netip.Prefix{netip.MustParsePrefix("10.200.0.2/32")},
 			Endpoints:     []string{"1.2.3.4:41641"},
 			PreferredDERP: 1,
 			Online:        true,
@@ -132,7 +132,7 @@ func TestConvertFullMapResponse(t *testing.T) {
 				if addrs.Len() != 1 {
 					t.Fatalf("want 1 address, got %d", addrs.Len())
 				}
-				if got := addrs.At(0); got != netip.MustParsePrefix("10.200.0.1/32") {
+				if got := addrs.At(0); got != netip.MustParsePrefix("10.200.0.2/32") {
 					t.Errorf("address = %v", got)
 				}
 			},
@@ -409,7 +409,7 @@ func TestConvertNodeDefaultAllowedIPs(t *testing.T) {
 			ID:     1,
 			Name:   "test",
 			Key:    wgKey,
-			MeshIP: netip.MustParseAddr("10.200.0.1"),
+			MeshIP: netip.MustParseAddr("10.200.0.2"),
 			// AllowedIPs is nil.
 		},
 	}
@@ -424,8 +424,8 @@ func TestConvertNodeDefaultAllowedIPs(t *testing.T) {
 	if allowed.Len() != 1 {
 		t.Fatalf("want 1 AllowedIP, got %d", allowed.Len())
 	}
-	if got := allowed.At(0); got != netip.MustParsePrefix("10.200.0.1/32") {
-		t.Errorf("AllowedIP = %v, want 10.200.0.1/32", got)
+	if got := allowed.At(0); got != netip.MustParsePrefix("10.200.0.2/32") {
+		t.Errorf("AllowedIP = %v, want 10.200.0.2/32", got)
 	}
 }
 
@@ -435,9 +435,9 @@ func TestConvertInvalidPeerKeySkipped(t *testing.T) {
 
 	resp := &control.MapResponse{
 		Peers: []*control.Node{
-			{ID: 1, Name: "good", Key: goodKey, MeshIP: netip.MustParseAddr("10.200.0.1")},
-			{ID: 2, Name: "bad", Key: "not-a-key", MeshIP: netip.MustParseAddr("10.200.0.2")},
-			{ID: 3, Name: "also-good", Key: goodKey, MeshIP: netip.MustParseAddr("10.200.0.3")},
+			{ID: 1, Name: "good", Key: goodKey, MeshIP: netip.MustParseAddr("10.200.0.2")},
+			{ID: 2, Name: "bad", Key: "not-a-key", MeshIP: netip.MustParseAddr("10.200.0.3")},
+			{ID: 3, Name: "also-good", Key: goodKey, MeshIP: netip.MustParseAddr("10.200.0.4")},
 		},
 	}
 

@@ -59,6 +59,10 @@ type NetworkState struct {
 
 	// NodeInfoRecordID is the record ID of this node's nodeInfo record.
 	NodeInfoRecordID string `json:"nodeInfoRecordId,omitempty"`
+
+	// NodeInfoDateCreated is the dateCreated timestamp from the initial
+	// nodeInfo write. Required for updates because dateCreated is immutable.
+	NodeInfoDateCreated string `json:"nodeInfoDateCreated,omitempty"`
 }
 
 const networkFile = "network.json"

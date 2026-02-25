@@ -152,6 +152,12 @@ type RecordsWriteOptions struct {
 	// Leave empty for initial writes.
 	RecordID string
 
+	// DateCreated is the original dateCreated timestamp from the initial write.
+	// This is REQUIRED for updates (when RecordID is set) because dateCreated
+	// is an immutable property that MUST NOT change across updates.
+	// Leave empty for initial writes (will be set to the current time).
+	DateCreated string
+
 	// ParentContextID is the contextId of the parent record for child records.
 	// For root records (top level of a protocol structure), leave empty.
 	// For child records, set to the parent's full contextId.
@@ -162,6 +168,14 @@ type RecordsWriteOptions struct {
 
 	// ProtocolRole for role-based authorization.
 	ProtocolRole string
+
+	// Squash indicates this is a squash (snapshot) write. When true,
+	// the server atomically creates this new record and deletes all
+	// sibling records at the same protocol path within the same parent
+	// context that have an older messageTimestamp.
+	// The protocol rule set at this record's protocolPath MUST have
+	// $squash: true. Squash writes MUST be initial writes (new records).
+	Squash bool
 
 	// EncryptionRecipients enables encryption for this write.
 	// When set, the plaintext Data is encrypted with A256GCM and the CEK
@@ -221,6 +235,15 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteR
 
 	// Build descriptor as map — only include non-zero fields.
 	// This matches the SDK's removeUndefinedProperties() behavior.
+	//
+	// For updates (RecordID set), dateCreated MUST be the original value
+	// because it is immutable across record updates. For initial writes,
+	// dateCreated is set to the current time.
+	dateCreated := now
+	if opts.DateCreated != "" {
+		dateCreated = opts.DateCreated
+	}
+
 	desc := map[string]any{
 		"interface":        "Records",
 		"method":           "Write",
@@ -228,7 +251,7 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteR
 		"protocolPath":     opts.ProtocolPath,
 		"dataCid":          dataCID,
 		"dataSize":         dataSize,
-		"dateCreated":      now,
+		"dateCreated":      dateCreated,
 		"messageTimestamp": now,
 		"dataFormat":       opts.DataFormat,
 	}
@@ -252,6 +275,9 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteR
 		if *opts.Published {
 			desc["datePublished"] = now
 		}
+	}
+	if opts.Squash {
+		desc["squash"] = true
 	}
 
 	// Compute record ID.

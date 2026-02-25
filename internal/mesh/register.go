@@ -27,6 +27,11 @@ type NodeRegistration struct {
 	NodeInfoRecordID string
 	MeshIP           string
 	WireGuardPubKey  string
+
+	// DateCreated is the dateCreated timestamp from the initial write.
+	// Store this and pass it back for subsequent updates so the immutable
+	// dateCreated field is preserved.
+	DateCreated string
 }
 
 // RegisterNodeParams configures node registration.
@@ -62,6 +67,11 @@ type RegisterNodeParams struct {
 	// Leave empty for initial registration.
 	ExistingNodeInfoRecordID string
 
+	// ExistingDateCreated is the dateCreated timestamp from the initial write.
+	// Required when ExistingNodeInfoRecordID is set (updates), because
+	// dateCreated is immutable across record updates.
+	ExistingDateCreated string
+
 	// ProtocolRole is the role to invoke for authorization (e.g., "network/member").
 	// Required when writing to another party's DWN as a non-owner.
 	ProtocolRole string
@@ -72,6 +82,14 @@ type RegisterNodeParams struct {
 	// When true, the EncryptionKeyManager must have the context key stored
 	// (via StoreContextKey) for the NetworkRecordID.
 	UseContextEncryption bool
+
+	// Squash indicates this is a squash (snapshot) write. When true,
+	// the server atomically creates this new record and deletes all
+	// older sibling nodeInfo records at the same protocol path within
+	// the same parent context. Use this when re-registering to replace
+	// a previous nodeInfo record. Requires $squash: true on the
+	// nodeInfo protocol rule set.
+	Squash bool
 }
 
 // RegisterNode writes or updates the node's nodeInfo record (encrypted) on
@@ -135,11 +153,13 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 		},
 		ProtocolRole:         params.ProtocolRole,
 		EncryptionRecipients: recipients,
+		Squash:               params.Squash,
 	}
 
-	// If updating, set the existing record ID.
+	// If updating, set the existing record ID and preserve dateCreated.
 	if params.ExistingNodeInfoRecordID != "" {
 		writeParams.RecordID = params.ExistingNodeInfoRecordID
+		writeParams.DateCreated = params.ExistingDateCreated
 	}
 
 	record, status, err := api.Write(ctx, params.AnchorDID, writeParams)
@@ -150,10 +170,17 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 		return nil, fmt.Errorf("nodeInfo write failed: %d %s", status.Code, status.Detail)
 	}
 
+	// Extract dateCreated from the record — callers need this for future updates.
+	dateCreated := ""
+	if record.DateCreated != "" {
+		dateCreated = record.DateCreated
+	}
+
 	return &NodeRegistration{
 		NodeInfoRecordID: record.ID,
 		MeshIP:           params.MeshIP,
 		WireGuardPubKey:  params.WireGuardPubKey,
+		DateCreated:      dateCreated,
 	}, nil
 }
 
@@ -205,6 +232,7 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 		Data:                 endpointData,
 		ProtocolRole:         params.ProtocolRole,
 		EncryptionRecipients: recipients,
+		Squash:               params.Squash,
 	})
 	if err != nil {
 		return fmt.Errorf("writing endpoint: %w", err)
@@ -232,6 +260,10 @@ type WriteEndpointParams struct {
 	// UseContextEncryption enables Protocol Context encryption instead of
 	// Protocol Path encryption. See RegisterNodeParams.UseContextEncryption.
 	UseContextEncryption bool
+
+	// Squash indicates this is a squash (snapshot) write. See
+	// RegisterNodeParams.Squash.
+	Squash bool
 }
 
 // PublicEndpoint describes a publicly reachable endpoint.

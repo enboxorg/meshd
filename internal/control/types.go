@@ -89,6 +89,9 @@ type DERPNode struct {
 
 	// STUNOnly indicates this node only provides STUN, not DERP.
 	STUNOnly bool
+
+	// InsecureForTests disables TLS verification (for local test DERP servers).
+	InsecureForTests bool
 }
 
 // DERPMap is the full set of DERP regions.

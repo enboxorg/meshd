@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"sort"
 	"sync"
 
 	"github.com/enboxorg/dwn-mesh/internal/dwn"
@@ -165,6 +166,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	membersResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     ProtocolMesh,
 		ProtocolPath: "network/member",
+		ContextID:    c.networkRecordID,
 	}, "createdAscending", nil, "network/member")
 	if err != nil {
 		return nil, fmt.Errorf("querying members: %w", err)
@@ -211,6 +213,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	nodesResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     ProtocolMesh,
 		ProtocolPath: "network/nodeInfo",
+		ContextID:    c.networkRecordID,
 	}, "createdAscending", nil, "network/member")
 	if err != nil {
 		return nil, fmt.Errorf("querying nodes: %w", err)
@@ -261,6 +264,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	relayResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     ProtocolMesh,
 		ProtocolPath: "network/relay",
+		ContextID:    c.networkRecordID,
 	}, "createdAscending", nil, "network/member")
 	if err != nil {
 		return nil, fmt.Errorf("querying relays: %w", err)
@@ -346,8 +350,18 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 		DNSConfig: c.buildDNSConfig(),
 	}
 
+	// Sort DIDs for deterministic NodeID assignment. Go map iteration
+	// order is random, and magicsock panics if the same public key
+	// appears under different NodeIDs across successive polls.
+	dids := make([]string, 0, len(c.nodes))
+	for did := range c.nodes {
+		dids = append(dids, did)
+	}
+	sort.Strings(dids)
+
 	var nodeID int64 = 1
-	for did, nodeInfo := range c.nodes {
+	for _, did := range dids {
+		nodeInfo := c.nodes[did]
 		node := nodeInfoToNode(nodeID, did, nodeInfo)
 		nodeID++
 
@@ -397,6 +411,14 @@ func nodeInfoToNode(id int64, did string, info *NodeInfoData) *Node {
 		if ep.PreferredDERP != 0 {
 			node.PreferredDERP = ep.PreferredDERP
 		}
+	}
+
+	// Default to DERP region 1 if no endpoint provided a preference.
+	// Without a HomeDERP, magicsock removes the DERP relay address for
+	// the peer, making packet relay impossible until a real endpoint
+	// update is written with STUN-discovered DERP info.
+	if node.PreferredDERP == 0 {
+		node.PreferredDERP = 1
 	}
 
 	return node

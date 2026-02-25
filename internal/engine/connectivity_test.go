@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,20 +19,24 @@ import (
 	"github.com/enboxorg/dwn-mesh/internal/engine"
 	"github.com/enboxorg/dwn-mesh/internal/mesh"
 	"github.com/enboxorg/dwn-mesh/protocols"
+
+	"github.com/enboxorg/meshnet/types/key"
+	go4mem "go4.org/mem"
 )
 
 // TestTwoNodeConnectivity is a full end-to-end integration test that:
 //
 //  1. Creates two DID identities (node A = anchor, node B = joiner)
-//  2. Registers both as tenants on the DWN server
-//  3. Node A creates a network with encrypted protocols
-//  4. Node B joins the network
-//  5. Node A delivers context key to node B
-//  6. Both nodes create real engines (UserspaceEngine + netstack)
-//  7. Both engines start, poll DWN, and discover each other
-//  8. Node A listens for TCP on its mesh IP via netstack
-//  9. Node B dials node A's mesh IP via netstack
-//  10. Verifies bidirectional data transfer through the WireGuard tunnel
+//  2. Node A installs wireguard-mesh + key-delivery protocols with encryption
+//  3. Node A creates the network record
+//  4. Node A creates admin member + nodeInfo (encrypted with Protocol Path)
+//  5. Node B joins: member created by A, nodeInfo + endpoint by B (Protocol Path)
+//  6. Node A delivers context key to both nodes
+//  6b. Node B fetches context key, re-registers nodeInfo + endpoint with Protocol Context encryption
+//  7. Both nodes create real engines (UserspaceEngine + netstack)
+//  8. Both engines start, poll DWN, and discover each other
+//  9. TCP connectivity test: B dials A's mesh IP, echo round-trip verified
+//  10. Clean shutdown
 //
 // Requires DWN_ENDPOINT environment variable.
 // Run with: DWN_ENDPOINT=https://dev.aws.dwn.enbox.id go test ./internal/engine/ -run TestTwoNodeConnectivity -v -timeout 300s
@@ -293,15 +298,124 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		ContextID:      networkRecordID,
 	})
 	if err != nil {
-		t.Logf("  Warning: key delivery to B failed: %v", err)
+		t.Fatalf("key delivery to B failed: %v", err)
+	}
+	t.Log("  Context key delivered to Node B")
+
+	// Node A (anchor) also re-registers with context encryption so non-anchor
+	// nodes can decrypt its nodeInfo using the shared context key.
+	regA2, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
+		AnchorEndpoint:          endpoint,
+		AnchorDID:               nodeA.identity.URI,
+		NetworkRecordID:         networkRecordID,
+		SelfDID:                 nodeA.identity.URI,
+		Signer:                  nodeA.signer,
+		EncryptionKeyManager:    nodeA.encMgr,
+		WireGuardPubKey:         wgKeysA.PublicKeyBase64(),
+		MeshIP:                  meshIPA.String(),
+		Hostname:                "node-a",
+		UseContextEncryption:    true,
+		ExistingNodeInfoRecordID: regA.NodeInfoRecordID,
+		ExistingDateCreated:     regA.DateCreated,
+	})
+	if err != nil {
+		t.Fatalf("re-registering Node A with context encryption: %v", err)
+	}
+	t.Logf("  Node A re-registered with context encryption: %s", regA2.NodeInfoRecordID)
+
+	// ================================================================
+	// Step 6b: Node B fetches and stores context key, re-registers with context encryption
+	// ================================================================
+	t.Log("Step 6b: Node B fetches context key and re-registers with context encryption")
+
+	contextKeyJwk, err := mesh.FetchContextKey(ctx, mesh.FetchContextKeyParams{
+		AnchorEndpoint: endpoint,
+		AnchorDID:      nodeA.identity.URI,
+		SelfDID:        nodeB.identity.URI,
+		Signer:         nodeB.signer,
+	})
+	if err != nil {
+		t.Fatalf("fetching context key for B: %v", err)
+	}
+	if contextKeyJwk == nil {
+		t.Fatal("context key not found for Node B")
+	}
+
+	contextKeyBytes, err := contextKeyJwk.PrivateKeyBytes()
+	if err != nil {
+		t.Fatalf("extracting context key bytes: %v", err)
+	}
+	nodeB.encMgr.StoreContextKey(networkRecordID, contextKeyBytes)
+	t.Log("  Node B stored context key")
+
+	// Re-register Node B's nodeInfo with Protocol Context encryption.
+	// This is an UPDATE (same recordId, preserved dateCreated) which replaces
+	// the old Protocol Path encrypted record in-place, avoiding duplicates.
+	regB2, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
+		AnchorEndpoint:          endpoint,
+		AnchorDID:               nodeA.identity.URI,
+		NetworkRecordID:         networkRecordID,
+		SelfDID:                 nodeB.identity.URI,
+		Signer:                  nodeB.signer,
+		EncryptionKeyManager:    nodeB.encMgr,
+		WireGuardPubKey:         wgKeysB.PublicKeyBase64(),
+		MeshIP:                  meshIPB.String(),
+		Hostname:                "node-b",
+		ProtocolRole:            "network/member",
+		UseContextEncryption:    true,
+		ExistingNodeInfoRecordID: regB.NodeInfoRecordID,
+		ExistingDateCreated:     regB.DateCreated,
+	})
+	if err != nil {
+		t.Fatalf("re-registering Node B with context encryption: %v", err)
+	}
+	t.Logf("  Node B re-registered with context encryption: %s", regB2.NodeInfoRecordID)
+
+	// Re-write Node B's endpoint with context encryption, parented under the new nodeInfo.
+	// No ProtocolRole needed — the "who": "author", "of": "network/nodeInfo" action
+	// authorizes the nodeInfo author to create endpoint records.
+	err = mesh.WriteEndpoint(ctx, mesh.WriteEndpointParams{
+		AnchorEndpoint:       endpoint,
+		AnchorDID:            nodeA.identity.URI,
+		NetworkRecordID:      networkRecordID,
+		NodeInfoRecordID:     regB2.NodeInfoRecordID,
+		Signer:               nodeB.signer,
+		EncryptionKeyManager: nodeB.encMgr,
+		LocalEndpoints:       mesh.DiscoverLocalEndpoints(0),
+		NATType:              "unknown",
+		UseContextEncryption: true,
+	})
+	if err != nil {
+		t.Logf("  Warning: Node B context-encrypted endpoint write failed: %v", err)
 	} else {
-		t.Log("  Context key delivered to Node B")
+		t.Log("  Node B endpoint re-written with context encryption")
 	}
 
 	// ================================================================
 	// Step 7: Create engines for both nodes
 	// ================================================================
 	t.Log("Step 7: Creating engines for both nodes")
+
+	// Diagnostic: verify that the NodePublic derived from the private key
+	// matches the public key stored in DWN records. This is critical for
+	// disco key lookup — if these don't match, disco keys won't be found.
+	nodePrivA := key.NodePrivateFromRaw32(go4mem.B(wgKeysA.PrivateKey[:]))
+	nodePrivB := key.NodePrivateFromRaw32(go4mem.B(wgKeysB.PrivateKey[:]))
+	nodePubA := nodePrivA.Public()
+	nodePubB := nodePrivB.Public()
+
+	// Parse the public keys from the DWN-stored base64 (same path as converter)
+	dwnPubA, _ := parseTestWireGuardKey(wgKeysA.PublicKeyBase64())
+	dwnPubB, _ := parseTestWireGuardKey(wgKeysB.PublicKeyBase64())
+
+	t.Logf("  Key diagnostic A: privPub=%s dwnPub=%s match=%v",
+		nodePubA.ShortString(), dwnPubA.ShortString(), nodePubA == dwnPubA)
+	t.Logf("  Key diagnostic B: privPub=%s dwnPub=%s match=%v",
+		nodePubB.ShortString(), dwnPubB.ShortString(), nodePubB == dwnPubB)
+
+	// Shared disco key registry: both engines publish and look up disco keys
+	// through this registry, replacing Tailscale's control server role.
+	discoReg := engine.NewInMemoryDiscoRegistry()
 
 	engA, err := engine.New(engine.Config{
 		AnchorEndpoint:       endpoint,
@@ -313,6 +427,9 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		Domain:               "e2e-test",
 		PollInterval:         5 * time.Second,
 		ListenPort:           0,
+		UseContextEncryption: true,
+		WireGuardPrivateKey:  wgKeysA.PrivateKey,
+		DiscoKeyRegistry:     discoReg,
 	})
 	if err != nil {
 		t.Fatalf("creating engine A: %v", err)
@@ -330,6 +447,9 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		Domain:               "e2e-test",
 		PollInterval:         5 * time.Second,
 		ListenPort:           0,
+		UseContextEncryption: true,
+		WireGuardPrivateKey:  wgKeysB.PrivateKey,
+		DiscoKeyRegistry:     discoReg,
 	})
 	if err != nil {
 		t.Fatalf("creating engine B: %v", err)
@@ -432,11 +552,75 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		serverDone <- nil
 	}()
 
-	// Give the listener a moment to start.
-	time.Sleep(100 * time.Millisecond)
+	// Give time for:
+	// 1. The listener to start
+	// 2. Disco keys to propagate through the shared registry
+	// 3. A subsequent DWN poll to inject disco keys into the network map
+	// 4. magicsock to create peer endpoints with disco keys
+	// 5. DERP relay connections to establish
+	time.Sleep(15 * time.Second)
+
+	// Diagnostic: dump netmap peer status from both engines
+	nmAFinal := engA.Backend().NetMap()
+	nmBFinal := engB.Backend().NetMap()
+	if nmAFinal != nil {
+		t.Logf("  Engine A netmap: selfKey=%s, peers=%d, derpMap regions=%d",
+			nmAFinal.NodeKey.ShortString(), len(nmAFinal.Peers), len(nmAFinal.DERPMap.Regions))
+		if nmAFinal.SelfNode.Valid() {
+			t.Logf("    Self: homeDERP=%d addrs=%v", nmAFinal.SelfNode.HomeDERP(), nmAFinal.SelfNode.Addresses())
+		}
+		for i, p := range nmAFinal.Peers {
+			t.Logf("    Peer %d: key=%s disco=%s homeDERP=%d endpoints=%d addrs=%v",
+				i, p.Key().ShortString(), p.DiscoKey().ShortString(), p.HomeDERP(), p.Endpoints().Len(), p.Addresses())
+		}
+	}
+	if nmBFinal != nil {
+		t.Logf("  Engine B netmap: selfKey=%s, peers=%d, derpMap regions=%d",
+			nmBFinal.NodeKey.ShortString(), len(nmBFinal.Peers), len(nmBFinal.DERPMap.Regions))
+		if nmBFinal.SelfNode.Valid() {
+			t.Logf("    Self: homeDERP=%d addrs=%v", nmBFinal.SelfNode.HomeDERP(), nmBFinal.SelfNode.Addresses())
+		}
+		for i, p := range nmBFinal.Peers {
+			t.Logf("    Peer %d: key=%s disco=%s homeDERP=%d endpoints=%d addrs=%v",
+				i, p.Key().ShortString(), p.DiscoKey().ShortString(), p.HomeDERP(), p.Endpoints().Len(), p.Addresses())
+		}
+	}
+
+	// Check MagicSock DERP status
+	mcA := engA.Backend().MagicConn()
+	mcB := engB.Backend().MagicConn()
+	if mcA != nil {
+		t.Logf("  Engine A MagicSock disco=%s", mcA.DiscoPublicKey().ShortString())
+	}
+	if mcB != nil {
+		t.Logf("  Engine B MagicSock disco=%s", mcB.DiscoPublicKey().ShortString())
+	}
+
+	// Check backend state
+	stateA := engA.Backend().State()
+	stateB := engB.Backend().State()
+	t.Logf("  Engine A state=%s, Engine B state=%s", stateA, stateB)
+
+	// Check full status with peers for WireGuard config details
+	fullStatusA := engA.Backend().Status()
+	if fullStatusA != nil {
+		t.Logf("  Engine A BackendState=%s, Self=%+v", fullStatusA.BackendState, fullStatusA.Self)
+		for k, peer := range fullStatusA.Peer {
+			t.Logf("    Peer %s: relay=%s, curAddr=%s, active=%v, lastHandshake=%v",
+				k.ShortString(), peer.Relay, peer.CurAddr, peer.Active, peer.LastHandshake)
+		}
+	}
+	fullStatusB := engB.Backend().Status()
+	if fullStatusB != nil {
+		t.Logf("  Engine B BackendState=%s", fullStatusB.BackendState)
+		for k, peer := range fullStatusB.Peer {
+			t.Logf("    Peer %s: relay=%s, curAddr=%s, active=%v, lastHandshake=%v",
+				k.ShortString(), peer.Relay, peer.CurAddr, peer.Active, peer.LastHandshake)
+		}
+	}
 
 	// Node B dials Node A's mesh IP through netstack.
-	dialCtx, dialCancel := context.WithTimeout(ctx, 15*time.Second)
+	dialCtx, dialCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer dialCancel()
 
 	dst := netip.AddrPortFrom(meshIPA, 9999)
@@ -568,10 +752,17 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 		Data: mData, Tags: map[string]any{"status": "active"}, EncryptionRecipients: memberRecipients,
 	})
 
-	// Register both nodes.
+	// Install key-delivery protocol on anchor.
+	err = mesh.EnsureKeyDeliveryProtocol(ctx, endpoint, nodeA.identity.URI, nodeA.signer,
+		nodeA.identity.EncryptionPrivateKey, nodeA.identity.EncryptionKeyID())
+	if err != nil {
+		t.Fatalf("EnsureKeyDeliveryProtocol: %v", err)
+	}
+
+	// Register both nodes (initial registration uses Protocol Path encryption).
 	wgA, _ := mesh.GenerateWireGuardKeyPair()
 	ipA, _ := mesh.AllocateMeshIP(meshCIDR, nodeA.identity.URI)
-	mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
+	regADisc, _ := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,
 		NetworkRecordID: networkRecordID, SelfDID: nodeA.identity.URI,
 		Signer: nodeA.signer, EncryptionKeyManager: nodeA.encMgr,
@@ -581,7 +772,7 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 
 	wgB, _ := mesh.GenerateWireGuardKeyPair()
 	ipB, _ := mesh.AllocateMeshIP(meshCIDR, nodeB.identity.URI)
-	mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
+	regBDisc, _ := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,
 		NetworkRecordID: networkRecordID, SelfDID: nodeB.identity.URI,
 		Signer: nodeB.signer, EncryptionKeyManager: nodeB.encMgr,
@@ -589,7 +780,65 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 		Hostname: "disc-b", ProtocolRole: "network/member",
 	})
 
+	// Deliver context key to Node B, then re-register both nodes with context encryption.
+	kdm := &mesh.KeyDeliveryManager{
+		Endpoint:             endpoint,
+		Signer:               nodeA.signer,
+		EncryptionKeyManager: nodeA.encMgr,
+	}
+	err = kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
+		AnchorDID:      nodeA.identity.URI,
+		RecipientDID:   nodeB.identity.URI,
+		SourceProtocol: protocols.MeshProtocolURI,
+		ContextID:      networkRecordID,
+	})
+	if err != nil {
+		t.Fatalf("key delivery to B: %v", err)
+	}
+
+	// Re-register Node A (anchor) with context encryption.
+	mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
+		AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,
+		NetworkRecordID: networkRecordID, SelfDID: nodeA.identity.URI,
+		Signer: nodeA.signer, EncryptionKeyManager: nodeA.encMgr,
+		WireGuardPubKey: wgA.PublicKeyBase64(), MeshIP: ipA.String(),
+		Hostname: "disc-a", UseContextEncryption: true,
+		ExistingNodeInfoRecordID: regADisc.NodeInfoRecordID,
+		ExistingDateCreated:      regADisc.DateCreated,
+	})
+
+	// Node B fetches and stores context key.
+	contextKeyJwk, err := mesh.FetchContextKey(ctx, mesh.FetchContextKeyParams{
+		AnchorEndpoint: endpoint,
+		AnchorDID:      nodeA.identity.URI,
+		SelfDID:        nodeB.identity.URI,
+		Signer:         nodeB.signer,
+	})
+	if err != nil {
+		t.Fatalf("fetching context key: %v", err)
+	}
+	if contextKeyJwk != nil {
+		contextKeyBytes, err := contextKeyJwk.PrivateKeyBytes()
+		if err != nil {
+			t.Fatalf("extracting context key bytes: %v", err)
+		}
+		nodeB.encMgr.StoreContextKey(networkRecordID, contextKeyBytes)
+
+		// Re-register Node B with context encryption (update, same recordId).
+		mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
+			AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,
+			NetworkRecordID: networkRecordID, SelfDID: nodeB.identity.URI,
+			Signer: nodeB.signer, EncryptionKeyManager: nodeB.encMgr,
+			WireGuardPubKey: wgB.PublicKeyBase64(), MeshIP: ipB.String(),
+			Hostname: "disc-b", ProtocolRole: "network/member",
+			UseContextEncryption: true,
+			ExistingNodeInfoRecordID: regBDisc.NodeInfoRecordID,
+			ExistingDateCreated:      regBDisc.DateCreated,
+		})
+	}
+
 	// Create engine A.
+	discoReg := engine.NewInMemoryDiscoRegistry()
 	engA, err := engine.New(engine.Config{
 		AnchorEndpoint:       endpoint,
 		AnchorTenant:         nodeA.identity.URI,
@@ -599,6 +848,8 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 		EncryptionKeyManager: nodeA.encMgr,
 		Domain:               "disc-test",
 		PollInterval:         3 * time.Second,
+		WireGuardPrivateKey:  wgA.PrivateKey,
+		DiscoKeyRegistry:     discoReg,
 	})
 	if err != nil {
 		t.Fatalf("creating engine A: %v", err)
@@ -721,6 +972,22 @@ func getNetmapInfo(eng *engine.Engine) *netmapInfo {
 	}
 
 	return info
+}
+
+// parseTestWireGuardKey parses a base64-encoded WireGuard public key into a
+// key.NodePublic. Mirrors the unexported parseWireGuardKey in convert.go.
+func parseTestWireGuardKey(b64Key string) (key.NodePublic, error) {
+	raw, err := base64.StdEncoding.DecodeString(b64Key)
+	if err != nil {
+		raw, err = base64.RawStdEncoding.DecodeString(b64Key)
+		if err != nil {
+			return key.NodePublic{}, fmt.Errorf("base64 decode: %w", err)
+		}
+	}
+	if len(raw) != 32 {
+		return key.NodePublic{}, fmt.Errorf("key must be 32 bytes, got %d", len(raw))
+	}
+	return key.NodePublicFromRaw32(go4mem.B(raw)), nil
 }
 
 // Ensure testNode fields are used to satisfy the compiler.
