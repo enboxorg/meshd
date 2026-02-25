@@ -8,6 +8,20 @@ sign up for. Nothing to self-host. Nothing to trust.
 
 **Status:** Design phase. See [DESIGN.md](DESIGN.md) for the full design document.
 
+## Installation
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/enboxorg/dwn-mesh/main/install.sh | bash
+```
+
+The installer works on Linux, macOS, and Windows (Git Bash/WSL). It installs
+Go when needed and then installs the latest `dwn-mesh` CLI from source.
+
+```bash
+# Manual install (if you prefer to run steps yourself)
+go install github.com/enboxorg/dwn-mesh/cmd/dwn-mesh@latest
+```
+
 ## What is this?
 
 dwn-mesh is a WireGuard mesh network where there is no coordination server.
