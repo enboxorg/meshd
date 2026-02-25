@@ -16,12 +16,15 @@ import (
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 	"github.com/enboxorg/meshd/internal/mesh"
 
+	"github.com/tailscale/wireguard-go/tun"
+
 	"github.com/enboxorg/meshnet/control/controlclient"
 	"github.com/enboxorg/meshnet/ipn"
 	"github.com/enboxorg/meshnet/ipn/ipnlocal"
 	"github.com/enboxorg/meshnet/ipn/store/mem"
 	"github.com/enboxorg/meshnet/net/netmon"
 	"github.com/enboxorg/meshnet/net/tsdial"
+	"github.com/enboxorg/meshnet/net/tstun"
 	"github.com/enboxorg/meshnet/tailcfg"
 	"github.com/enboxorg/meshnet/tsd"
 	"github.com/enboxorg/meshnet/types/key"
@@ -29,6 +32,7 @@ import (
 	"github.com/enboxorg/meshnet/types/logger"
 	"github.com/enboxorg/meshnet/wgengine"
 	"github.com/enboxorg/meshnet/wgengine/netstack"
+	"github.com/enboxorg/meshnet/wgengine/router"
 	go4mem "go4.org/mem"
 )
 
@@ -48,6 +52,11 @@ type Engine struct {
 	ns              *netstack.Impl
 	autoKeyDelivery *AutoKeyDelivery
 	logger          *slog.Logger
+
+	// tunDev is the real TUN device when running in TUN mode.
+	// nil in userspace-only (netstack) mode.
+	tunDev  tun.Device
+	tunName string
 
 	mu      sync.Mutex
 	running bool
@@ -117,6 +126,17 @@ type Config struct {
 	// registry fills that role. If nil, a no-op registry is used (disco keys
 	// won't be exchanged, which prevents DERP relay between peers).
 	DiscoKeyRegistry controlclient.DiscoKeyRegistry
+
+	// TUNName, if non-empty, creates a real OS TUN device with this name
+	// (e.g., "meshd0") instead of using a fake TUN. This enables regular
+	// applications (ping, ssh, curl) to route through the mesh tunnel.
+	//
+	// Requires root or CAP_NET_ADMIN. If the TUN device cannot be created,
+	// the engine falls back to userspace-only mode with a warning.
+	//
+	// When empty (default), the engine runs in userspace-only mode where
+	// only netstack-internal code can communicate through the mesh.
+	TUNName string
 
 	// Logger is the structured logger. Nil = default.
 	Logger *slog.Logger
@@ -208,11 +228,44 @@ func New(cfg Config) (*Engine, error) {
 	// can't become active without being in the WG config.
 	sys.ControlKnobs().KeepFullWGConfig.Store(true)
 
-	// Create the real userspace WireGuard engine.
-	// Tun: nil triggers fake-TUN mode — no real TUN device, no root required.
-	// magicsock is still real: UDP hole punching, DERP relay, STUN all work.
-	eng, err := wgengine.NewUserspaceEngine(logf, wgengine.Config{
-		Tun:           nil, // fake TUN; netstack handles all packets in userspace
+	// Create the WireGuard engine.
+	//
+	// Two modes:
+	//   1. Real TUN mode (cfg.TUNName set): creates a kernel TUN device so
+	//      regular applications can route through the mesh. Requires root
+	//      or CAP_NET_ADMIN. Falls back to userspace mode on failure.
+	//   2. Userspace mode (default): fake TUN + netstack. Only code using
+	//      the netstack dialer can communicate through the mesh tunnel.
+	var tunDev tun.Device
+	var tunName string
+	var osRouter router.Router
+	userspaceOnly := true
+
+	if cfg.TUNName != "" {
+		dev, devName, tunErr := tstun.New(logf, cfg.TUNName)
+		if tunErr != nil {
+			l.Warn("failed to create TUN device, falling back to userspace mode",
+				slog.String("tunName", cfg.TUNName),
+				slog.Any("error", tunErr),
+			)
+		} else {
+			tunDev = dev
+			tunName = devName
+			userspaceOnly = false
+			l.Info("created TUN device", slog.String("name", tunName))
+
+			// Create a Linux router to manage addresses and routes on the
+			// TUN interface. On non-Linux platforms, newLinuxRouter returns
+			// nil and we fall back to the fake router (no OS routing).
+			if rtr := newLinuxRouter(logf, tunName); rtr != nil {
+				osRouter = rtr
+			}
+		}
+	}
+
+	wgConfig := wgengine.Config{
+		Tun:           tunDev, // nil = fake TUN (userspace only)
+		Router:        osRouter,
 		EventBus:      sys.Bus.Get(),
 		ListenPort:    cfg.ListenPort,
 		NetMon:        nm,
@@ -221,15 +274,21 @@ func New(cfg Config) (*Engine, error) {
 		ControlKnobs:  sys.ControlKnobs(),
 		HealthTracker: sys.HealthTracker.Get(),
 		Metrics:       sys.UserMetricsRegistry(),
-	})
+	}
+
+	eng, err := wgengine.NewUserspaceEngine(logf, wgConfig)
 	if err != nil {
+		if tunDev != nil {
+			tunDev.Close()
+		}
 		nm.Close()
 		return nil, fmt.Errorf("creating WireGuard engine: %w", err)
 	}
 	sys.Set(eng)
 
-	// Create netstack — gVisor userspace TCP/IP stack that processes all
-	// WireGuard tunnel packets without needing a real TUN device.
+	// Create netstack — gVisor userspace TCP/IP stack. In userspace-only
+	// mode it handles all packets; with a real TUN it provides the meshd
+	// process's own dialer for mesh connections.
 	ns, err := netstack.Create(
 		logf,
 		sys.Tun.Get(),      // the tstun.Wrapper created by the engine
@@ -241,17 +300,27 @@ func New(cfg Config) (*Engine, error) {
 	)
 	if err != nil {
 		eng.Close()
+		if tunDev != nil {
+			tunDev.Close()
+		}
 		nm.Close()
 		return nil, fmt.Errorf("creating netstack: %w", err)
 	}
 	sys.Tun.Get().Start()
 	sys.Set(ns)
 
-	// With fake TUN (no real device), netstack handles everything:
-	// - ProcessLocalIPs: packets destined for our mesh IP
-	// - ProcessSubnets: packets destined for other mesh nodes
-	ns.ProcessLocalIPs = true
-	ns.ProcessSubnets = true
+	if userspaceOnly {
+		// Fake TUN mode: netstack handles everything since there is no
+		// real network interface for the OS to deliver packets through.
+		ns.ProcessLocalIPs = true
+		ns.ProcessSubnets = true
+	} else {
+		// Real TUN mode: the OS delivers packets through the TUN device.
+		// Netstack only needs to handle connections initiated by meshd
+		// itself (e.g., the DWN control client dialing through the mesh).
+		ns.ProcessLocalIPs = false
+		ns.ProcessSubnets = false
+	}
 
 	// Wire the dialer through netstack so outbound connections from the
 	// meshd process go through the WireGuard tunnel.
@@ -328,6 +397,8 @@ func New(cfg Config) (*Engine, error) {
 		dialer:          dial,
 		ns:              ns,
 		autoKeyDelivery: cfg.AutoKeyDelivery,
+		tunDev:          tunDev,
+		tunName:         tunName,
 		logger:          l,
 	}, nil
 }
@@ -382,11 +453,19 @@ func (e *Engine) Stop() error {
 	}
 
 	// Shutdown order matters: backend first (stops control polling),
-	// then network monitor.
+	// then network monitor, then TUN device.
 	e.backend.Shutdown()
 
 	if e.netMon != nil {
 		e.netMon.Close()
+	}
+
+	// Close the real TUN device if we created one. This removes the
+	// network interface from the OS.
+	if e.tunDev != nil {
+		if err := e.tunDev.Close(); err != nil {
+			e.logger.Warn("closing TUN device", slog.Any("error", err))
+		}
 	}
 
 	e.running = false
@@ -411,6 +490,12 @@ func (e *Engine) Backend() *ipnlocal.LocalBackend {
 // Use this for userspace TCP/UDP listening and dialing through the mesh.
 func (e *Engine) Netstack() *netstack.Impl {
 	return e.ns
+}
+
+// TUNDeviceName returns the OS-assigned TUN device name (e.g., "meshd0"),
+// or empty if running in userspace-only mode.
+func (e *Engine) TUNDeviceName() string {
+	return e.tunName
 }
 
 // slogToLogf adapts a *slog.Logger to meshnet's printf-style logger.Logf.

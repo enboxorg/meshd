@@ -47,6 +47,12 @@ Network:
   up                Start the mesh agent daemon
   down              Stop the mesh agent daemon
 
+Up flags:
+  --tun [name]      Create a real TUN device (default: meshd0, requires root)
+  --port <n>        WireGuard UDP listen port (default: auto)
+  --poll-interval   DWN poll interval (default: 30s)
+  -v, --verbose     Enable debug logging
+
 Global flags:
   --profile <name>  Use a specific identity profile
   -h, --help        Show this help message
@@ -929,6 +935,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	// Parse optional flags.
 	var listenPort uint16
 	var pollInterval time.Duration
+	var tunName string
 	verbose := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -946,6 +953,15 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 					pollInterval = d
 				}
 				i++
+			}
+		case "--tun":
+			// --tun enables real TUN device mode.
+			// Optionally accepts a device name; defaults to "meshd0".
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				tunName = args[i+1]
+				i++
+			} else {
+				tunName = "meshd0"
 			}
 		case "-v", "--verbose":
 			verbose = true
@@ -1102,6 +1118,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		AutoKeyDelivery:      autoKeyDelivery,
 		UseContextEncryption: useContextEncryption,
 		WireGuardPrivateKey:  wgPrivKey,
+		TUNName:             tunName,
 		Domain:               ns.NetworkName,
 		ListenPort:           listenPort,
 		PollInterval:         pollInterval,
@@ -1117,6 +1134,11 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	}
 
 	fmt.Printf("  Status: running\n")
+	if devName := eng.TUNDeviceName(); devName != "" {
+		fmt.Printf("  TUN device: %s\n", devName)
+	} else {
+		fmt.Printf("  Mode: userspace (use --tun for kernel routing)\n")
+	}
 	if ns.MeshIP != "" {
 		fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
 	}
