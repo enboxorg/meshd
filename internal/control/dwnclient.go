@@ -186,7 +186,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 
 		var member MemberInfo
 		if err := parseEntryData(entry, &member, memberDecryptor); err != nil {
-			c.logger.WarnContext(ctx, "parsing member entry",
+			c.logger.DebugContext(ctx, "parsing member entry",
 				slog.Any("error", err),
 				slog.String("memberDID", memberDID),
 			)
@@ -236,7 +236,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 
 		var node NodeInfoData
 		if err := parseEntryData(entry, &node, nodeDecryptor); err != nil {
-			c.logger.WarnContext(ctx, "parsing node entry",
+			c.logger.DebugContext(ctx, "parsing node entry",
 				slog.Any("error", err),
 				slog.String("nodeDID", nodeDID),
 			)
@@ -280,14 +280,14 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	for _, entry := range relayEntries {
 		var relay RelayData
 		if err := parseEntryData(entry, &relay, relayDecryptor); err != nil {
-			c.logger.WarnContext(ctx, "parsing relay entry", slog.Any("error", err))
+			c.logger.DebugContext(ctx, "parsing relay entry", slog.Any("error", err))
 			continue
 		}
 		c.relays = append(c.relays, &relay)
 	}
 	c.mu.Unlock()
 
-	c.logger.InfoContext(ctx, "mesh state loaded",
+	c.logger.DebugContext(ctx, "mesh state loaded",
 		slog.String("network", network.Name),
 		slog.Int("members", len(c.members)),
 		slog.Int("nodes", len(c.nodes)),
