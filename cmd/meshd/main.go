@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -48,10 +49,19 @@ Network:
   down              Stop the mesh agent daemon
 
 Up flags:
-  --tun [name]      Create a real TUN device (default: meshd0, requires root)
+  --create <name>   Create a new network and start (anchor mode)
+  --endpoint <url>  DWN endpoint (or set DWN_ENDPOINT env var)
+  --anchor <did>    Anchor DID when joining a network
+  --network <id>    Network record ID when joining a network
+  --tun [name]      Create a real TUN device (default: meshd0, auto if root)
+  --no-tun          Disable auto TUN even when running as root
   --port <n>        WireGuard UDP listen port (default: auto)
   --poll-interval   DWN poll interval (default: 30s)
   -v, --verbose     Enable debug logging
+
+Quick start:
+  meshd up --create my-network --endpoint https://dwn.example.com
+  meshd up --endpoint <url> --anchor <did> --network <id>
 
 Global flags:
   --profile <name>  Use a specific identity profile
@@ -907,70 +917,145 @@ func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 	return nil
 }
 
-// cmdUp starts the mesh agent daemon.
-//
-// This brings up the WireGuard tunnel by:
-//  1. Loading identity and network state
-//  2. Creating the engine (DWN client + meshnet backend)
-//  3. Starting the WireGuard tunnel
-//  4. Blocking until interrupted (Ctrl+C / SIGTERM)
-func cmdUp(ctx context.Context, args []string, flagProfile string) error {
-	stateDir, err := resolveStateDir(flagProfile)
-	if err != nil {
-		return err
-	}
-	identity, err := loadIdentity(stateDir)
-	if err != nil {
-		return err
-	}
+// upFlags holds parsed flags for the `meshd up` command.
+type upFlags struct {
+	// Network setup flags.
+	createNetwork string // --create <name>: create a new network
+	endpoint      string // --endpoint <url>: DWN endpoint
+	anchorDID     string // --anchor <did>: anchor DID for joining
+	networkID     string // --network <id>: network record ID for joining
 
-	ns, err := state.LoadNetworkState(stateDir)
-	if err != nil {
-		return fmt.Errorf("loading network state: %w", err)
-	}
-	if ns == nil {
-		return fmt.Errorf("not in a network. Use 'meshd network create' or 'network join' first.")
-	}
+	// Engine flags.
+	tunName      string        // --tun [name]: TUN device name
+	noTun        bool          // --no-tun: disable auto TUN
+	listenPort   uint16        // --port <n>
+	pollInterval time.Duration // --poll-interval <dur>
+	verbose      bool          // -v / --verbose
+}
 
-	// Parse optional flags.
-	var listenPort uint16
-	var pollInterval time.Duration
-	var tunName string
-	verbose := false
+func parseUpFlags(args []string) upFlags {
+	var f upFlags
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--create":
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				f.createNetwork = args[i+1]
+				i++
+			}
+		case "--endpoint":
+			if i+1 < len(args) {
+				f.endpoint = args[i+1]
+				i++
+			}
+		case "--anchor":
+			if i+1 < len(args) {
+				f.anchorDID = args[i+1]
+				i++
+			}
+		case "--network":
+			if i+1 < len(args) {
+				f.networkID = args[i+1]
+				i++
+			}
 		case "--port":
 			if i+1 < len(args) {
 				var p int
 				if _, err := fmt.Sscanf(args[i+1], "%d", &p); err == nil && p > 0 && p <= 65535 {
-					listenPort = uint16(p)
+					f.listenPort = uint16(p)
 				}
 				i++
 			}
 		case "--poll-interval":
 			if i+1 < len(args) {
 				if d, err := time.ParseDuration(args[i+1]); err == nil {
-					pollInterval = d
+					f.pollInterval = d
 				}
 				i++
 			}
 		case "--tun":
-			// --tun enables real TUN device mode.
-			// Optionally accepts a device name; defaults to "meshd0".
 			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				tunName = args[i+1]
+				f.tunName = args[i+1]
 				i++
 			} else {
-				tunName = "meshd0"
+				f.tunName = "meshd0"
 			}
+		case "--no-tun":
+			f.noTun = true
 		case "-v", "--verbose":
-			verbose = true
+			f.verbose = true
 		}
 	}
 
+	// Fall back to DWN_ENDPOINT env var.
+	if f.endpoint == "" {
+		f.endpoint = os.Getenv("DWN_ENDPOINT")
+	}
+
+	// Auto-enable TUN when running as root (unless --no-tun or --tun already set).
+	if f.tunName == "" && !f.noTun && os.Getuid() == 0 {
+		f.tunName = "meshd0"
+	}
+
+	return f
+}
+
+// cmdUp starts the mesh agent daemon.
+//
+// This is the main entry point for meshd. It handles the full lifecycle:
+//  1. Creates an identity profile if none exists
+//  2. Creates or joins a network if not yet in one
+//  3. Starts the WireGuard tunnel
+//  4. Blocks until interrupted (Ctrl+C / SIGTERM)
+//
+// Flags like --create, --endpoint, --anchor, --network allow one-command
+// setup. Without flags, it guides the user interactively.
+func cmdUp(ctx context.Context, args []string, flagProfile string) error {
+	f := parseUpFlags(args)
+
+	// ── Step 1: Ensure identity exists ──────────────────────────────
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
+
+	var identity *did.DID
+	if did.Exists(stateDir) {
+		identity, err = did.Load(stateDir)
+		if err != nil {
+			return fmt.Errorf("loading identity: %w", err)
+		}
+	} else {
+		fmt.Println("No identity found. Creating one...")
+		identity, err = ensureIdentity(ctx, flagProfile, f.endpoint)
+		if err != nil {
+			return err
+		}
+		// Re-resolve stateDir after profile creation.
+		stateDir, err = resolveStateDir(flagProfile)
+		if err != nil {
+			return err
+		}
+	}
+
+	// ── Step 2: Ensure network membership ───────────────────────────
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return fmt.Errorf("loading network state: %w", err)
+	}
+
+	if ns == nil {
+		// Not in a network. Use flags or prompt interactively.
+		ns, err = ensureNetwork(ctx, f, stateDir, identity)
+		if err != nil {
+			return err
+		}
+	}
+
+	// ── Step 3: Start the engine ────────────────────────────────────
+
 	// Set up logging.
 	logLevel := slog.LevelInfo
-	if verbose {
+	if f.verbose {
 		logLevel = slog.LevelDebug
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
@@ -1052,7 +1137,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 
 	// Write/update endpoint record (encrypted) before starting the engine.
 	if ns.NodeInfoRecordID != "" {
-		localEndpoints := mesh.DiscoverLocalEndpoints(listenPort)
+		localEndpoints := mesh.DiscoverLocalEndpoints(f.listenPort)
 		wpParams := mesh.WriteEndpointParams{
 			AnchorEndpoint:       ns.AnchorEndpoint,
 			AnchorDID:            ns.AnchorDID,
@@ -1118,10 +1203,10 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		AutoKeyDelivery:      autoKeyDelivery,
 		UseContextEncryption: useContextEncryption,
 		WireGuardPrivateKey:  wgPrivKey,
-		TUNName:             tunName,
+		TUNName:             f.tunName,
 		Domain:               ns.NetworkName,
-		ListenPort:           listenPort,
-		PollInterval:         pollInterval,
+		ListenPort:           f.listenPort,
+		PollInterval:         f.pollInterval,
 		Logger:               logger,
 	})
 	if err != nil {
@@ -1156,6 +1241,202 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 
 	fmt.Printf("Stopped.\n")
 	return nil
+}
+
+// ensureIdentity creates a new identity profile when none exists.
+// It's called by cmdUp when no identity is found.
+func ensureIdentity(ctx context.Context, flagProfile, endpoint string) (*did.DID, error) {
+	profileName := flagProfile
+	if profileName == "" {
+		profileName = "default"
+	}
+
+	identity, err := did.Generate()
+	if err != nil {
+		return nil, fmt.Errorf("generating DID: %w", err)
+	}
+
+	dataPath := profile.DataPath(profileName)
+	if err := identity.Store(dataPath); err != nil {
+		return nil, fmt.Errorf("storing identity: %w", err)
+	}
+	if err := profile.UpsertProfile(profileName, identity.URI); err != nil {
+		return nil, fmt.Errorf("saving profile: %w", err)
+	}
+
+	fmt.Printf("  Profile: %s\n", profileName)
+	fmt.Printf("  DID:     %s\n", identity.URI)
+
+	// Publish DID to DHT.
+	if err := publishDID(ctx, identity, endpoint, ""); err != nil {
+		// Non-fatal: the DID works locally even without DHT publication.
+		fmt.Printf("  Warning: DID publication failed: %v\n", err)
+	}
+	fmt.Println()
+
+	return identity, nil
+}
+
+// ensureNetwork handles network setup when the user is not yet in a network.
+// It checks flags (--create, --anchor+--network) and falls back to an
+// interactive prompt.
+func ensureNetwork(ctx context.Context, f upFlags, stateDir string, identity *did.DID) (*state.NetworkState, error) {
+	switch {
+	case f.createNetwork != "":
+		return setupCreateNetwork(ctx, f, stateDir, identity)
+	case f.anchorDID != "" && f.networkID != "":
+		return setupJoinNetwork(ctx, f, stateDir, identity)
+	default:
+		return setupInteractive(ctx, f, stateDir, identity)
+	}
+}
+
+// setupCreateNetwork creates a new mesh network (anchor mode).
+// This is the --create flag path.
+func setupCreateNetwork(ctx context.Context, f upFlags, stateDir string, identity *did.DID) (*state.NetworkState, error) {
+	if f.endpoint == "" {
+		return nil, fmt.Errorf("--endpoint (or DWN_ENDPOINT env) is required to create a network")
+	}
+
+	fmt.Printf("Creating network %q on %s...\n", f.createNetwork, f.endpoint)
+
+	// Delegate to the existing network create logic.
+	err := cmdNetworkCreate(ctx, []string{f.createNetwork, "--endpoint", f.endpoint}, "")
+	if err != nil {
+		return nil, err
+	}
+
+	// Reload the network state that cmdNetworkCreate saved.
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("loading network state after create: %w", err)
+	}
+	if ns == nil {
+		return nil, fmt.Errorf("network state not found after create")
+	}
+	return ns, nil
+}
+
+// setupJoinNetwork joins an existing network using --anchor and --network flags.
+func setupJoinNetwork(ctx context.Context, f upFlags, stateDir string, identity *did.DID) (*state.NetworkState, error) {
+	if f.endpoint == "" {
+		return nil, fmt.Errorf("--endpoint (or DWN_ENDPOINT env) is required to join a network")
+	}
+
+	fmt.Printf("Joining network on %s...\n", f.endpoint)
+
+	err := cmdNetworkJoin(ctx, []string{
+		"--endpoint", f.endpoint,
+		"--anchor", f.anchorDID,
+		"--network", f.networkID,
+	}, "")
+	if err != nil {
+		return nil, err
+	}
+
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("loading network state after join: %w", err)
+	}
+	if ns == nil {
+		return nil, fmt.Errorf("network state not found after join")
+	}
+	return ns, nil
+}
+
+// setupInteractive prompts the user to create or join a network.
+func setupInteractive(ctx context.Context, f upFlags, stateDir string, identity *did.DID) (*state.NetworkState, error) {
+	fmt.Println("No network configured. What would you like to do?")
+	fmt.Println()
+	fmt.Println("  1) Create a new network")
+	fmt.Println("  2) Join an existing network")
+	fmt.Println()
+	fmt.Print("Choice [1/2]: ")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		return nil, fmt.Errorf("no input received")
+	}
+	choice := strings.TrimSpace(scanner.Text())
+
+	fmt.Println()
+
+	switch choice {
+	case "1":
+		return interactiveCreate(ctx, f, stateDir, identity, scanner)
+	case "2":
+		return interactiveJoin(ctx, f, stateDir, identity, scanner)
+	default:
+		return nil, fmt.Errorf("invalid choice %q (expected 1 or 2)", choice)
+	}
+}
+
+// interactiveCreate guides the user through creating a new network.
+func interactiveCreate(ctx context.Context, f upFlags, stateDir string, identity *did.DID, scanner *bufio.Scanner) (*state.NetworkState, error) {
+	endpoint := f.endpoint
+	if endpoint == "" {
+		fmt.Print("DWN endpoint URL: ")
+		if !scanner.Scan() {
+			return nil, fmt.Errorf("no input received")
+		}
+		endpoint = strings.TrimSpace(scanner.Text())
+		if endpoint == "" {
+			return nil, fmt.Errorf("endpoint URL is required")
+		}
+	}
+
+	fmt.Print("Network name: ")
+	if !scanner.Scan() {
+		return nil, fmt.Errorf("no input received")
+	}
+	name := strings.TrimSpace(scanner.Text())
+	if name == "" {
+		return nil, fmt.Errorf("network name is required")
+	}
+
+	fmt.Println()
+	f.endpoint = endpoint
+	f.createNetwork = name
+	return setupCreateNetwork(ctx, f, stateDir, identity)
+}
+
+// interactiveJoin guides the user through joining an existing network.
+func interactiveJoin(ctx context.Context, f upFlags, stateDir string, identity *did.DID, scanner *bufio.Scanner) (*state.NetworkState, error) {
+	endpoint := f.endpoint
+	if endpoint == "" {
+		fmt.Print("DWN endpoint URL: ")
+		if !scanner.Scan() {
+			return nil, fmt.Errorf("no input received")
+		}
+		endpoint = strings.TrimSpace(scanner.Text())
+		if endpoint == "" {
+			return nil, fmt.Errorf("endpoint URL is required")
+		}
+	}
+
+	fmt.Print("Anchor DID: ")
+	if !scanner.Scan() {
+		return nil, fmt.Errorf("no input received")
+	}
+	anchorDID := strings.TrimSpace(scanner.Text())
+	if anchorDID == "" {
+		return nil, fmt.Errorf("anchor DID is required")
+	}
+
+	fmt.Print("Network ID: ")
+	if !scanner.Scan() {
+		return nil, fmt.Errorf("no input received")
+	}
+	networkID := strings.TrimSpace(scanner.Text())
+	if networkID == "" {
+		return nil, fmt.Errorf("network ID is required")
+	}
+
+	fmt.Println()
+	f.endpoint = endpoint
+	f.anchorDID = anchorDID
+	f.networkID = networkID
+	return setupJoinNetwork(ctx, f, stateDir, identity)
 }
 
 // cmdDown stops the mesh agent daemon.
