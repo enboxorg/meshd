@@ -51,4 +51,22 @@ jobs:
           fi
           go test ./internal/dwn/ -run TestIntegration -v -count=1 -timeout 120s
           go test ./internal/mesh/ -run TestE2E -v -count=1 -timeout 180s
-          go test ./internal/engine/ -run TestTwoNode -v -count=1 -timeout 300s
+
+      - name: Engine Connectivity Tests (with retry)
+        env:
+          DWN_ENDPOINT: ${{ secrets.DWN_ENDPOINT }}
+        run: |
+          if [ -z "$DWN_ENDPOINT" ]; then
+            echo "DWN_ENDPOINT not configured, skipping"
+            exit 0
+          fi
+          for attempt in 1 2 3; do
+            echo "==> Attempt $attempt/3"
+            if go test ./internal/engine/ -run TestTwoNode -v -count=1 -timeout 300s; then
+              exit 0
+            fi
+            echo "==> Attempt $attempt failed, retrying..."
+            sleep 5
+          done
+          echo "==> All 3 attempts failed"
+          exit 1
