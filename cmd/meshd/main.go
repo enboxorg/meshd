@@ -40,6 +40,7 @@ Network:
   network create    Create a new mesh network on a DWN
   network join      Join an existing mesh network
   network leave     Leave the current mesh network
+  peer add          Add a peer to the mesh (anchor only)
   peer list         List all peers in the mesh
   peer approve      Deliver encryption keys to a peer (anchor only)
   status            Show mesh status and identity info
@@ -109,6 +110,8 @@ func main() {
 		err = cmdNetworkJoin(ctx, args, flagProfile)
 	case "network leave":
 		err = cmdNetworkLeave(ctx, args, flagProfile)
+	case "peer add":
+		err = cmdPeerAdd(ctx, args, flagProfile)
 	case "peer list":
 		err = cmdPeerList(ctx, args, flagProfile)
 	case "peer approve":
@@ -687,6 +690,102 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 			member.MeshIP,
 			member.Role)
 	}
+
+	return nil
+}
+
+// cmdPeerAdd adds a peer to the mesh network. This creates a member record
+// for the given DID on the anchor DWN and delivers the context encryption
+// key so the peer can immediately decrypt mesh records.
+//
+// This must be run by the network anchor (owner). It combines the member
+// record creation and key delivery into a single command.
+//
+// Usage: meshd peer add <did> [--label <label>]
+func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: meshd peer add <did> [--label <label>]")
+	}
+
+	peerDID := args[0]
+	label := "member"
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--label" && i+1 < len(args) {
+			label = args[i+1]
+			i++
+		}
+	}
+
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
+	identity, err := loadIdentity(stateDir)
+	if err != nil {
+		return err
+	}
+
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return fmt.Errorf("loading network state: %w", err)
+	}
+	if ns == nil {
+		return fmt.Errorf("not in a network. Use 'meshd network create' first.")
+	}
+
+	// Only the anchor (network owner) can add peers.
+	if ns.AnchorDID != identity.URI {
+		return fmt.Errorf("only the network anchor (%s) can add peers", ns.AnchorDID)
+	}
+
+	signer := &dwn.Signer{
+		DID:        identity.URI,
+		PrivateKey: identity.SigningKey,
+	}
+	encMgr := newEncryptionKeyManager(identity)
+
+	// 1. Create a member record for the peer.
+	fmt.Printf("Adding peer %s...\n", peerDID)
+	err = mesh.CreateMember(ctx, mesh.CreateMemberParams{
+		AnchorEndpoint:       ns.AnchorEndpoint,
+		AnchorDID:            ns.AnchorDID,
+		NetworkRecordID:      ns.NetworkRecordID,
+		MemberDID:            peerDID,
+		Label:                label,
+		Signer:               signer,
+		EncryptionKeyManager: encMgr,
+	})
+	if err != nil {
+		return fmt.Errorf("creating member record: %w", err)
+	}
+	fmt.Printf("  Member record created.\n")
+
+	// 2. Deliver the context encryption key so the peer can decrypt records.
+	kdm := &mesh.KeyDeliveryManager{
+		Endpoint:             ns.AnchorEndpoint,
+		Signer:               signer,
+		EncryptionKeyManager: encMgr,
+	}
+	err = kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
+		AnchorDID:      identity.URI,
+		RecipientDID:   peerDID,
+		SourceProtocol: "https://enbox.org/protocols/wireguard-mesh",
+		ContextID:      ns.NetworkRecordID,
+	})
+	if err != nil {
+		// Non-fatal: the member was created, key delivery can be retried
+		// with `peer approve`.
+		fmt.Printf("  Warning: context key delivery failed: %v\n", err)
+		fmt.Printf("  The member was added but cannot decrypt records yet.\n")
+		fmt.Printf("  Retry with: meshd peer approve %s\n", peerDID)
+		return nil
+	}
+	fmt.Printf("  Context key delivered.\n")
+
+	fmt.Printf("\nPeer added to network %q.\n", ns.NetworkName)
+	fmt.Printf("The peer can now join with:\n")
+	fmt.Printf("  meshd network join --endpoint %s --anchor %s --network %s\n",
+		ns.AnchorEndpoint, ns.AnchorDID, ns.NetworkRecordID)
 
 	return nil
 }
