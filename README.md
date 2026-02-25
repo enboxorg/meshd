@@ -56,14 +56,12 @@ meshd up
 
 ## How is this different?
 
-```
-                You give up         You manage          You trust
-               ─────────────      ─────────────       ───────────
-Tailscale       control            nothing             Tailscale Inc.
-Headscale       less control       a server            your server
-WireGuard       nothing            everything          yourself
-meshd        nothing            nothing             cryptography
-```
+|             | You give up    | You manage  | You trust      |
+|-------------|----------------|-------------|----------------|
+| Tailscale   | control        | nothing     | Tailscale Inc. |
+| Headscale   | less control   | a server    | your server    |
+| WireGuard   | nothing        | everything  | yourself       |
+| **meshd**   | nothing        | nothing     | cryptography   |
 
 **vs Tailscale / Headscale:** No account. No server. No company in the
 loop. Your coordination data is encrypted -- even if someone compromises

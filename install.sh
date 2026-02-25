@@ -77,6 +77,7 @@ detect_os() {
   case "$(uname -s)" in
     Linux) printf 'linux' ;;
     Darwin) printf 'darwin' ;;
+    FreeBSD) printf 'freebsd' ;;
     CYGWIN*|MINGW*|MSYS*) printf 'windows' ;;
     *) fail 'unsupported operating system' ;;
   esac
