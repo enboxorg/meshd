@@ -127,7 +127,7 @@ type Config struct {
 	// Tailscale, the control server distributes disco keys. In meshd, this
 	// registry fills that role. If nil, a no-op registry is used (disco keys
 	// won't be exchanged, which prevents DERP relay between peers).
-	DiscoKeyRegistry controlclient.DiscoKeyRegistry
+	DiscoKeyRegistry DiscoKeyRegistry
 
 	// TUNName, if non-empty, creates a real OS TUN device with this name
 	// (e.g., "meshd0") instead of using a fake TUN. This enables regular
@@ -371,7 +371,7 @@ func New(cfg Config) (*Engine, error) {
 	// NetworkMaps from DWN records. If auto key delivery is configured,
 	// it also triggers key delivery to new members after each poll.
 	mapFn := MapResponseFunc(dwnClient, converter, cfg.AutoKeyDelivery)
-	dwnControlConfig := &controlclient.DWNControlConfig{
+	dwnControlConfig := &DWNControlConfig{
 		MapResponseFunc: mapFn,
 		PollInterval:    pollInterval,
 		Logf:            logf,
@@ -401,7 +401,7 @@ func New(cfg Config) (*Engine, error) {
 		dwnControlConfig.EndpointUpdateFunc = makeEndpointUpdateFunc(cfg, l)
 	}
 	lb.SetControlClientGetterForTesting(
-		controlclient.NewDWNControlFactory(dwnControlConfig),
+		NewDWNControlFactory(dwnControlConfig),
 	)
 
 	return &Engine{

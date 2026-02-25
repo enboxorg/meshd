@@ -55,13 +55,50 @@ All new or changed behavior must have corresponding tests. Do not skip tests.
   - `internal/control/` — DWN-based control client (replaces Tailscale coordination)
   - `internal/dwn/` — DWN protocol operations
   - `internal/mesh/` — mesh network orchestration
-  - `internal/engine/` — WireGuard engine integration
+  - `internal/engine/` — WireGuard engine integration + DWN control client
   - `internal/state/` — local state management
   - `internal/did/` — DID operations
   - `pkg/` — public library packages (crypto, dids, jwk)
   - `protocols/` — DWN protocol definitions
   - `schemas/` — JSON schemas
 - **CI**: GitHub Actions runs `go build`, `go vet`, `go test -race` on PRs. Integration tests run on push to main only (require `DWN_ENDPOINT` secret).
+
+## Vendored meshnet fork (`github.com/enboxorg/meshnet`)
+
+meshd vendors a Tailscale/meshnet fork for the WireGuard networking engine.
+The vendor directory is NOT a scratch pad. Treat it as upstream code.
+
+### Rules for vendor changes
+
+1. **Never edit files in `vendor/` directly.** Changes to meshnet must be
+   committed to `github.com/enboxorg/meshnet` first, then re-vendored:
+   ```sh
+   cd ~/src/enboxorg/meshnet
+   # make changes, commit, push
+   cd ~/src/enboxorg/dwn-mesh
+   GOPRIVATE=github.com/enboxorg/* go get github.com/enboxorg/meshnet@<commit>
+   go mod vendor
+   ```
+
+2. **Minimize meshnet modifications.** meshnet should remain a pure
+   WireGuard networking engine. meshd has zero modifications to the vendor
+   tree — the DWN control client (`DWNControl`) lives entirely in
+   `internal/engine/dwncontrol.go`, implementing meshnet's exported
+   `controlclient.Client` interface from outside the package.
+
+3. **Prefer meshd-side solutions.** Before adding fields or callbacks to
+   meshnet types, consider whether the same goal can be achieved entirely
+   in meshd's code (e.g., using closures, interfaces, or wrapper types in
+   `internal/engine/`). All the types needed to implement a control client
+   (`Client`, `Observer`, `Options`, `Status`) are exported from meshnet.
+
+### Long-term direction
+
+As we learn what meshd actually needs from the Tailscale fork, the goal is
+to progressively decouple:
+- Keep meshnet as a pure networking engine (WireGuard, magicsock, DERP, netstack)
+- Eventually, reduce meshnet to only the networking primitives we actually use
+- The less we modify the fork, the easier it is to pull upstream fixes
 
 ## Rules
 
@@ -70,3 +107,4 @@ All new or changed behavior must have corresponding tests. Do not skip tests.
 - No committing secrets (`.env`, credentials, private keys).
 - Keep PRs focused. One concern per PR.
 - Run `go mod tidy && go mod vendor` if dependencies change.
+- Never edit `vendor/` directly. Push changes to the upstream repo first.

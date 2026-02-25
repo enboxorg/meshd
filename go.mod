@@ -6,7 +6,7 @@ require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/coder/websocket v1.8.14
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0
-	github.com/enboxorg/meshnet v0.0.0-20260223190217-72d896c787af
+	github.com/enboxorg/meshnet v0.0.0-20260225210728-462f103f8bcc
 	github.com/fxamacker/cbor/v2 v2.9.0
 	github.com/google/uuid v1.6.0
 	github.com/ipfs/go-cid v0.6.0

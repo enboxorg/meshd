@@ -16,8 +16,6 @@ import (
 	"sync"
 
 	"github.com/enboxorg/meshd/internal/dwn"
-
-	"github.com/enboxorg/meshnet/control/controlclient"
 )
 
 // SubscriptionWatcher subscribes to DWN record changes and triggers
@@ -41,7 +39,7 @@ type SubscriptionWatcher struct {
 	// dwnControl is set via the OnCreated callback from DWNControlConfig.
 	// It's nil until the control client is created by the LocalBackend.
 	controlMu  sync.Mutex
-	dwnControl *controlclient.DWNControl
+	dwnControl *DWNControl
 }
 
 // SubscriptionWatcherConfig holds the configuration for creating a
@@ -82,7 +80,7 @@ func NewSubscriptionWatcher(cfg SubscriptionWatcherConfig) *SubscriptionWatcher 
 
 // SetDWNControl is called by the DWNControlConfig.OnCreated callback
 // to provide the DWNControl reference for triggering Notify().
-func (w *SubscriptionWatcher) SetDWNControl(cc *controlclient.DWNControl) {
+func (w *SubscriptionWatcher) SetDWNControl(cc *DWNControl) {
 	w.controlMu.Lock()
 	defer w.controlMu.Unlock()
 	w.dwnControl = cc

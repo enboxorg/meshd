@@ -71,8 +71,8 @@ func TestSubscriptionWatcherSetDWNControl(t *testing.T) {
 	w.notify()
 
 	// Create a DWNControl with SkipStartForTests to avoid the poll loop.
-	cc, err := controlclient.NewDWNControl(
-		&controlclient.DWNControlConfig{
+	cc, err := NewDWNControl(
+		&DWNControlConfig{
 			MapResponseFunc: func(ctx context.Context) (*netmap.NetworkMap, error) {
 				return nil, nil
 			},
@@ -103,18 +103,18 @@ func TestSubscriptionWatcherOnCreatedCallback(t *testing.T) {
 
 	// Simulate the factory calling OnCreated.
 	var called atomic.Bool
-	config := &controlclient.DWNControlConfig{
+	config := &DWNControlConfig{
 		MapResponseFunc: func(ctx context.Context) (*netmap.NetworkMap, error) {
 			return nil, nil
 		},
 		PollInterval: time.Hour,
-		OnCreated: func(cc *controlclient.DWNControl) {
+		OnCreated: func(cc *DWNControl) {
 			called.Store(true)
 			w.SetDWNControl(cc)
 		},
 	}
 
-	cc, err := controlclient.NewDWNControl(
+	cc, err := NewDWNControl(
 		config,
 		controlclient.Options{SkipStartForTests: true},
 	)

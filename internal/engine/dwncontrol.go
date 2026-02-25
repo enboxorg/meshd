@@ -1,7 +1,14 @@
-// Copyright (c) Enbox contributors
-// SPDX-License-Identifier: BSD-3-Clause
-
-package controlclient
+// Package engine — DWN-backed control client for meshnet.
+//
+// DWNControl replaces Tailscale's HTTP-based control plane with a generic
+// callback-driven control client. The networking engine (WireGuard, magicsock,
+// DERP) doesn't know or care where the NetworkMap comes from — it just
+// receives Status updates via the Observer interface.
+//
+// This was previously in the meshnet vendor tree (controlclient/dwn.go) but
+// moved here because meshnet shouldn't know about DWN. All the types it
+// depends on (Client, Observer, Options, Status) are exported from meshnet.
+package engine
 
 import (
 	"context"
@@ -11,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/enboxorg/meshnet/control/controlclient"
 	"github.com/enboxorg/meshnet/tailcfg"
 	"github.com/enboxorg/meshnet/types/key"
 	"github.com/enboxorg/meshnet/types/logger"
@@ -24,8 +32,8 @@ import (
 // reads mesh state from DWN records and constructs NetworkMap snapshots.
 type DWNControlConfig struct {
 	// MapResponseFunc is called to obtain the current network state.
-	// The DWN control integration (in dwn-mesh) implements this by
-	// reading DWN records and building a NetworkMap.
+	// The DWN control integration implements this by reading DWN records
+	// and building a NetworkMap.
 	//
 	// This is called:
 	//   - Once on Login (initial state load)
@@ -34,9 +42,9 @@ type DWNControlConfig struct {
 	MapResponseFunc func(ctx context.Context) (*netmap.NetworkMap, error)
 
 	// EndpointUpdateFunc is called when magicsock discovers new endpoints
-	// (via STUN, local interface enumeration, etc). The DWN control
-	// integration should write these back to the anchor DWN so peers
-	// can discover this node's reachable addresses.
+	// (via STUN, local interface enumeration, etc). The implementation
+	// should write these back to the anchor DWN so peers can discover
+	// this node's reachable addresses.
 	//
 	// If nil, endpoint updates are not published.
 	EndpointUpdateFunc func(ctx context.Context, endpoints []tailcfg.Endpoint)
@@ -91,42 +99,42 @@ type DiscoKeyRegistry interface {
 //
 // Usage:
 //
-//	config := &controlclient.DWNControlConfig{
+//	config := &engine.DWNControlConfig{
 //	    MapResponseFunc: myDWNMapFunc,
 //	    PollInterval:    30 * time.Second,
 //	}
-//	factory := controlclient.NewDWNControlFactory(config)
+//	factory := engine.NewDWNControlFactory(config)
 //	localBackend.SetControlClientGetterForTesting(factory)
 type DWNControl struct {
 	config   DWNControlConfig
-	observer Observer
+	observer controlclient.Observer
 	persist  *persist.Persist
 	logf     logger.Logf
 	clientID int64
 
-	mu       sync.Mutex
-	hostinfo *tailcfg.Hostinfo
-	netinfo  *tailcfg.NetInfo
-	disco    key.DiscoPublic
+	mu        sync.Mutex
+	hostinfo  *tailcfg.Hostinfo
+	netinfo   *tailcfg.NetInfo
+	disco     key.DiscoPublic
 	endpoints []tailcfg.Endpoint
-	paused   atomic.Bool
-	shutdown chan struct{}
-	cancel   context.CancelFunc
-	notify   chan struct{} // signal to re-poll immediately
+	paused    atomic.Bool
+	shutdown  chan struct{}
+	cancel    context.CancelFunc
+	notify    chan struct{} // signal to re-poll immediately
 }
 
 // NewDWNControlFactory returns a factory function suitable for
 // LocalBackend.SetControlClientGetterForTesting.
 //
 // This is the main entry point for wiring DWN-based control into meshnet.
-func NewDWNControlFactory(config *DWNControlConfig) func(Options) (Client, error) {
-	return func(opts Options) (Client, error) {
+func NewDWNControlFactory(config *DWNControlConfig) func(controlclient.Options) (controlclient.Client, error) {
+	return func(opts controlclient.Options) (controlclient.Client, error) {
 		return NewDWNControl(config, opts)
 	}
 }
 
 // NewDWNControl creates a new DWN-backed control client.
-func NewDWNControl(config *DWNControlConfig, opts Options) (*DWNControl, error) {
+func NewDWNControl(config *DWNControlConfig, opts controlclient.Options) (*DWNControl, error) {
 	logf := config.Logf
 	if logf == nil {
 		logf = log.Printf
@@ -155,12 +163,12 @@ func NewDWNControl(config *DWNControlConfig, opts Options) (*DWNControl, error) 
 
 	cc := &DWNControl{
 		config: DWNControlConfig{
-			MapResponseFunc:  config.MapResponseFunc,
+			MapResponseFunc:    config.MapResponseFunc,
 			EndpointUpdateFunc: config.EndpointUpdateFunc,
-			PollInterval:     pollInterval,
-			NodePrivateKey:   config.NodePrivateKey,
-			DiscoKeyRegistry: config.DiscoKeyRegistry,
-			Logf:             logf,
+			PollInterval:       pollInterval,
+			NodePrivateKey:     config.NodePrivateKey,
+			DiscoKeyRegistry:   config.DiscoKeyRegistry,
+			Logf:               logf,
 		},
 		observer: opts.Observer,
 		persist:  p,
@@ -283,7 +291,7 @@ func (cc *DWNControl) loadAndPush(ctx context.Context, loginFinished bool) {
 	if err != nil {
 		cc.logf("dwn-control: MapResponseFunc error: %v", err)
 		if cc.observer != nil {
-			cc.observer.SetControlClientStatus(cc, Status{
+			cc.observer.SetControlClientStatus(cc, controlclient.Status{
 				Err:     err,
 				Persist: cc.persist.View(),
 			})
@@ -325,7 +333,7 @@ func (cc *DWNControl) loadAndPush(ctx context.Context, loginFinished bool) {
 	}
 
 	if cc.observer != nil {
-		s := Status{
+		s := controlclient.Status{
 			LoggedIn:  true,
 			InMapPoll: true,
 			NetMap:    nm,
@@ -354,7 +362,7 @@ func (cc *DWNControl) Shutdown() {
 	close(cc.shutdown)
 }
 
-func (cc *DWNControl) Login(flags LoginFlags) {
+func (cc *DWNControl) Login(flags controlclient.LoginFlags) {
 	// DWN doesn't need interactive login — the DID is the identity.
 	// Trigger an immediate state load which will report LoggedIn.
 	cc.Notify()
@@ -363,7 +371,7 @@ func (cc *DWNControl) Login(flags LoginFlags) {
 func (cc *DWNControl) Logout(ctx context.Context) error {
 	// DWN-based control doesn't have a server-side session to revoke.
 	if cc.observer != nil {
-		cc.observer.SetControlClientStatus(cc, Status{
+		cc.observer.SetControlClientStatus(cc, controlclient.Status{
 			Persist: cc.persist.View(),
 		})
 	}
@@ -433,5 +441,5 @@ func (cc *DWNControl) ClientID() int64 {
 	return cc.clientID
 }
 
-// Compile-time assertion that DWNControl implements Client.
-var _ Client = (*DWNControl)(nil)
+// Compile-time assertion that DWNControl implements controlclient.Client.
+var _ controlclient.Client = (*DWNControl)(nil)
