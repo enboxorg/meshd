@@ -1,9 +1,13 @@
 // Package state manages the on-disk state for a meshd node.
 //
-// State is stored in a directory (default: ~/.meshd/) containing:
-//   - identity.json: DID private key (from the did package)
-//   - network.json: current network membership info
-//   - cursors.json: EventLog cursors for crash-safe subscription reconnection
+// State is stored in a profile-specific directory:
+//
+//	~/.enbox/profiles/<name>/meshd/
+//	  identity.json   # DID private key (from the did package)
+//	  network.json    # current network membership info
+//
+// The state directory is resolved by the profile package. The functions in
+// this package accept a stateDir parameter and are agnostic to profiles.
 package state
 
 import (
@@ -14,12 +18,11 @@ import (
 	"runtime"
 )
 
-// DefaultStateDir returns the default state directory path.
-// Linux/macOS: ~/.meshd
-func DefaultStateDir() string {
-	if d := os.Getenv("MESHD_STATE_DIR"); d != "" {
-		return d
-	}
+// LegacyStateDir returns the pre-profiles state directory path.
+// This is used only for detecting and migrating legacy installations.
+//
+// Deprecated: Use profile.ResolveDataPath instead.
+func LegacyStateDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "."
@@ -28,6 +31,16 @@ func DefaultStateDir() string {
 		return filepath.Join(home, "Library", "Application Support", "meshd")
 	}
 	return filepath.Join(home, ".meshd")
+}
+
+// HasLegacyState checks if a pre-profiles state directory exists with
+// identity data. Returns the path if found, or empty string if not.
+func HasLegacyState() string {
+	dir := LegacyStateDir()
+	if _, err := os.Stat(filepath.Join(dir, "identity.json")); err == nil {
+		return dir
+	}
+	return ""
 }
 
 // NetworkState holds the persisted network membership information.
