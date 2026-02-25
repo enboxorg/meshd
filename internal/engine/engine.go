@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"log/slog"
@@ -425,7 +426,20 @@ func slogToLogf(l *slog.Logger) logger.Logf {
 
 // makeEndpointUpdateFunc creates a callback that writes STUN-discovered
 // endpoints back to the anchor DWN as an endpoint record update.
+//
+// The disco key is looked up from the DiscoKeyRegistry using the node's own
+// WireGuard public key. This way, when magicsock discovers endpoints and the
+// engine writes them to DWN, the current disco key is always included so
+// remote peers can establish DERP relay connections.
 func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []tailcfg.Endpoint) {
+	// Derive the node's public key from the private key for disco lookups.
+	var nodePublic key.NodePublic
+	if cfg.WireGuardPrivateKey != [32]byte{} {
+		nodePublic = key.NodePrivateFromRaw32(
+			go4mem.B(cfg.WireGuardPrivateKey[:]),
+		).Public()
+	}
+
 	return func(ctx context.Context, endpoints []tailcfg.Endpoint) {
 		var publicEPs []mesh.PublicEndpoint
 		var localEPs []string
@@ -453,9 +467,22 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 			return
 		}
 
+		// Look up our current disco key from the registry so it gets
+		// published alongside our endpoints. Peers read this from the
+		// endpoint record to enable DERP relay and direct upgrades.
+		var discoKeyB64 string
+		if cfg.DiscoKeyRegistry != nil && !nodePublic.IsZero() {
+			dk := cfg.DiscoKeyRegistry.GetDisco(nodePublic)
+			if !dk.IsZero() {
+				raw := dk.Raw32()
+				discoKeyB64 = base64.StdEncoding.EncodeToString(raw[:])
+			}
+		}
+
 		l.Info("publishing discovered endpoints to DWN",
 			slog.Int("public", len(publicEPs)),
 			slog.Int("local", len(localEPs)),
+			slog.String("discoKey", discoKeyB64),
 		)
 
 		err := mesh.WriteEndpoint(ctx, mesh.WriteEndpointParams{
@@ -467,6 +494,7 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 			EncryptionKeyManager: cfg.EncryptionKeyManager,
 			PublicEndpoints:      publicEPs,
 			LocalEndpoints:       localEPs,
+			DiscoKey:             discoKeyB64,
 			NATType:              "unknown",
 			ProtocolRole:         "network/member",
 			UseContextEncryption: cfg.UseContextEncryption,

@@ -28,6 +28,10 @@ type Node struct {
 	// Key is the WireGuard public key (Curve25519, base64).
 	Key string
 
+	// DiscoKey is the disco public key (base64) for DERP relay and
+	// direct connection upgrade. Exchanged via DWN nodeInfo/endpoint records.
+	DiscoKey string
+
 	// Endpoints are the node's reachable ip:port pairs.
 	Endpoints []string
 

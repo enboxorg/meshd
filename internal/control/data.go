@@ -26,6 +26,7 @@ type NodeInfoData struct {
 	MeshIP             string         `json:"meshIP"`
 	Hostname           string         `json:"hostname,omitempty"`
 	OS                 string         `json:"os,omitempty"`
+	DiscoKey           string         `json:"discoKey,omitempty"`
 	Capabilities       []string       `json:"capabilities,omitempty"`
 	AllowedIPs         []string       `json:"allowedIPs,omitempty"`
 	Endpoints          []EndpointData `json:"-"`
@@ -37,6 +38,7 @@ type EndpointData struct {
 	PublicEndpoints []PublicEndpoint `json:"publicEndpoints,omitempty"`
 	LocalEndpoints  []string         `json:"localEndpoints,omitempty"`
 	PreferredDERP   int              `json:"preferredDERP,omitempty"`
+	DiscoKey        string           `json:"discoKey,omitempty"`
 	NATType         string           `json:"natType,omitempty"`
 	UpdatedAt       string           `json:"updatedAt"`
 }

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/base64"
 	"net/netip"
 	"testing"
 
@@ -450,5 +451,182 @@ func TestConvertInvalidPeerKeySkipped(t *testing.T) {
 	// Bad peer should be skipped.
 	if len(nm.Peers) != 2 {
 		t.Fatalf("want 2 peers (bad key skipped), got %d", len(nm.Peers))
+	}
+}
+
+// testDiscoKey returns a valid base64-encoded 32-byte disco key for testing.
+func testDiscoKey() (string, key.DiscoPublic) {
+	priv := key.NewDisco()
+	pub := priv.Public()
+	raw := pub.Raw32()
+	return base64.StdEncoding.EncodeToString(raw[:]), pub
+}
+
+func TestConvertNodeWithDiscoKey(t *testing.T) {
+	wgKey := testWireGuardKey()
+	discoB64, wantDisco := testDiscoKey()
+
+	resp := &control.MapResponse{
+		Node: &control.Node{
+			ID:       1,
+			Name:     "laptop",
+			Key:      wgKey,
+			DiscoKey: discoB64,
+			MeshIP:   netip.MustParseAddr("10.200.0.1"),
+			Online:   true,
+		},
+	}
+
+	conv := NewConverter("test")
+	nm, err := conv.Convert(resp)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+
+	if !nm.SelfNode.Valid() {
+		t.Fatal("SelfNode not valid")
+	}
+	gotDisco := nm.SelfNode.DiscoKey()
+	if gotDisco.IsZero() {
+		t.Fatal("SelfNode disco key is zero")
+	}
+	if gotDisco != wantDisco {
+		t.Errorf("disco key = %v, want %v", gotDisco, wantDisco)
+	}
+}
+
+func TestConvertPeerWithDiscoKey(t *testing.T) {
+	selfKey := testWireGuardKey()
+	peerKey := testWireGuardKey()
+	discoB64, wantDisco := testDiscoKey()
+
+	resp := &control.MapResponse{
+		Node: &control.Node{
+			ID:     1,
+			Name:   "self",
+			Key:    selfKey,
+			MeshIP: netip.MustParseAddr("10.200.0.1"),
+		},
+		Peers: []*control.Node{
+			{
+				ID:       2,
+				Name:     "peer",
+				Key:      peerKey,
+				DiscoKey: discoB64,
+				MeshIP:   netip.MustParseAddr("10.200.0.2"),
+				Online:   true,
+			},
+		},
+	}
+
+	conv := NewConverter("test")
+	nm, err := conv.Convert(resp)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+
+	if len(nm.Peers) != 1 {
+		t.Fatalf("want 1 peer, got %d", len(nm.Peers))
+	}
+	gotDisco := nm.Peers[0].DiscoKey()
+	if gotDisco.IsZero() {
+		t.Fatal("peer disco key is zero")
+	}
+	if gotDisco != wantDisco {
+		t.Errorf("disco key = %v, want %v", gotDisco, wantDisco)
+	}
+}
+
+func TestConvertNodeWithoutDiscoKey(t *testing.T) {
+	wgKey := testWireGuardKey()
+
+	resp := &control.MapResponse{
+		Node: &control.Node{
+			ID:     1,
+			Name:   "laptop",
+			Key:    wgKey,
+			MeshIP: netip.MustParseAddr("10.200.0.1"),
+		},
+	}
+
+	conv := NewConverter("test")
+	nm, err := conv.Convert(resp)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+
+	// No disco key set — should be zero, not an error.
+	if !nm.SelfNode.DiscoKey().IsZero() {
+		t.Error("expected zero disco key when none provided")
+	}
+}
+
+func TestConvertNodeWithInvalidDiscoKey(t *testing.T) {
+	wgKey := testWireGuardKey()
+
+	resp := &control.MapResponse{
+		Node: &control.Node{
+			ID:       1,
+			Name:     "laptop",
+			Key:      wgKey,
+			DiscoKey: "not-valid-base64!!!",
+			MeshIP:   netip.MustParseAddr("10.200.0.1"),
+		},
+	}
+
+	conv := NewConverter("test")
+	nm, err := conv.Convert(resp)
+	if err != nil {
+		t.Fatalf("Convert: %v (should not fail, invalid disco key is non-fatal)", err)
+	}
+
+	// Invalid disco key should be silently skipped (logged as debug).
+	if !nm.SelfNode.DiscoKey().IsZero() {
+		t.Error("expected zero disco key for invalid input")
+	}
+}
+
+func TestParseDiscoKey(t *testing.T) {
+	tests := map[string]struct {
+		input   string
+		wantErr bool
+	}{
+		"valid base64 key": {
+			input: func() string {
+				b64, _ := testDiscoKey()
+				return b64
+			}(),
+			wantErr: false,
+		},
+		"invalid base64": {
+			input:   "not-valid-base64!!!",
+			wantErr: true,
+		},
+		"wrong length": {
+			input:   "AQID", // 3 bytes
+			wantErr: true,
+		},
+		"empty": {
+			input:   "",
+			wantErr: true,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			k, err := parseDiscoKey(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Error("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if k.IsZero() {
+				t.Error("parsed key is zero")
+			}
+		})
 	}
 }
