@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/enboxorg/meshd/compare/v0.1.0...v0.2.0) (2026-02-25)
+
+
+### Features
+
+* exchange disco keys via DWN endpoint and nodeInfo records ([d8c15bf](https://github.com/enboxorg/meshd/commit/d8c15bf3f261857510b388728d06368554b846c4))
+* exchange disco keys via DWN endpoint and nodeInfo records ([7e048ea](https://github.com/enboxorg/meshd/commit/7e048ea794685cf543fc4450de5473e13e7a4a84))
+
 ## [0.1.0](https://github.com/enboxorg/meshd/compare/v0.0.3...v0.1.0) (2026-02-25)
 
 
