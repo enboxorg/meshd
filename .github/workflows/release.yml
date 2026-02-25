@@ -3,6 +3,11 @@ name: Release Artifacts
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.0.2)'
+        required: true
 
 permissions:
   contents: write
@@ -40,10 +45,22 @@ jobs:
             goos: windows
             goarch: amd64
             ext: zip
+          - os: windows
+            arch: arm64
+            goos: windows
+            goarch: arm64
+            ext: zip
+          - os: freebsd
+            arch: x64
+            goos: freebsd
+            goarch: amd64
+            ext: tar.gz
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -61,7 +78,8 @@ jobs:
           if [ "${{ matrix.os }}" = 'windows' ]; then
             out='dist/release/meshd.exe'
           fi
-          version="${GITHUB_REF_NAME#v}"
+          tag="${{ github.event.inputs.tag || github.event.release.tag_name }}"
+          version="${tag#v}"
           go build -trimpath -ldflags="-s -w -X main.version=${version}" -o "$out" ./cmd/meshd
 
       - name: Package artifact
@@ -77,4 +95,5 @@ jobs:
       - name: Upload artifact to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.inputs.tag || github.event.release.tag_name }}
           files: ${{ env.artifact }}
