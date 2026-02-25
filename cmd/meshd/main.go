@@ -17,6 +17,7 @@ import (
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 	"github.com/enboxorg/meshd/internal/engine"
 	"github.com/enboxorg/meshd/internal/mesh"
+	"github.com/enboxorg/meshd/internal/profile"
 	"github.com/enboxorg/meshd/internal/state"
 	"github.com/enboxorg/meshd/pkg/dids"
 	"github.com/enboxorg/meshd/pkg/dids/didcore"
@@ -28,8 +29,14 @@ const usage = `meshd - Decentralized WireGuard mesh networking via DWN
 Usage:
   meshd <command> [arguments]
 
-Commands:
+Identity:
+  auth login        Create a new identity profile
+  auth list         List all profiles
+  auth use <name>   Set the default profile
+  auth logout       Remove a profile from config
   init              Generate DID identity and publish to DHT
+
+Network:
   network create    Create a new mesh network on a DWN
   network join      Join an existing mesh network
   network leave     Leave the current mesh network
@@ -39,19 +46,16 @@ Commands:
   up                Start the mesh agent daemon
   down              Stop the mesh agent daemon
 
-Init flags:
-  --dwn-endpoint <url>    DWN endpoint to include in DID Document
-  --gateway <url>         Pkarr gateway for DHT publication
-  --no-publish            Skip publishing DID to DHT
-  --force-publish         Re-publish existing DID to DHT
-
-Flags:
+Global flags:
+  --profile <name>  Use a specific identity profile
   -h, --help        Show this help message
   -v, --version     Show version information
 
 Environment:
-  MESHD_STATE_DIR    State directory (default: ~/.meshd)
-  DWN_ENDPOINT          Default DWN endpoint URL
+  ENBOX_HOME         Override ~/.enbox base directory
+  ENBOX_PROFILE      Override active profile
+  MESHD_STATE_DIR    Override state directory (bypasses profiles)
+  DWN_ENDPOINT       Default DWN endpoint URL
 `
 
 var version = "dev"
@@ -69,11 +73,15 @@ func main() {
 		combined := os.Args[1] + " " + os.Args[2]
 		switch combined {
 		case "network create", "network join", "network leave",
-			"peer list", "peer add", "peer remove", "peer approve":
+			"peer list", "peer add", "peer remove", "peer approve",
+			"auth login", "auth list", "auth use", "auth logout":
 			cmd = combined
 			args = os.Args[3:]
 		}
 	}
+
+	// Extract --profile flag from args before dispatching.
+	flagProfile, args := extractProfileFlag(args)
 
 	ctx := context.Background()
 
@@ -85,22 +93,30 @@ func main() {
 	case "-v", "--version", "version":
 		fmt.Printf("meshd %s\n", version)
 		return
+	case "auth", "auth login":
+		err = cmdAuthLogin(ctx, args)
+	case "auth list":
+		err = cmdAuthList()
+	case "auth use":
+		err = cmdAuthUse(args)
+	case "auth logout":
+		err = cmdAuthLogout(args)
 	case "init":
-		err = cmdInit(ctx, args)
+		err = cmdInit(ctx, args, flagProfile)
 	case "network create":
-		err = cmdNetworkCreate(ctx, args)
+		err = cmdNetworkCreate(ctx, args, flagProfile)
 	case "network join":
-		err = cmdNetworkJoin(ctx, args)
+		err = cmdNetworkJoin(ctx, args, flagProfile)
 	case "network leave":
-		err = cmdNetworkLeave(ctx, args)
+		err = cmdNetworkLeave(ctx, args, flagProfile)
 	case "peer list":
-		err = cmdPeerList(ctx, args)
+		err = cmdPeerList(ctx, args, flagProfile)
 	case "peer approve":
-		err = cmdPeerApprove(ctx, args)
+		err = cmdPeerApprove(ctx, args, flagProfile)
 	case "status":
-		err = cmdStatus(ctx, args)
+		err = cmdStatus(ctx, args, flagProfile)
 	case "up":
-		err = cmdUp(ctx, args)
+		err = cmdUp(ctx, args, flagProfile)
 	case "down":
 		err = cmdDown(ctx, args)
 	default:
@@ -116,7 +132,7 @@ func main() {
 }
 
 // cmdInit generates a DID identity, stores it, and publishes it to the DHT.
-func cmdInit(ctx context.Context, args []string) error {
+func cmdInit(ctx context.Context, args []string, flagProfile string) error {
 	// Parse init flags.
 	var dwnEndpoint, gateway string
 	noPublish := false
@@ -145,7 +161,10 @@ func cmdInit(ctx context.Context, args []string) error {
 		dwnEndpoint = os.Getenv("DWN_ENDPOINT")
 	}
 
-	stateDir := state.DefaultStateDir()
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
 
 	if did.Exists(stateDir) {
 		identity, err := did.Load(stateDir)
@@ -211,7 +230,7 @@ func publishDID(ctx context.Context, identity *did.DID, dwnEndpoint, gateway str
 // cmdNetworkCreate creates a new mesh network.
 //
 // Usage: meshd network create <name> --endpoint <dwn-url>
-func cmdNetworkCreate(ctx context.Context, args []string) error {
+func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) error {
 	if len(args) < 3 {
 		return fmt.Errorf("usage: meshd network create <name> --endpoint <dwn-url>")
 	}
@@ -228,7 +247,10 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 		return fmt.Errorf("--endpoint is required")
 	}
 
-	stateDir := state.DefaultStateDir()
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
 	identity, err := loadIdentity(stateDir)
 	if err != nil {
 		return err
@@ -416,7 +438,7 @@ func cmdNetworkCreate(ctx context.Context, args []string) error {
 // cmdNetworkJoin joins an existing mesh network.
 //
 // Usage: meshd network join --endpoint <url> --anchor <did> --network <id>
-func cmdNetworkJoin(ctx context.Context, args []string) error {
+func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) error {
 	var endpoint, anchorDID, networkID string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -442,7 +464,10 @@ func cmdNetworkJoin(ctx context.Context, args []string) error {
 		return fmt.Errorf("usage: meshd network join --endpoint <url> --anchor <did> --network <id>")
 	}
 
-	stateDir := state.DefaultStateDir()
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
 	identity, err := loadIdentity(stateDir)
 	if err != nil {
 		return err
@@ -566,8 +591,11 @@ func cmdNetworkJoin(ctx context.Context, args []string) error {
 }
 
 // cmdNetworkLeave leaves the current mesh network.
-func cmdNetworkLeave(ctx context.Context, args []string) error {
-	stateDir := state.DefaultStateDir()
+func cmdNetworkLeave(ctx context.Context, args []string, flagProfile string) error {
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
 
 	if !state.HasNetwork(stateDir) {
 		fmt.Println("Not in a network.")
@@ -592,8 +620,11 @@ func cmdNetworkLeave(ctx context.Context, args []string) error {
 }
 
 // cmdPeerList lists all peers in the current mesh network.
-func cmdPeerList(ctx context.Context, args []string) error {
-	stateDir := state.DefaultStateDir()
+func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
 	identity, err := loadIdentity(stateDir)
 	if err != nil {
 		return err
@@ -664,14 +695,17 @@ func cmdPeerList(ctx context.Context, args []string) error {
 // mesh records. This must be run by the network anchor (owner).
 //
 // Usage: meshd peer approve <did>
-func cmdPeerApprove(ctx context.Context, args []string) error {
+func cmdPeerApprove(ctx context.Context, args []string, flagProfile string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: meshd peer approve <did>")
 	}
 
 	peerDID := args[0]
 
-	stateDir := state.DefaultStateDir()
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
 	identity, err := loadIdentity(stateDir)
 	if err != nil {
 		return err
@@ -718,12 +752,15 @@ func cmdPeerApprove(ctx context.Context, args []string) error {
 }
 
 // cmdStatus shows the current mesh status and identity info.
-func cmdStatus(ctx context.Context, args []string) error {
-	stateDir := state.DefaultStateDir()
+func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
 
 	// Identity.
 	if !did.Exists(stateDir) {
-		fmt.Println("Not initialized. Run 'meshd init' first.")
+		fmt.Println("Not initialized. Run 'meshd auth login' to create a profile.")
 		return nil
 	}
 
@@ -772,8 +809,11 @@ func cmdStatus(ctx context.Context, args []string) error {
 //  2. Creating the engine (DWN client + meshnet backend)
 //  3. Starting the WireGuard tunnel
 //  4. Blocking until interrupted (Ctrl+C / SIGTERM)
-func cmdUp(ctx context.Context, args []string) error {
-	stateDir := state.DefaultStateDir()
+func cmdUp(ctx context.Context, args []string, flagProfile string) error {
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
 	identity, err := loadIdentity(stateDir)
 	if err != nil {
 		return err
@@ -1013,7 +1053,7 @@ func cmdDown(ctx context.Context, args []string) error {
 // loadIdentity loads the DID identity, or returns an error if not initialized.
 func loadIdentity(stateDir string) (*did.DID, error) {
 	if !did.Exists(stateDir) {
-		return nil, fmt.Errorf("not initialized. Run 'meshd init' first.")
+		return nil, fmt.Errorf("not initialized. Run 'meshd auth login' to create a profile")
 	}
 	identity, err := did.Load(stateDir)
 	if err != nil {
@@ -1059,6 +1099,196 @@ type universalResolver struct{}
 
 func (r universalResolver) ResolveWithContext(ctx context.Context, uri string) (didcore.ResolutionResult, error) {
 	return dids.ResolveWithContext(ctx, uri)
+}
+
+// extractProfileFlag extracts --profile <name> from args, returning the
+// profile name and the remaining args with the flag removed.
+func extractProfileFlag(args []string) (string, []string) {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--profile" && i+1 < len(args) {
+			name := args[i+1]
+			remaining := make([]string, 0, len(args)-2)
+			remaining = append(remaining, args[:i]...)
+			remaining = append(remaining, args[i+2:]...)
+			return name, remaining
+		}
+	}
+	return "", args
+}
+
+// resolveStateDir resolves the state directory from the active profile.
+// If MESHD_STATE_DIR is set, it takes absolute precedence.
+func resolveStateDir(flagProfile string) (string, error) {
+	return profile.ResolveDataPath(flagProfile)
+}
+
+// cmdAuthLogin creates a new identity profile.
+//
+// Usage: meshd auth login [name] [--dwn-endpoint <url>] [--no-publish]
+func cmdAuthLogin(ctx context.Context, args []string) error {
+	var profileName, dwnEndpoint, gateway string
+	noPublish := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dwn-endpoint":
+			if i+1 < len(args) {
+				dwnEndpoint = args[i+1]
+				i++
+			}
+		case "--gateway":
+			if i+1 < len(args) {
+				gateway = args[i+1]
+				i++
+			}
+		case "--no-publish":
+			noPublish = true
+		default:
+			if profileName == "" && !strings.HasPrefix(args[i], "-") {
+				profileName = args[i]
+			}
+		}
+	}
+
+	if profileName == "" {
+		profileName = "default"
+	}
+
+	if err := profile.ValidateName(profileName); err != nil {
+		return err
+	}
+
+	// Fall back to DWN_ENDPOINT env var.
+	if dwnEndpoint == "" {
+		dwnEndpoint = os.Getenv("DWN_ENDPOINT")
+	}
+
+	// Check if profile already exists.
+	cfg, err := profile.ReadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.Profiles[profileName] != nil {
+		return fmt.Errorf("profile %q already exists (DID: %s)", profileName, cfg.Profiles[profileName].DID)
+	}
+
+	// Generate identity.
+	identity, err := did.Generate()
+	if err != nil {
+		return fmt.Errorf("generating DID: %w", err)
+	}
+
+	// Store identity in profile directory.
+	dataPath := profile.DataPath(profileName)
+	if err := identity.Store(dataPath); err != nil {
+		return fmt.Errorf("storing identity: %w", err)
+	}
+
+	// Register profile in config.json.
+	if err := profile.UpsertProfile(profileName, identity.URI); err != nil {
+		return fmt.Errorf("saving profile: %w", err)
+	}
+
+	fmt.Printf("Created profile %q.\n", profileName)
+	fmt.Printf("  DID:   %s\n", identity.URI)
+	fmt.Printf("  State: %s\n", dataPath)
+
+	// Publish DID to DHT.
+	if !noPublish {
+		if err := publishDID(ctx, identity, dwnEndpoint, gateway); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// cmdAuthList lists all identity profiles.
+func cmdAuthList() error {
+	cfg, err := profile.ReadConfig()
+	if err != nil {
+		return err
+	}
+
+	if len(cfg.Profiles) == 0 {
+		fmt.Println("No profiles configured.")
+		fmt.Println("Run 'meshd auth login [name]' to create one.")
+		return nil
+	}
+
+	fmt.Printf("Profiles (%s):\n\n", profile.EnboxHome())
+
+	for _, entry := range cfg.Profiles {
+		marker := "  "
+		suffix := ""
+		if entry.Name == cfg.DefaultProfile {
+			marker = "* "
+			suffix = " (default)"
+		}
+		fmt.Printf("%s%s%s\n", marker, entry.Name, suffix)
+		fmt.Printf("    DID:     %s\n", entry.DID)
+		fmt.Printf("    Created: %s\n", entry.CreatedAt)
+		fmt.Println()
+	}
+
+	return nil
+}
+
+// cmdAuthUse sets the default profile.
+//
+// Usage: meshd auth use <name>
+func cmdAuthUse(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: meshd auth use <name>")
+	}
+
+	name := args[0]
+
+	cfg, err := profile.ReadConfig()
+	if err != nil {
+		return err
+	}
+
+	if cfg.Profiles[name] == nil {
+		return fmt.Errorf("profile %q not found", name)
+	}
+
+	cfg.DefaultProfile = name
+	if err := profile.WriteConfig(cfg); err != nil {
+		return err
+	}
+
+	fmt.Printf("Default profile set to %q.\n", name)
+	return nil
+}
+
+// cmdAuthLogout removes a profile from config.
+//
+// Usage: meshd auth logout [name]
+func cmdAuthLogout(args []string) error {
+	name := ""
+	if len(args) > 0 {
+		name = args[0]
+	}
+
+	if name == "" {
+		// Use the default profile.
+		cfg, err := profile.ReadConfig()
+		if err != nil {
+			return err
+		}
+		name = cfg.DefaultProfile
+		if name == "" {
+			return fmt.Errorf("usage: meshd auth logout <name>")
+		}
+	}
+
+	if err := profile.RemoveProfile(name); err != nil {
+		return err
+	}
+
+	fmt.Printf("Removed profile %q from config.\n", name)
+	fmt.Printf("Data directory preserved at: %s\n", profile.DataPath(name))
+	return nil
 }
 
 // truncate shortens a string to maxLen, adding "..." if truncated.
