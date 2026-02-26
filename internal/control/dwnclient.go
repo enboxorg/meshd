@@ -242,7 +242,38 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	}
 	c.mu.Unlock()
 
-	// 4. Query endpoint records for each node.
+	// 4. Query ACL policy record.
+	aclResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
+		Protocol:     ProtocolMesh,
+		ProtocolPath: "network/aclPolicy",
+		ContextID:    c.networkRecordID,
+	}, "createdDescending", nil, "network/node")
+	if err != nil {
+		// Non-fatal: ACL policy is optional. Default to allow-all.
+		c.logger.DebugContext(ctx, "querying ACL policy failed", slog.Any("error", err))
+	} else {
+		aclEntries, err := dwn.QueryResult(aclResp)
+		if err != nil {
+			c.logger.DebugContext(ctx, "parsing ACL policy results", slog.Any("error", err))
+		} else if len(aclEntries) > 0 {
+			// $recordLimit: max 1 — take the first (most recent) entry.
+			aclDecryptor := c.makeDecryptor("network/aclPolicy")
+			var policy ACLPolicyData
+			if err := parseEntryData(aclEntries[0], &policy, aclDecryptor); err != nil {
+				c.logger.DebugContext(ctx, "parsing ACL policy entry", slog.Any("error", err))
+			} else {
+				c.mu.Lock()
+				c.acl = &policy
+				c.mu.Unlock()
+				c.logger.DebugContext(ctx, "loaded ACL policy",
+					slog.Int("version", policy.Version),
+					slog.Int("rules", len(policy.Rules)),
+				)
+			}
+		}
+	}
+
+	// 5. Query endpoint records for each node.
 	// Endpoint records are children of node records. We query all
 	// endpoint records in the network context and attach them to their
 	// parent node via the parentId descriptor field.
@@ -285,13 +316,22 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		}
 	}
 
+	hasACL := c.acl != nil
 	c.logger.DebugContext(ctx, "mesh state loaded",
 		slog.String("network", network.Name),
 		slog.Int("nodes", len(c.nodes)),
 		slog.Int("relays", len(c.relays)),
+		slog.Bool("aclPolicy", hasACL),
 	)
 
 	return c.buildMapResponse(), nil
+}
+
+// ACLPolicy returns the loaded ACL policy, or nil if none is configured.
+func (c *DWNClient) ACLPolicy() *ACLPolicyData {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.acl
 }
 
 // BuildStaticMapResponse creates a MapResponse from explicitly provided
@@ -556,21 +596,145 @@ func (c *DWNClient) buildFilterRules() []FilterRule {
 		return defaultFilterRules()
 	}
 
+	// Build DID → mesh IP lookup from the current node map.
+	didToIP := make(map[string]string, len(c.nodes))
+	for did, node := range c.nodes {
+		if node.MeshIP != "" {
+			didToIP[did] = node.MeshIP
+		}
+	}
+
 	var rules []FilterRule
 	for _, r := range c.acl.Rules {
 		if r.Action != "accept" {
 			continue
 		}
-		rule := FilterRule{SrcIPs: r.Src}
-		for _, dst := range r.Dst {
-			rule.DstPorts = append(rule.DstPorts, NetPortRange{
-				IP:    dst,
-				Ports: PortRange{First: 0, Last: 65535},
-			})
+
+		// Resolve source matchers to IPs.
+		srcIPs := c.resolveMatchers(r.Src, didToIP)
+		if len(srcIPs) == 0 {
+			continue
+		}
+
+		// Resolve destination matchers to IPs.
+		dstIPs := c.resolveMatchers(r.Dst, didToIP)
+		if len(dstIPs) == 0 {
+			continue
+		}
+
+		// Parse destination port ranges. If none specified, allow all ports.
+		dstPorts := parsePortRanges(r.DstPorts)
+		if len(dstPorts) == 0 {
+			dstPorts = []PortRange{{First: 0, Last: 65535}}
+		}
+
+		// Build filter rule: each dst IP × each port range.
+		rule := FilterRule{SrcIPs: srcIPs}
+		for _, ip := range dstIPs {
+			for _, pr := range dstPorts {
+				rule.DstPorts = append(rule.DstPorts, NetPortRange{
+					IP:    ip,
+					Ports: pr,
+				})
+			}
 		}
 		rules = append(rules, rule)
 	}
+
+	// If no accept rules were produced but defaultAction is "accept",
+	// fall through to allow-all.
+	if len(rules) == 0 && c.acl.DefaultAction == "accept" {
+		return defaultFilterRules()
+	}
+
 	return rules
+}
+
+// resolveMatchers expands ACL source/destination matchers into IP strings
+// that the packet filter engine understands. Supported matchers:
+//   - "*"          → "*" (wildcard)
+//   - "group:name" → expanded to member DIDs, then resolved to mesh IPs
+//   - "did:..."    → resolved to mesh IP
+//   - "10.x.y.z"  → passed through as-is (direct IP)
+//   - "10.x.y.z/n"→ passed through as-is (CIDR)
+func (c *DWNClient) resolveMatchers(matchers []string, didToIP map[string]string) []string {
+	var result []string
+	for _, m := range matchers {
+		switch {
+		case m == "*":
+			return []string{"*"}
+		case len(m) > 6 && m[:6] == "group:":
+			groupName := m[6:]
+			if c.acl != nil && c.acl.Groups != nil {
+				for _, did := range c.acl.Groups[groupName] {
+					if ip, ok := didToIP[did]; ok {
+						result = append(result, ip)
+					}
+				}
+			}
+		case len(m) > 4 && m[:4] == "did:":
+			if ip, ok := didToIP[m]; ok {
+				result = append(result, ip)
+			}
+		default:
+			// Assume IP or CIDR — pass through.
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
+// parsePortRanges parses port range strings like "22", "80", "8000-9000"
+// into PortRange structs. Invalid entries are silently skipped.
+func parsePortRanges(ports []string) []PortRange {
+	var result []PortRange
+	for _, p := range ports {
+		pr, ok := parsePortRange(p)
+		if ok {
+			result = append(result, pr)
+		}
+	}
+	return result
+}
+
+// parsePortRange parses a single port or port range string.
+// Returns the parsed range and true, or zero value and false on error.
+func parsePortRange(s string) (PortRange, bool) {
+	// Try "first-last" format.
+	for i := 0; i < len(s); i++ {
+		if s[i] == '-' {
+			first, ok1 := parsePort(s[:i])
+			last, ok2 := parsePort(s[i+1:])
+			if ok1 && ok2 && first <= last {
+				return PortRange{First: first, Last: last}, true
+			}
+			return PortRange{}, false
+		}
+	}
+	// Single port.
+	port, ok := parsePort(s)
+	if ok {
+		return PortRange{First: port, Last: port}, true
+	}
+	return PortRange{}, false
+}
+
+// parsePort parses a decimal port number string (0-65535).
+func parsePort(s string) (uint16, bool) {
+	if len(s) == 0 || len(s) > 5 {
+		return 0, false
+	}
+	var n uint32
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + uint32(c-'0')
+	}
+	if n > 65535 {
+		return 0, false
+	}
+	return uint16(n), true
 }
 
 func defaultFilterRules() []FilterRule {

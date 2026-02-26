@@ -17,8 +17,9 @@ import (
 const (
 	protocolMesh = "https://enbox.org/protocols/wireguard-mesh"
 
-	schemaNode     = "https://enbox.org/schemas/wireguard-mesh/node"
-	schemaEndpoint = "https://enbox.org/schemas/wireguard-mesh/endpoint"
+	schemaNode      = "https://enbox.org/schemas/wireguard-mesh/node"
+	schemaEndpoint  = "https://enbox.org/schemas/wireguard-mesh/endpoint"
+	schemaACLPolicy = "https://enbox.org/schemas/wireguard-mesh/acl-policy"
 )
 
 // NodeRegistration holds the result of registering a node on DWN.
@@ -281,6 +282,54 @@ type PublicEndpoint struct {
 	Port     int    `json:"port"`
 	Priority int    `json:"priority,omitempty"`
 	Source   string `json:"source,omitempty"`
+}
+
+// WriteACLPolicyParams configures an ACL policy write.
+type WriteACLPolicyParams struct {
+	AnchorEndpoint       string
+	AnchorDID            string
+	NetworkRecordID      string
+	Signer               *dwn.Signer
+	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
+
+	// PolicyData is the JSON-encoded ACL policy payload.
+	PolicyData []byte
+}
+
+// WriteACLPolicy writes or updates the ACL policy record (encrypted) on the
+// anchor DWN. Only the network author (anchor) can create/update the ACL policy.
+// The protocol enforces $recordLimit: max 1 — newer writes replace older ones.
+func WriteACLPolicy(ctx context.Context, params WriteACLPolicyParams) error {
+	if params.EncryptionKeyManager == nil {
+		return fmt.Errorf("EncryptionKeyManager is required for encrypted writes")
+	}
+
+	// The anchor always uses Protocol Path encryption for records it owns.
+	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption("network/aclPolicy")
+	if err != nil {
+		return fmt.Errorf("deriving ACL policy encryption: %w", err)
+	}
+
+	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
+	api := dwn.NewDwnAPI(agent)
+
+	_, status, err := api.Write(ctx, params.AnchorDID, dwn.WriteParams{
+		Protocol:             protocolMesh,
+		ProtocolPath:         "network/aclPolicy",
+		Schema:               schemaACLPolicy,
+		DataFormat:           "application/json",
+		ParentContextID:      params.NetworkRecordID,
+		Data:                 params.PolicyData,
+		EncryptionRecipients: recipients,
+	})
+	if err != nil {
+		return fmt.Errorf("writing ACL policy: %w", err)
+	}
+	if status.Code >= 300 {
+		return fmt.Errorf("ACL policy write failed: %d %s", status.Code, status.Detail)
+	}
+
+	return nil
 }
 
 // DiscoverLocalEndpoints discovers local network endpoints for this node.

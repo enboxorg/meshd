@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/enboxorg/meshd/internal/control"
 	"github.com/enboxorg/meshd/internal/daemon"
 	"github.com/enboxorg/meshd/internal/did"
 	"github.com/enboxorg/meshd/internal/dwn"
@@ -44,6 +45,8 @@ Network:
   peer add          Add a peer to the mesh (anchor only)
   peer list         List all peers in the mesh
   peer approve      Deliver encryption keys to a peer (anchor only)
+  acl set <file>    Set ACL policy from a JSON file (anchor only)
+  acl show          Show the current ACL policy
   status            Show mesh status and identity info
   up                Start the mesh agent daemon
   down              Stop the mesh agent daemon
@@ -91,6 +94,7 @@ func main() {
 		switch combined {
 		case "network create", "network join", "network leave",
 			"peer list", "peer add", "peer remove", "peer approve",
+			"acl set", "acl show",
 			"auth login", "auth list", "auth use", "auth logout":
 			cmd = combined
 			args = os.Args[3:]
@@ -132,6 +136,10 @@ func main() {
 		err = cmdPeerList(ctx, args, flagProfile)
 	case "peer approve":
 		err = cmdPeerApprove(ctx, args, flagProfile)
+	case "acl set":
+		err = cmdACLSet(ctx, args, flagProfile)
+	case "acl show":
+		err = cmdACLShow(ctx, args, flagProfile)
 	case "status":
 		err = cmdStatus(ctx, args, flagProfile)
 	case "up":
@@ -1602,6 +1610,158 @@ func cmdAuthLogout(args []string) error {
 
 	fmt.Printf("Removed profile %q from config.\n", name)
 	fmt.Printf("Data directory preserved at: %s\n", profile.DataPath(name))
+	return nil
+}
+
+// cmdACLSet reads an ACL policy from a JSON file and writes it to the anchor DWN.
+// This is an anchor-only operation.
+//
+// Usage: meshd acl set <policy.json>
+func cmdACLSet(ctx context.Context, args []string, flagProfile string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: meshd acl set <policy.json>")
+	}
+
+	policyFile := args[0]
+	policyBytes, err := os.ReadFile(policyFile)
+	if err != nil {
+		return fmt.Errorf("reading policy file: %w", err)
+	}
+
+	// Validate the JSON is a valid ACL policy.
+	var policy control.ACLPolicyData
+	if err := json.Unmarshal(policyBytes, &policy); err != nil {
+		return fmt.Errorf("invalid ACL policy JSON: %w", err)
+	}
+	if policy.Version == 0 {
+		return fmt.Errorf("ACL policy must have a \"version\" field (integer >= 1)")
+	}
+	if len(policy.Rules) == 0 {
+		return fmt.Errorf("ACL policy must have at least one rule")
+	}
+	for i, r := range policy.Rules {
+		if r.Action != "accept" && r.Action != "drop" {
+			return fmt.Errorf("rule %d: action must be \"accept\" or \"drop\", got %q", i, r.Action)
+		}
+		if len(r.Src) == 0 {
+			return fmt.Errorf("rule %d: src must not be empty", i)
+		}
+		if len(r.Dst) == 0 {
+			return fmt.Errorf("rule %d: dst must not be empty", i)
+		}
+	}
+
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
+	identity, err := loadIdentity(stateDir)
+	if err != nil {
+		return err
+	}
+
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return fmt.Errorf("loading network state: %w", err)
+	}
+	if ns == nil {
+		return fmt.Errorf("not in a network. Use 'meshd network create' first.")
+	}
+
+	// Verify this is the anchor node.
+	if identity.URI != ns.AnchorDID {
+		return fmt.Errorf("only the network anchor can set ACL policy (you: %s, anchor: %s)",
+			truncate(identity.URI, 40), truncate(ns.AnchorDID, 40))
+	}
+
+	signer := &dwn.Signer{
+		DID:        identity.URI,
+		PrivateKey: identity.SigningKey,
+	}
+	encMgr := newEncryptionKeyManager(identity)
+
+	if err := mesh.WriteACLPolicy(ctx, mesh.WriteACLPolicyParams{
+		AnchorEndpoint:       ns.AnchorEndpoint,
+		AnchorDID:            ns.AnchorDID,
+		NetworkRecordID:      ns.NetworkRecordID,
+		Signer:               signer,
+		EncryptionKeyManager: encMgr,
+		PolicyData:           policyBytes,
+	}); err != nil {
+		return err
+	}
+
+	fmt.Printf("ACL policy set (version %d, %d rules).\n", policy.Version, len(policy.Rules))
+	return nil
+}
+
+// cmdACLShow reads and displays the current ACL policy from the anchor DWN.
+//
+// Usage: meshd acl show
+func cmdACLShow(ctx context.Context, args []string, flagProfile string) error {
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
+	identity, err := loadIdentity(stateDir)
+	if err != nil {
+		return err
+	}
+
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return fmt.Errorf("loading network state: %w", err)
+	}
+	if ns == nil {
+		return fmt.Errorf("not in a network. Use 'meshd network join' first.")
+	}
+
+	signer := &dwn.Signer{
+		DID:        identity.URI,
+		PrivateKey: identity.SigningKey,
+	}
+	encMgr := newEncryptionKeyManager(identity)
+
+	// Fetch context key if available (non-anchor nodes need this for decryption).
+	contextKey, err := fetchContextKey(ctx, identity, ns)
+	if err != nil {
+		fmt.Printf("  Warning: context key fetch failed: %v\n", err)
+	}
+	if contextKey != nil {
+		privBytes, err := contextKey.PrivateKeyBytes()
+		if err != nil {
+			return fmt.Errorf("extracting context key bytes: %w", err)
+		}
+		encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
+	}
+
+	client := control.NewDWNClient(
+		ns.AnchorEndpoint,
+		ns.AnchorDID,
+		ns.NetworkRecordID,
+		identity.URI,
+		signer,
+		control.WithEncryptionKeyManager(encMgr),
+	)
+
+	// Load state (which now includes ACL policy).
+	_, err = client.LoadState(ctx)
+	if err != nil {
+		return fmt.Errorf("loading mesh state: %w", err)
+	}
+
+	policy := client.ACLPolicy()
+	if policy == nil {
+		fmt.Println("No ACL policy configured. Default: allow all traffic.")
+		return nil
+	}
+
+	// Pretty-print the policy as JSON.
+	out, err := json.MarshalIndent(policy, "", "  ")
+	if err != nil {
+		return fmt.Errorf("formatting policy: %w", err)
+	}
+	fmt.Println(string(out))
 	return nil
 }
 
