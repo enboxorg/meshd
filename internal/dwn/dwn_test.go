@@ -364,8 +364,8 @@ func TestBuildRecordsQuery(t *testing.T) {
 
 	msg, err := BuildRecordsQuery(s, RecordsFilter{
 		Protocol:     "https://enbox.org/protocols/wireguard-mesh",
-		ProtocolPath: "network/member",
-	}, "createdAscending", nil, "network/member")
+		ProtocolPath: "network/node",
+	}, "createdAscending", nil, "network/node")
 	if err != nil {
 		t.Fatalf("BuildRecordsQuery: %v", err)
 	}

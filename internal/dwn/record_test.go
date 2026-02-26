@@ -161,8 +161,8 @@ func TestRecordFromEntry(t *testing.T) {
 			"interface": "Records",
 			"method": "Write",
 			"protocol": "https://example.com/mesh",
-			"protocolPath": "network/member",
-			"schema": "https://example.com/schemas/member",
+			"protocolPath": "network/node",
+			"schema": "https://example.com/schemas/node",
 			"dataFormat": "application/json",
 			"dataCid": "bafy123",
 			"dataSize": 42,
@@ -188,10 +188,10 @@ func TestRecordFromEntry(t *testing.T) {
 	if record.Protocol != "https://example.com/mesh" {
 		t.Errorf("Protocol = %q", record.Protocol)
 	}
-	if record.ProtocolPath != "network/member" {
+	if record.ProtocolPath != "network/node" {
 		t.Errorf("ProtocolPath = %q", record.ProtocolPath)
 	}
-	if record.Schema != "https://example.com/schemas/member" {
+	if record.Schema != "https://example.com/schemas/node" {
 		t.Errorf("Schema = %q", record.Schema)
 	}
 	if record.DataSize != 42 {

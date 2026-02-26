@@ -39,7 +39,7 @@ func (api *DwnAPI) Agent() Agent {
 // has a newly generated ID. For updates, set params.RecordID.
 //
 // To invoke role-based authorization, set params.ProtocolRole to the
-// Protocol Path of the role (e.g., "network/member").
+// Protocol Path of the role (e.g., "network/node").
 func (api *DwnAPI) Write(ctx context.Context, target string, params WriteParams) (*Record, *Status, error) {
 	resp, err := api.agent.SendDwnRequest(ctx, DwnRequest{
 		Target:       target,
