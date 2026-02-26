@@ -10,27 +10,20 @@ type NetworkConfig struct {
 	ListenPort     int      `json:"listenPort,omitempty"`
 }
 
-// MemberInfo is the parsed member record data with metadata.
-type MemberInfo struct {
-	DID      string `json:"-"`
-	JoinedAt string `json:"joinedAt"`
-	Label    string `json:"label,omitempty"`
-	Status   string `json:"-"`
-	RecordID string `json:"-"`
-}
-
-// NodeInfoData is the parsed nodeInfo record data.
-type NodeInfoData struct {
-	DID                string         `json:"-"`
-	WireGuardPublicKey string         `json:"wireguardPublicKey"`
-	MeshIP             string         `json:"meshIP"`
-	Hostname           string         `json:"hostname,omitempty"`
-	OS                 string         `json:"os,omitempty"`
-	DiscoKey           string         `json:"discoKey,omitempty"`
-	Capabilities       []string       `json:"capabilities,omitempty"`
-	AllowedIPs         []string       `json:"allowedIPs,omitempty"`
-	Endpoints          []EndpointData `json:"-"`
-	RecordID           string         `json:"-"`
+// NodeRecord is the parsed node record data (merged member + nodeInfo).
+// The WireGuard public key is NOT stored here — it is derived from
+// the DID (did:jwk → X25519 birational map) at conversion time.
+type NodeRecord struct {
+	DID          string         `json:"-"`                     // did:jwk from the recipient descriptor field
+	MeshIP       string         `json:"meshIP"`
+	Hostname     string         `json:"hostname,omitempty"`
+	OS           string         `json:"os,omitempty"`
+	Capabilities []string       `json:"capabilities,omitempty"`
+	AllowedIPs   []string       `json:"allowedIPs,omitempty"`
+	AddedAt      string         `json:"addedAt"`
+	Label        string         `json:"label,omitempty"`
+	Endpoints    []EndpointData `json:"-"`
+	RecordID     string         `json:"-"`
 }
 
 // EndpointData is the parsed endpoint record data.
