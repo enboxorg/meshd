@@ -50,6 +50,10 @@
       "enum": ["endpoint-independent", "endpoint-dependent", "unknown"],
       "description": "Detected NAT mapping behavior"
     },
+    "discoKey": {
+      "type": "string",
+      "description": "Base64-encoded disco public key for NAT traversal"
+    },
     "updatedAt": {
       "type": "string",
       "format": "date-time",

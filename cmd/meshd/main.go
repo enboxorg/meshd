@@ -275,7 +275,6 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	networkData, _ := json.Marshal(map[string]any{
 		"name":     name,
 		"meshCIDR": meshCIDR,
-		"created":  time.Now().UTC().Format(time.RFC3339),
 	})
 
 	record, writeStatus, err := api.Write(ctx, identity.URI, dwn.WriteParams{
@@ -966,7 +965,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 
 	if ns == nil {
 		// Not in a network. Use flags or prompt interactively.
-		ns, err = ensureNetwork(ctx, f, stateDir, identity)
+		ns, err = ensureNetwork(ctx, f, stateDir, identity, flagProfile)
 		if err != nil {
 			return err
 		}
@@ -1208,20 +1207,20 @@ func ensureIdentity(ctx context.Context, flagProfile, endpoint string) (*did.DID
 // ensureNetwork handles network setup when the user is not yet in a network.
 // It checks flags (--create, --anchor+--network) and falls back to an
 // interactive prompt.
-func ensureNetwork(ctx context.Context, f upFlags, stateDir string, identity *did.DID) (*state.NetworkState, error) {
+func ensureNetwork(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string) (*state.NetworkState, error) {
 	switch {
 	case f.createNetwork != "":
-		return setupCreateNetwork(ctx, f, stateDir, identity)
+		return setupCreateNetwork(ctx, f, stateDir, identity, flagProfile)
 	case f.anchorDID != "" && f.networkID != "":
-		return setupJoinNetwork(ctx, f, stateDir, identity)
+		return setupJoinNetwork(ctx, f, stateDir, identity, flagProfile)
 	default:
-		return setupInteractive(ctx, f, stateDir, identity)
+		return setupInteractive(ctx, f, stateDir, identity, flagProfile)
 	}
 }
 
 // setupCreateNetwork creates a new mesh network (anchor mode).
 // This is the --create flag path.
-func setupCreateNetwork(ctx context.Context, f upFlags, stateDir string, identity *did.DID) (*state.NetworkState, error) {
+func setupCreateNetwork(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string) (*state.NetworkState, error) {
 	if f.endpoint == "" {
 		return nil, fmt.Errorf("--endpoint (or DWN_ENDPOINT env) is required to create a network")
 	}
@@ -1229,7 +1228,7 @@ func setupCreateNetwork(ctx context.Context, f upFlags, stateDir string, identit
 	fmt.Printf("Creating network %q on %s...\n", f.createNetwork, f.endpoint)
 
 	// Delegate to the existing network create logic.
-	err := cmdNetworkCreate(ctx, []string{f.createNetwork, "--endpoint", f.endpoint}, "")
+	err := cmdNetworkCreate(ctx, []string{f.createNetwork, "--endpoint", f.endpoint}, flagProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -1246,7 +1245,7 @@ func setupCreateNetwork(ctx context.Context, f upFlags, stateDir string, identit
 }
 
 // setupJoinNetwork joins an existing network using --anchor and --network flags.
-func setupJoinNetwork(ctx context.Context, f upFlags, stateDir string, identity *did.DID) (*state.NetworkState, error) {
+func setupJoinNetwork(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string) (*state.NetworkState, error) {
 	if f.endpoint == "" {
 		return nil, fmt.Errorf("--endpoint (or DWN_ENDPOINT env) is required to join a network")
 	}
@@ -1257,7 +1256,7 @@ func setupJoinNetwork(ctx context.Context, f upFlags, stateDir string, identity 
 		"--endpoint", f.endpoint,
 		"--anchor", f.anchorDID,
 		"--network", f.networkID,
-	}, "")
+	}, flagProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -1273,7 +1272,7 @@ func setupJoinNetwork(ctx context.Context, f upFlags, stateDir string, identity 
 }
 
 // setupInteractive prompts the user to create or join a network.
-func setupInteractive(ctx context.Context, f upFlags, stateDir string, identity *did.DID) (*state.NetworkState, error) {
+func setupInteractive(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string) (*state.NetworkState, error) {
 	fmt.Println("No network configured. What would you like to do?")
 	fmt.Println()
 	fmt.Println("  1) Create a new network")
@@ -1291,16 +1290,16 @@ func setupInteractive(ctx context.Context, f upFlags, stateDir string, identity 
 
 	switch choice {
 	case "1":
-		return interactiveCreate(ctx, f, stateDir, identity, scanner)
+		return interactiveCreate(ctx, f, stateDir, identity, flagProfile, scanner)
 	case "2":
-		return interactiveJoin(ctx, f, stateDir, identity, scanner)
+		return interactiveJoin(ctx, f, stateDir, identity, flagProfile, scanner)
 	default:
 		return nil, fmt.Errorf("invalid choice %q (expected 1 or 2)", choice)
 	}
 }
 
 // interactiveCreate guides the user through creating a new network.
-func interactiveCreate(ctx context.Context, f upFlags, stateDir string, identity *did.DID, scanner *bufio.Scanner) (*state.NetworkState, error) {
+func interactiveCreate(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string, scanner *bufio.Scanner) (*state.NetworkState, error) {
 	endpoint := f.endpoint
 	if endpoint == "" {
 		fmt.Print("DWN endpoint URL: ")
@@ -1325,11 +1324,11 @@ func interactiveCreate(ctx context.Context, f upFlags, stateDir string, identity
 	fmt.Println()
 	f.endpoint = endpoint
 	f.createNetwork = name
-	return setupCreateNetwork(ctx, f, stateDir, identity)
+	return setupCreateNetwork(ctx, f, stateDir, identity, flagProfile)
 }
 
 // interactiveJoin guides the user through joining an existing network.
-func interactiveJoin(ctx context.Context, f upFlags, stateDir string, identity *did.DID, scanner *bufio.Scanner) (*state.NetworkState, error) {
+func interactiveJoin(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string, scanner *bufio.Scanner) (*state.NetworkState, error) {
 	endpoint := f.endpoint
 	if endpoint == "" {
 		fmt.Print("DWN endpoint URL: ")
@@ -1364,7 +1363,7 @@ func interactiveJoin(ctx context.Context, f upFlags, stateDir string, identity *
 	f.endpoint = endpoint
 	f.anchorDID = anchorDID
 	f.networkID = networkID
-	return setupJoinNetwork(ctx, f, stateDir, identity)
+	return setupJoinNetwork(ctx, f, stateDir, identity, flagProfile)
 }
 
 // cmdDown stops the mesh agent daemon by sending a shutdown request via the

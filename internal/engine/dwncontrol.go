@@ -112,15 +112,16 @@ type DWNControl struct {
 	logf     logger.Logf
 	clientID int64
 
-	mu        sync.Mutex
-	hostinfo  *tailcfg.Hostinfo
-	netinfo   *tailcfg.NetInfo
-	disco     key.DiscoPublic
-	endpoints []tailcfg.Endpoint
-	paused    atomic.Bool
-	shutdown  chan struct{}
-	cancel    context.CancelFunc
-	notify    chan struct{} // signal to re-poll immediately
+	mu           sync.Mutex
+	hostinfo     *tailcfg.Hostinfo
+	netinfo      *tailcfg.NetInfo
+	disco        key.DiscoPublic
+	endpoints    []tailcfg.Endpoint
+	paused       atomic.Bool
+	shutdown     chan struct{}
+	shutdownOnce sync.Once
+	cancel       context.CancelFunc
+	notify       chan struct{} // signal to re-poll immediately
 }
 
 // NewDWNControlFactory returns a factory function suitable for
@@ -358,8 +359,10 @@ func (cc *DWNControl) Notify() {
 //
 
 func (cc *DWNControl) Shutdown() {
-	cc.cancel()
-	close(cc.shutdown)
+	cc.shutdownOnce.Do(func() {
+		cc.cancel()
+		close(cc.shutdown)
+	})
 }
 
 func (cc *DWNControl) Login(flags controlclient.LoginFlags) {

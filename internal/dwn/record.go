@@ -338,6 +338,7 @@ func (r *Record) Update(ctx context.Context, data []byte, opts ...RecordUpdateOp
 			Tags:            tags,
 			Data:            data,
 			RecordID:        r.ID,
+			DateCreated:     r.DateCreated,
 			ProtocolRole:    updateOpts.protocolRole,
 		},
 		ProtocolRole: updateOpts.protocolRole,

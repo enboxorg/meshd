@@ -202,7 +202,10 @@ func FetchContextKey(ctx context.Context, params FetchContextKeyParams) (*dwncry
 	if err != nil {
 		return nil, fmt.Errorf("querying contextKey records: %w", err)
 	}
-	if status.Code != 200 || len(records) == 0 {
+	if status.Code != 200 {
+		return nil, fmt.Errorf("querying contextKey: unexpected status %d %s", status.Code, status.Detail)
+	}
+	if len(records) == 0 {
 		return nil, nil // No matching record found.
 	}
 
