@@ -54,14 +54,18 @@ type RelayData struct {
 
 // ACLPolicyData is the parsed ACL policy record data.
 type ACLPolicyData struct {
-	Rules []ACLRule `json:"rules"`
+	Version       int                `json:"version"`
+	DefaultAction string             `json:"defaultAction,omitempty"`
+	Groups        map[string][]string `json:"groups,omitempty"`
+	Rules         []ACLRule          `json:"rules"`
 }
 
 // ACLRule is a single ACL rule.
 type ACLRule struct {
-	Action string   `json:"action"`
-	Src    []string `json:"src"`
-	Dst    []string `json:"dst"`
-	Proto  string   `json:"proto,omitempty"`
-	Ports  string   `json:"ports,omitempty"`
+	Action   string   `json:"action"`
+	Src      []string `json:"src"`
+	Dst      []string `json:"dst"`
+	Proto    string   `json:"proto,omitempty"`
+	SrcPorts []string `json:"srcPorts,omitempty"`
+	DstPorts []string `json:"dstPorts,omitempty"`
 }

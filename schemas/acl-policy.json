@@ -24,14 +24,6 @@
       },
       "description": "Named groups of DIDs, e.g. { 'developers': ['did:jwk:abc', 'did:jwk:def'] }"
     },
-    "tagOwners": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "array",
-        "items": { "type": "string" }
-      },
-      "description": "Which DIDs can assign which tags to their nodes"
-    },
     "rules": {
       "type": "array",
       "items": {
@@ -46,12 +38,12 @@
           "src": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "Source matchers: DID, group:name, tag:name, or '*'"
+            "description": "Source matchers: DID, group:name, meshIP, or '*'"
           },
           "dst": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "Destination matchers: DID, group:name, tag:name, meshIP, or '*'"
+            "description": "Destination matchers: DID, group:name, meshIP, or '*'"
           },
           "proto": {
             "type": "string",
