@@ -104,12 +104,14 @@ func TestNodeRecordToNode(t *testing.T) {
 	didURI, wantKey := testDIDJWK(t)
 
 	rec := &NodeRecord{
-		MeshIP:       "10.200.0.5",
-		Hostname:     "myhost",
-		OS:           "linux",
-		Capabilities: []string{"relay"},
-		AllowedIPs:   []string{"192.168.1.0/24"},
-		AddedAt:      "2026-01-01T00:00:00Z",
+		MeshIP:     "10.200.0.5",
+		AllowedIPs: []string{"192.168.1.0/24"},
+		AddedAt:    "2026-01-01T00:00:00Z",
+		Info: &NodeInfoData{
+			Hostname:     "myhost",
+			OS:           "linux",
+			Capabilities: []string{"relay"},
+		},
 		Endpoints: []EndpointData{
 			{
 				PublicEndpoints: []PublicEndpoint{
@@ -174,7 +176,7 @@ func TestNodeRecordToNode(t *testing.T) {
 
 	t.Run("non-jwk DID yields empty key", func(t *testing.T) {
 		// nodeRecordToNode should not panic on a non-jwk DID.
-		rec2 := &NodeRecord{MeshIP: "10.200.0.6", Hostname: "other"}
+		rec2 := &NodeRecord{MeshIP: "10.200.0.6", Info: &NodeInfoData{Hostname: "other"}}
 		node2 := nodeRecordToNodeWithThreshold(99, "did:web:example.com", rec2, DefaultPeerStaleThreshold, now)
 		if node2.Key != "" {
 			t.Errorf("expected empty Key for non-jwk DID, got %q", node2.Key)
@@ -284,7 +286,7 @@ func TestNodeOnlineStatus(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &NodeRecord{
 				MeshIP:    "10.200.0.5",
-				Hostname:  "peer",
+				Info:      &NodeInfoData{Hostname: "peer"},
 				Endpoints: tc.endpoints,
 			}
 

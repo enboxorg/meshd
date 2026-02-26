@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://enbox.org/schemas/wireguard-mesh/node-request",
+  "type": "object",
+  "required": ["nodeDID"],
+  "additionalProperties": false,
+  "properties": {
+    "nodeDID": {
+      "type": "string",
+      "description": "The DID of the device being proposed for network membership"
+    },
+    "sourceDWN": {
+      "type": "string",
+      "format": "uri",
+      "description": "The DWN endpoint where the device's authoritative records live (for cross-DWN scenarios)"
+    },
+    "label": {
+      "type": "string",
+      "maxLength": 128,
+      "description": "Optional label for the proposed device"
+    }
+  }
+}

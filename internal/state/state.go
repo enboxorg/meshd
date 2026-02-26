@@ -69,6 +69,15 @@ type NetworkState struct {
 	// NodeDateCreated is the dateCreated timestamp from the initial
 	// node record write. Required for updates because dateCreated is immutable.
 	NodeDateCreated string `json:"nodeDateCreated,omitempty"`
+
+	// MemberRecordID is the record ID of this node's member record, if
+	// the node was added as a member-associated device (network/member/node).
+	// Empty for owner-provisioned devices (network/node).
+	MemberRecordID string `json:"memberRecordId,omitempty"`
+
+	// MemberDateCreated is the dateCreated timestamp from the member
+	// record write. Required for updates because dateCreated is immutable.
+	MemberDateCreated string `json:"memberDateCreated,omitempty"`
 }
 
 const networkFile = "network.json"

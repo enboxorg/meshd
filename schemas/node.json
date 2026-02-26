@@ -7,25 +7,7 @@
   "properties": {
     "meshIP": {
       "type": "string",
-      "description": "Allocated IP within the meshCIDR, e.g. 100.64.0.5"
-    },
-    "hostname": {
-      "type": "string",
-      "maxLength": 253,
-      "description": "Machine hostname"
-    },
-    "os": {
-      "type": "string",
-      "enum": ["linux", "darwin", "windows", "freebsd", "android", "ios"],
-      "description": "Operating system"
-    },
-    "capabilities": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "enum": ["subnet-router", "exit-node", "relay", "dns"]
-      },
-      "description": "Capabilities this node advertises"
+      "description": "Allocated IP within the meshCIDR, e.g. 10.200.0.5"
     },
     "allowedIPs": {
       "type": "array",
@@ -41,6 +23,11 @@
       "type": "string",
       "maxLength": 128,
       "description": "Human-readable label for this node"
+    },
+    "sourceDWN": {
+      "type": "string",
+      "format": "uri",
+      "description": "The DWN endpoint where the device's authoritative records live (for cross-DWN member devices)"
     }
   }
 }

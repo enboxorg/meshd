@@ -170,11 +170,11 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            nodeA.DID.URI,
 		NetworkRecordID:      networkRecordID,
-		SelfDID:              nodeA.DID.URI,
+		NodeDID:              nodeA.DID.URI,
 		Signer:               nodeA.Signer,
 		EncryptionKeyManager: nodeA.EncMgr,
 		MeshIP:               meshIPA.String(),
-		Hostname:             "node-a",
+		Label:                "node-a",
 	})
 	if err != nil {
 		t.Fatalf("registering node A: %v", err)
@@ -194,11 +194,10 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            nodeA.DID.URI,
 		NetworkRecordID:      networkRecordID,
-		SelfDID:              nodeB.DID.URI,
+		NodeDID:              nodeB.DID.URI,
 		Signer:               nodeA.Signer,
 		EncryptionKeyManager: nodeA.EncMgr,
 		MeshIP:               meshIPB.String(),
-		Hostname:             "node-b",
 		Label:                "node-b",
 	})
 	if err != nil {
