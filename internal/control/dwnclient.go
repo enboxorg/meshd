@@ -14,6 +14,7 @@ import (
 
 	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/pkg/dids/didjwk"
 )
 
 // DefaultPeerStaleThreshold is the duration after which a peer is considered
@@ -90,10 +91,9 @@ type DWNClient struct {
 	resolver        Resolver
 	encManager      *dwncrypto.EncryptionKeyManager
 
-	mu      sync.RWMutex
+	mu     sync.RWMutex
 	network *NetworkConfig
-	members map[string]*MemberInfo
-	nodes   map[string]*NodeInfoData
+	nodes   map[string]*NodeRecord
 	relays  []*RelayData
 	acl     *ACLPolicyData
 
@@ -127,8 +127,7 @@ func NewDWNClient(
 		onUpdate:        options.onUpdate,
 		resolver:        options.resolver,
 		encManager:      options.encManager,
-		members:         make(map[string]*MemberInfo),
-		nodes:           make(map[string]*NodeInfoData),
+		nodes:           make(map[string]*NodeRecord),
 		peerEndpoints:   make(map[string]*PeerEndpointInfo),
 	}
 }
@@ -143,7 +142,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 
 	netResp, err := c.anchorDWN.RecordsRead(ctx, c.anchorTenant, dwn.RecordsFilter{
 		RecordID: c.networkRecordID,
-	}, "network/member")
+	}, "network/node")
 	if err != nil {
 		return nil, fmt.Errorf("reading network: %w", err)
 	}
@@ -166,61 +165,14 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	c.network = &network
 	c.mu.Unlock()
 
-	// 2. Query members.
-	c.logger.DebugContext(ctx, "querying members")
+	// 2. Query node records (replaces separate member + nodeInfo queries).
+	c.logger.DebugContext(ctx, "querying nodes")
 
-	membersResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
-		Protocol:     ProtocolMesh,
-		ProtocolPath: "network/member",
-		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, "network/member")
-	if err != nil {
-		return nil, fmt.Errorf("querying members: %w", err)
-	}
-
-	entries, err := dwn.QueryResult(membersResp)
-	if err != nil {
-		return nil, fmt.Errorf("parsing members: %w", err)
-	}
-
-	memberDecryptor := c.makeDecryptor("network/member")
-	c.mu.Lock()
-	for _, entry := range entries {
-		// Extract DID from descriptor metadata (not encrypted).
-		meta := extractEntryMetadata(entry)
-		memberDID := meta.Recipient // member records use recipient as the member DID
-
-		var member MemberInfo
-		if err := parseEntryData(entry, &member, memberDecryptor); err != nil {
-			c.logger.DebugContext(ctx, "parsing member entry",
-				slog.Any("error", err),
-				slog.String("memberDID", memberDID),
-			)
-			// Even if we can't decrypt the data, we can still track the member
-			// by DID from the unencrypted descriptor fields.
-			if memberDID != "" {
-				member.DID = memberDID
-				member.RecordID = meta.RecordID
-				c.members[memberDID] = &member
-			}
-			continue
-		}
-		member.DID = memberDID
-		member.RecordID = meta.RecordID
-		if memberDID != "" {
-			c.members[memberDID] = &member
-		}
-	}
-	c.mu.Unlock()
-
-	c.logger.DebugContext(ctx, "loaded members", slog.Int("count", len(entries)))
-
-	// 3. Query nodeInfo records.
 	nodesResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     ProtocolMesh,
-		ProtocolPath: "network/nodeInfo",
+		ProtocolPath: "network/node",
 		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, "network/member")
+	}, "createdAscending", nil, "network/node")
 	if err != nil {
 		return nil, fmt.Errorf("querying nodes: %w", err)
 	}
@@ -230,25 +182,22 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		return nil, fmt.Errorf("parsing nodes: %w", err)
 	}
 
-	nodeDecryptor := c.makeDecryptor("network/nodeInfo")
+	nodeDecryptor := c.makeDecryptor("network/node")
 	c.mu.Lock()
 	for _, entry := range nodeEntries {
-		// Extract DID from descriptor tags (not encrypted).
+		// DID comes from the recipient descriptor field (not tags — tags removed).
 		meta := extractEntryMetadata(entry)
-		nodeDID := ""
-		if did, ok := meta.Tags["did"].(string); ok {
-			nodeDID = did
-		}
+		nodeDID := meta.Recipient
 
-		var node NodeInfoData
+		var node NodeRecord
 		if err := parseEntryData(entry, &node, nodeDecryptor); err != nil {
 			c.logger.DebugContext(ctx, "parsing node entry",
 				slog.Any("error", err),
 				slog.String("nodeDID", nodeDID),
 			)
 			// Even if we can't decrypt the data payload, track the node DID
-			// from the unencrypted tags. This allows peer discovery and auto
-			// key delivery to work even before context key exchange completes.
+			// from the unencrypted recipient field. This allows peer discovery
+			// and auto key delivery to work even before context key exchange.
 			if nodeDID != "" {
 				node.DID = nodeDID
 				node.RecordID = meta.RecordID
@@ -266,12 +215,12 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 
 	c.logger.DebugContext(ctx, "loaded nodes", slog.Int("count", len(nodeEntries)))
 
-	// 4. Query relay records.
+	// 3. Query relay records.
 	relayResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     ProtocolMesh,
 		ProtocolPath: "network/relay",
 		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, "network/member")
+	}, "createdAscending", nil, "network/node")
 	if err != nil {
 		return nil, fmt.Errorf("querying relays: %w", err)
 	}
@@ -293,15 +242,15 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	}
 	c.mu.Unlock()
 
-	// 5. Query endpoint records for each node.
-	// Endpoint records are children of nodeInfo records. We query all
+	// 4. Query endpoint records for each node.
+	// Endpoint records are children of node records. We query all
 	// endpoint records in the network context and attach them to their
-	// parent nodeInfo via the parentId descriptor field.
+	// parent node via the parentId descriptor field.
 	endpointResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     ProtocolMesh,
-		ProtocolPath: "network/nodeInfo/endpoint",
+		ProtocolPath: "network/node/endpoint",
 		ContextID:    c.networkRecordID,
-	}, "createdDescending", nil, "network/member")
+	}, "createdDescending", nil, "network/node")
 	if err != nil {
 		// Non-fatal: endpoints are optional. Log and continue.
 		c.logger.DebugContext(ctx, "querying endpoints failed", slog.Any("error", err))
@@ -310,7 +259,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		if err != nil {
 			c.logger.DebugContext(ctx, "parsing endpoint results", slog.Any("error", err))
 		} else {
-			endpointDecryptor := c.makeDecryptor("network/nodeInfo/endpoint")
+			endpointDecryptor := c.makeDecryptor("network/node/endpoint")
 			c.mu.Lock()
 			for _, entry := range endpointEntries {
 				meta := extractEntryMetadata(entry)
@@ -320,7 +269,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 					continue
 				}
 
-				// Find the parent nodeInfo by matching the parentId from
+				// Find the parent node by matching the parentId from
 				// the endpoint's descriptor to a node's recordID.
 				parentID := meta.ParentID
 				for _, node := range c.nodes {
@@ -338,7 +287,6 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 
 	c.logger.DebugContext(ctx, "mesh state loaded",
 		slog.String("network", network.Name),
-		slog.Int("members", len(c.members)),
 		slog.Int("nodes", len(c.nodes)),
 		slog.Int("relays", len(c.relays)),
 	)
@@ -410,8 +358,8 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 
 	var nodeID int64 = 1
 	for _, did := range dids {
-		nodeInfo := c.nodes[did]
-		node := nodeInfoToNode(nodeID, did, nodeInfo)
+		rec := c.nodes[did]
+		node := nodeRecordToNode(nodeID, did, rec)
 		nodeID++
 
 		if did == c.selfDID {
@@ -430,31 +378,38 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 	return resp
 }
 
-func nodeInfoToNode(id int64, did string, info *NodeInfoData) *Node {
-	return nodeInfoToNodeWithThreshold(id, did, info, DefaultPeerStaleThreshold, time.Now())
+func nodeRecordToNode(id int64, did string, rec *NodeRecord) *Node {
+	return nodeRecordToNodeWithThreshold(id, did, rec, DefaultPeerStaleThreshold, time.Now())
 }
 
-// nodeInfoToNodeWithThreshold converts a NodeInfoData to a Node, using the
+// nodeRecordToNodeWithThreshold converts a NodeRecord to a Node, using the
 // given staleness threshold and reference time. The reference time is passed
 // as a parameter (instead of calling time.Now()) to make the function
 // deterministically testable.
-func nodeInfoToNodeWithThreshold(id int64, did string, info *NodeInfoData, staleThreshold time.Duration, now time.Time) *Node {
+//
+// The WireGuard public key is derived from the node's did:jwk identity
+// (Ed25519 → X25519 birational map). If derivation fails (e.g., non-jwk DID),
+// the Key field is left empty and logged.
+func nodeRecordToNodeWithThreshold(id int64, nodeDID string, rec *NodeRecord, staleThreshold time.Duration, now time.Time) *Node {
 	node := &Node{
 		ID:           id,
-		Name:         info.Hostname,
-		DID:          did,
-		Key:          info.WireGuardPublicKey,
-		DiscoKey:     info.DiscoKey,
-		OS:           info.OS,
-		Capabilities: info.Capabilities,
+		Name:         rec.Hostname,
+		DID:          nodeDID,
+		OS:           rec.OS,
+		Capabilities: rec.Capabilities,
 	}
 
-	if ip, err := netip.ParseAddr(info.MeshIP); err == nil {
+	// Derive WireGuard public key from did:jwk.
+	if x25519Pub, err := didjwk.DeriveX25519PublicKey(nodeDID); err == nil {
+		node.Key = base64.StdEncoding.EncodeToString(x25519Pub)
+	}
+
+	if ip, err := netip.ParseAddr(rec.MeshIP); err == nil {
 		node.MeshIP = ip
 		node.AllowedIPs = []netip.Prefix{netip.PrefixFrom(ip, ip.BitLen())}
 	}
 
-	for _, cidr := range info.AllowedIPs {
+	for _, cidr := range rec.AllowedIPs {
 		if prefix, err := netip.ParsePrefix(cidr); err == nil {
 			node.AllowedIPs = append(node.AllowedIPs, prefix)
 		}
@@ -463,7 +418,7 @@ func nodeInfoToNodeWithThreshold(id int64, did string, info *NodeInfoData, stale
 	// Track the most recent endpoint update time to determine online status.
 	var lastSeen time.Time
 
-	for _, ep := range info.Endpoints {
+	for _, ep := range rec.Endpoints {
 		for _, pub := range ep.PublicEndpoints {
 			node.Endpoints = append(node.Endpoints, fmt.Sprintf("%s:%d", pub.Address, pub.Port))
 		}
@@ -471,8 +426,7 @@ func nodeInfoToNodeWithThreshold(id int64, did string, info *NodeInfoData, stale
 		if ep.PreferredDERP != 0 {
 			node.PreferredDERP = ep.PreferredDERP
 		}
-		// Endpoint records may carry a more recent disco key than
-		// the nodeInfo record. Use the latest non-empty disco key.
+		// Endpoint records may carry a disco key. Use the latest non-empty one.
 		if ep.DiscoKey != "" {
 			node.DiscoKey = ep.DiscoKey
 		}

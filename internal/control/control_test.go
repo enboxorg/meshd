@@ -9,13 +9,26 @@ import (
 	"time"
 
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/pkg/dids/didjwk"
 )
+
+// testDIDJWK creates a real did:jwk URI for testing.
+// Returns the URI and the expected base64-encoded WireGuard public key.
+func testDIDJWK(t *testing.T) (string, string) {
+	t.Helper()
+	id, err := didjwk.Create()
+	if err != nil {
+		t.Fatalf("creating did:jwk: %v", err)
+	}
+	wgKey := base64.StdEncoding.EncodeToString(id.X25519PublicKey)
+	return id.URI, wgKey
+}
 
 func TestBuildStaticMapResponse(t *testing.T) {
 	self := &Node{
 		ID:     1,
 		Name:   "laptop",
-		DID:    "did:dht:self123",
+		DID:    "did:jwk:test-self",
 		Key:    "AAAA==",
 		MeshIP: netip.MustParseAddr("10.200.0.2"),
 		AllowedIPs: []netip.Prefix{
@@ -28,7 +41,7 @@ func TestBuildStaticMapResponse(t *testing.T) {
 	peer := &Node{
 		ID:     2,
 		Name:   "server",
-		DID:    "did:dht:peer456",
+		DID:    "did:jwk:test-peer",
 		Key:    "BBBB==",
 		MeshIP: netip.MustParseAddr("10.200.0.3"),
 		AllowedIPs: []netip.Prefix{
@@ -84,17 +97,19 @@ func TestBuildStaticMapResponse(t *testing.T) {
 	})
 }
 
-func TestNodeInfoToNode(t *testing.T) {
+func TestNodeRecordToNode(t *testing.T) {
 	now := time.Now().UTC()
 	recentUpdate := now.Add(-2 * time.Minute).Format(time.RFC3339)
 
-	info := &NodeInfoData{
-		WireGuardPublicKey: "testkey==",
-		MeshIP:             "10.200.0.5",
-		Hostname:           "myhost",
-		OS:                 "linux",
-		Capabilities:       []string{"relay"},
-		AllowedIPs:         []string{"192.168.1.0/24"},
+	didURI, wantKey := testDIDJWK(t)
+
+	rec := &NodeRecord{
+		MeshIP:       "10.200.0.5",
+		Hostname:     "myhost",
+		OS:           "linux",
+		Capabilities: []string{"relay"},
+		AllowedIPs:   []string{"192.168.1.0/24"},
+		AddedAt:      "2026-01-01T00:00:00Z",
 		Endpoints: []EndpointData{
 			{
 				PublicEndpoints: []PublicEndpoint{
@@ -107,15 +122,15 @@ func TestNodeInfoToNode(t *testing.T) {
 		},
 	}
 
-	node := nodeInfoToNodeWithThreshold(42, "did:dht:test", info, DefaultPeerStaleThreshold, now)
+	node := nodeRecordToNodeWithThreshold(42, didURI, rec, DefaultPeerStaleThreshold, now)
 
 	tests := map[string]struct {
 		got  any
 		want any
 	}{
 		"ID":            {got: node.ID, want: int64(42)},
-		"DID":           {got: node.DID, want: "did:dht:test"},
-		"Key":           {got: node.Key, want: "testkey=="},
+		"DID":           {got: node.DID, want: didURI},
+		"Key":           {got: node.Key, want: wantKey},
 		"MeshIP":        {got: node.MeshIP, want: netip.MustParseAddr("10.200.0.5")},
 		"Name":          {got: node.Name, want: "myhost"},
 		"PreferredDERP": {got: node.PreferredDERP, want: 2},
@@ -156,11 +171,22 @@ func TestNodeInfoToNode(t *testing.T) {
 			t.Errorf("[1] = %q", node.Endpoints[1])
 		}
 	})
+
+	t.Run("non-jwk DID yields empty key", func(t *testing.T) {
+		// nodeRecordToNode should not panic on a non-jwk DID.
+		rec2 := &NodeRecord{MeshIP: "10.200.0.6", Hostname: "other"}
+		node2 := nodeRecordToNodeWithThreshold(99, "did:web:example.com", rec2, DefaultPeerStaleThreshold, now)
+		if node2.Key != "" {
+			t.Errorf("expected empty Key for non-jwk DID, got %q", node2.Key)
+		}
+	})
 }
 
 func TestNodeOnlineStatus(t *testing.T) {
 	now := time.Date(2026, 2, 25, 12, 0, 0, 0, time.UTC)
 	threshold := 5 * time.Minute
+
+	didURI, _ := testDIDJWK(t)
 
 	tests := []struct {
 		name       string
@@ -256,14 +282,13 @@ func TestNodeOnlineStatus(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			info := &NodeInfoData{
-				WireGuardPublicKey: "testkey==",
-				MeshIP:             "10.200.0.5",
-				Hostname:           "peer",
-				Endpoints:          tc.endpoints,
+			rec := &NodeRecord{
+				MeshIP:    "10.200.0.5",
+				Hostname:  "peer",
+				Endpoints: tc.endpoints,
 			}
 
-			node := nodeInfoToNodeWithThreshold(1, "did:dht:test", info, threshold, now)
+			node := nodeRecordToNodeWithThreshold(1, didURI, rec, threshold, now)
 
 			if node.Online != tc.wantOnline {
 				t.Errorf("Online = %v, want %v", node.Online, tc.wantOnline)
@@ -360,7 +385,7 @@ func TestDefaultFilterRules(t *testing.T) {
 }
 
 func TestExtractEntryMetadata(t *testing.T) {
-	t.Run("wrapped format with tags and recipient", func(t *testing.T) {
+	t.Run("wrapped format with recipient", func(t *testing.T) {
 		entry := json.RawMessage(`{
 			"recordsWrite": {
 				"recordId": "bafyreiabc123",
@@ -368,13 +393,8 @@ func TestExtractEntryMetadata(t *testing.T) {
 					"interface": "Records",
 					"method": "Write",
 					"protocol": "https://enbox.org/protocols/wireguard-mesh",
-					"protocolPath": "network/nodeInfo",
-					"recipient": "did:dht:anchor123",
-					"tags": {
-						"did": "did:dht:node456",
-						"hostname": "myhost",
-						"os": "linux"
-					}
+					"protocolPath": "network/node",
+					"recipient": "did:jwk:node456"
 				},
 				"encodedData": "dGVzdA"
 			}
@@ -385,11 +405,8 @@ func TestExtractEntryMetadata(t *testing.T) {
 		if meta.RecordID != "bafyreiabc123" {
 			t.Errorf("RecordID = %q, want %q", meta.RecordID, "bafyreiabc123")
 		}
-		if meta.Recipient != "did:dht:anchor123" {
-			t.Errorf("Recipient = %q, want %q", meta.Recipient, "did:dht:anchor123")
-		}
-		if did, ok := meta.Tags["did"].(string); !ok || did != "did:dht:node456" {
-			t.Errorf("Tags[did] = %v, want %q", meta.Tags["did"], "did:dht:node456")
+		if meta.Recipient != "did:jwk:node456" {
+			t.Errorf("Recipient = %q, want %q", meta.Recipient, "did:jwk:node456")
 		}
 	})
 
@@ -397,8 +414,7 @@ func TestExtractEntryMetadata(t *testing.T) {
 		entry := json.RawMessage(`{
 			"recordId": "bafyreiflat",
 			"descriptor": {
-				"recipient": "did:dht:member789",
-				"tags": {"did": "did:dht:member789"}
+				"recipient": "did:jwk:node789"
 			}
 		}`)
 
@@ -407,8 +423,8 @@ func TestExtractEntryMetadata(t *testing.T) {
 		if meta.RecordID != "bafyreiflat" {
 			t.Errorf("RecordID = %q, want %q", meta.RecordID, "bafyreiflat")
 		}
-		if meta.Recipient != "did:dht:member789" {
-			t.Errorf("Recipient = %q, want %q", meta.Recipient, "did:dht:member789")
+		if meta.Recipient != "did:jwk:node789" {
+			t.Errorf("Recipient = %q, want %q", meta.Recipient, "did:jwk:node789")
 		}
 	})
 
@@ -517,7 +533,7 @@ func TestParseEntryData(t *testing.T) {
 			ProtocolURI:    "https://example.com/proto",
 		}
 
-		recipients, err := mgr.DeriveWriteEncryption("network/member")
+		recipients, err := mgr.DeriveWriteEncryption("network/node")
 		if err != nil {
 			t.Fatalf("deriving encryption: %v", err)
 		}
@@ -536,7 +552,7 @@ func TestParseEntryData(t *testing.T) {
 
 		// Decrypt using the key manager.
 		decryptor := func(ct []byte, e *dwncrypto.Encryption) ([]byte, error) {
-			privKey, err := mgr.DeriveDecryptionKey("network/member")
+			privKey, err := mgr.DeriveDecryptionKey("network/node")
 			if err != nil {
 				return nil, err
 			}
