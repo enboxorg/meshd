@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -541,23 +542,27 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		fmt.Printf("    meshd peer add %s\n", identity.URI)
 	}
 
-	// Write nodeInfo if we have a node record (so the network sees our hostname/OS).
+	// Fetch and persist context key if available.
+	var contextKeyB64 string
+	useContextEnc := false
 	if nodeRecordID != "" {
-		// Fetch context key if available for encryption.
 		contextKey, ckErr := fetchContextKey(ctx, identity, &state.NetworkState{
 			AnchorEndpoint:  endpoint,
 			AnchorDID:       anchorDID,
 			NetworkRecordID: networkID,
 		})
-		useContextEnc := false
 		if ckErr == nil && contextKey != nil {
 			privBytes, pbErr := contextKey.PrivateKeyBytes()
 			if pbErr == nil {
 				encMgr.StoreContextKey(networkID, privBytes)
+				contextKeyB64 = base64.StdEncoding.EncodeToString(privBytes)
 				useContextEnc = true
 			}
 		}
+	}
 
+	// Write nodeInfo if we have a node record (so the network sees our hostname/OS).
+	if nodeRecordID != "" {
 		// Determine protocol role for the nodeInfo write.
 		nodeInfoRole := "network/node"
 		if memberRecordID != "" {
@@ -581,7 +586,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		}
 	}
 
-	// Save network state locally.
+	// Save network state locally (including context key for offline resilience).
 	ns := &state.NetworkState{
 		NetworkRecordID: networkID,
 		AnchorDID:       anchorDID,
@@ -592,6 +597,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		NodeRecordID:    nodeRecordID,
 		NodeDateCreated: nodeDateCreated,
 		MemberRecordID:  memberRecordID,
+		ContextKey:      contextKeyB64,
 	}
 	if err := state.SaveNetworkState(stateDir, ns); err != nil {
 		return fmt.Errorf("saving network state: %w", err)
@@ -1133,22 +1139,45 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		// derives the context key from the root key automatically.
 		useContextEncryption = true
 	} else {
-		contextKey, err := fetchContextKey(ctx, identity, ns)
-		if err != nil {
-			slog.Warn("context key fetch failed (will retry on next up)",
-				slog.Any("error", err),
-			)
-		} else if contextKey != nil {
-			privBytes, err := contextKey.PrivateKeyBytes()
-			if err != nil {
-				return fmt.Errorf("extracting context key bytes: %w", err)
+		// Try cached context key first (survives DWN outages at startup).
+		if ns.ContextKey != "" {
+			privBytes, err := base64.StdEncoding.DecodeString(ns.ContextKey)
+			if err == nil {
+				encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
+				useContextEncryption = true
+				fmt.Printf("  Context key: loaded from cache\n")
+			} else {
+				slog.Warn("cached context key decode failed, will fetch from DWN",
+					slog.Any("error", err),
+				)
 			}
-			encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
-			useContextEncryption = true
-			fmt.Printf("  Context key: received (Protocol Context encryption enabled)\n")
-		} else {
-			fmt.Printf("  Context key: not yet delivered (run 'peer approve' on anchor)\n")
-			fmt.Printf("  Records will be written with Protocol Path encryption.\n")
+		}
+
+		// Fall back to DWN fetch if not cached.
+		if !useContextEncryption {
+			contextKey, err := fetchContextKey(ctx, identity, ns)
+			if err != nil {
+				slog.Warn("context key fetch failed (will retry on next up)",
+					slog.Any("error", err),
+				)
+			} else if contextKey != nil {
+				privBytes, err := contextKey.PrivateKeyBytes()
+				if err != nil {
+					return fmt.Errorf("extracting context key bytes: %w", err)
+				}
+				encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
+				useContextEncryption = true
+
+				// Persist for next startup.
+				ns.ContextKey = base64.StdEncoding.EncodeToString(privBytes)
+				if saveErr := state.SaveNetworkState(stateDir, ns); saveErr != nil {
+					slog.Warn("failed to persist context key", slog.Any("error", saveErr))
+				}
+				fmt.Printf("  Context key: received (Protocol Context encryption enabled)\n")
+			} else {
+				fmt.Printf("  Context key: not yet delivered (run 'peer approve' on anchor)\n")
+				fmt.Printf("  Records will be written with Protocol Path encryption.\n")
+			}
 		}
 	}
 
@@ -1163,41 +1192,6 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	fmt.Printf("  DID: %s\n", identity.URI)
 	fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
 	fmt.Printf("  Anchor: %s\n", ns.AnchorEndpoint)
-
-	// If we have a context key, re-register node with Protocol Context
-	// encryption. The initial registration during "network join" used Protocol
-	// Path encryption (our own key) which the anchor can't decrypt. Re-writing
-	// with Protocol Context encryption allows the anchor to read our node record.
-	// This is a RecordsWrite update (same recordId, preserved dateCreated).
-	if useContextEncryption && ns.NodeRecordID != "" {
-		reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
-			AnchorEndpoint:       ns.AnchorEndpoint,
-			AnchorDID:            ns.AnchorDID,
-			NetworkRecordID:      ns.NetworkRecordID,
-			MemberRecordID:       ns.MemberRecordID,
-			NodeDID:              identity.URI,
-			Signer:               signer,
-			EncryptionKeyManager: encMgr,
-			MeshIP:               ns.MeshIP,
-			UseContextEncryption: true,
-			ExistingNodeRecordID: ns.NodeRecordID,
-			ExistingDateCreated:  ns.NodeDateCreated,
-		})
-		if err != nil {
-			logger.Warn("node re-registration with context encryption failed",
-				slog.Any("error", err),
-			)
-		} else {
-			// Update state — recordId stays the same for updates, but store dateCreated.
-			if reg.NodeRecordID != "" {
-				ns.NodeRecordID = reg.NodeRecordID
-			}
-			if reg.DateCreated != "" {
-				ns.NodeDateCreated = reg.DateCreated
-			}
-			fmt.Printf("  Node re-encrypted with context key.\n")
-		}
-	}
 
 	// Write/update endpoint record (encrypted) before starting the engine.
 	if ns.NodeRecordID != "" {
@@ -1876,17 +1870,34 @@ func cmdACLShow(ctx context.Context, args []string, flagProfile string) error {
 	}
 	encMgr := newEncryptionKeyManager(identity)
 
-	// Fetch context key if available (non-anchor nodes need this for decryption).
-	contextKey, err := fetchContextKey(ctx, identity, ns)
-	if err != nil {
-		fmt.Printf("  Warning: context key fetch failed: %v\n", err)
-	}
-	if contextKey != nil {
-		privBytes, err := contextKey.PrivateKeyBytes()
-		if err != nil {
-			return fmt.Errorf("extracting context key bytes: %w", err)
+	// Load context key for decryption. Try cached key first, then DWN fetch.
+	if ns.AnchorDID != identity.URI {
+		contextKeyLoaded := false
+		if ns.ContextKey != "" {
+			privBytes, decErr := base64.StdEncoding.DecodeString(ns.ContextKey)
+			if decErr == nil {
+				encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
+				contextKeyLoaded = true
+			}
 		}
-		encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
+		if !contextKeyLoaded {
+			contextKey, ckErr := fetchContextKey(ctx, identity, ns)
+			if ckErr != nil {
+				fmt.Printf("  Warning: context key fetch failed: %v\n", ckErr)
+			} else if contextKey != nil {
+				privBytes, pbErr := contextKey.PrivateKeyBytes()
+				if pbErr != nil {
+					return fmt.Errorf("extracting context key bytes: %w", pbErr)
+				}
+				encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
+
+				// Persist for next time.
+				ns.ContextKey = base64.StdEncoding.EncodeToString(privBytes)
+				if saveErr := state.SaveNetworkState(stateDir, ns); saveErr != nil {
+					fmt.Printf("  Warning: failed to persist context key: %v\n", saveErr)
+				}
+			}
+		}
 	}
 
 	// Determine protocol role for queries.

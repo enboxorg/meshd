@@ -78,6 +78,15 @@ type NetworkState struct {
 	// MemberDateCreated is the dateCreated timestamp from the member
 	// record write. Required for updates because dateCreated is immutable.
 	MemberDateCreated string `json:"memberDateCreated,omitempty"`
+
+	// ContextKey is the Protocol Context encryption key (base64-encoded
+	// X25519 private key). Persisted so the mesh survives DWN outages
+	// at startup — if the anchor's DWN is unreachable, the node can
+	// still encrypt/decrypt records using the cached key.
+	//
+	// For the anchor, this is empty — the anchor derives the context key
+	// from its root key via HKDF on every startup.
+	ContextKey string `json:"contextKey,omitempty"`
 }
 
 const networkFile = "network.json"
