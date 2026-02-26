@@ -184,6 +184,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 
 	nodeDecryptor := c.makeDecryptor("network/node")
 	c.mu.Lock()
+	clear(c.nodes) // Clear stale nodes before repopulating.
 	for _, entry := range nodeEntries {
 		// DID comes from the recipient descriptor field (not tags — tags removed).
 		meta := extractEntryMetadata(entry)
@@ -232,6 +233,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 
 	relayDecryptor := c.makeDecryptor("network/relay")
 	c.mu.Lock()
+	c.relays = nil // Clear stale relays before repopulating.
 	for _, entry := range relayEntries {
 		var relay RelayData
 		if err := parseEntryData(entry, &relay, relayDecryptor); err != nil {
@@ -324,7 +326,11 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		slog.Bool("aclPolicy", hasACL),
 	)
 
-	return c.buildMapResponse(), nil
+	resp := c.buildMapResponse()
+	if resp == nil {
+		return nil, fmt.Errorf("self DID %q not found in network node records", c.selfDID)
+	}
+	return resp, nil
 }
 
 // ACLPolicy returns the loaded ACL policy, or nil if none is configured.
@@ -407,6 +413,12 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 		} else {
 			resp.Peers = append(resp.Peers, node)
 		}
+	}
+
+	if resp.Node == nil {
+		// Self DID not found in nodes map. This can happen if our node
+		// record hasn't been written yet or was removed by the anchor.
+		return nil
 	}
 
 	if c.acl != nil {

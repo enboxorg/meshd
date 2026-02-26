@@ -31,6 +31,7 @@ func AllocateMeshIP(cidr string, didURI string) (netip.Addr, error) {
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("parsing CIDR %q: %w", cidr, err)
 	}
+	prefix = prefix.Masked() // Canonicalize: zero host bits in the base address.
 
 	if !prefix.Addr().Is4() {
 		return netip.Addr{}, fmt.Errorf("only IPv4 CIDRs are supported, got %s", cidr)
