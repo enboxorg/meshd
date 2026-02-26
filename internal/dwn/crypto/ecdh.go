@@ -156,12 +156,14 @@ func ECDHESWrapKey(recipientPublicKey, cek []byte) (ephemeralPublicKey, wrappedK
 	if err != nil {
 		return nil, nil, fmt.Errorf("generating ephemeral key: %w", err)
 	}
+	defer clear(ephPriv) // Zero ephemeral private key after use.
 
 	// 2. Compute ECDH shared secret.
 	sharedSecret, err := X25519SharedSecret(ephPriv, recipientPublicKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("computing shared secret: %w", err)
 	}
+	defer clear(sharedSecret) // Zero shared secret after use.
 
 	// 3. Derive KEK via Concat KDF (RFC 7518 Section 4.6.2).
 	kek, err := ConcatKDF(sharedSecret, 256, ConcatKDFParams{
@@ -173,6 +175,7 @@ func ECDHESWrapKey(recipientPublicKey, cek []byte) (ephemeralPublicKey, wrappedK
 	if err != nil {
 		return nil, nil, fmt.Errorf("deriving KEK: %w", err)
 	}
+	defer clear(kek) // Zero KEK after use.
 
 	// 4. AES-256 Key Wrap.
 	wrapped, err := AESKeyWrap(kek, cek)
@@ -195,6 +198,7 @@ func ECDHESUnwrapKey(recipientPrivateKey, ephemeralPublicKey, wrappedKey []byte)
 	if err != nil {
 		return nil, fmt.Errorf("computing shared secret: %w", err)
 	}
+	defer clear(sharedSecret) // Zero shared secret after use.
 
 	// 2. Derive KEK via Concat KDF.
 	kek, err := ConcatKDF(sharedSecret, 256, ConcatKDFParams{
@@ -206,6 +210,7 @@ func ECDHESUnwrapKey(recipientPrivateKey, ephemeralPublicKey, wrappedKey []byte)
 	if err != nil {
 		return nil, fmt.Errorf("deriving KEK: %w", err)
 	}
+	defer clear(kek) // Zero KEK after use.
 
 	// 3. AES-256 Key Unwrap.
 	cek, err := AESKeyUnwrap(kek, wrappedKey)
