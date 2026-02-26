@@ -117,10 +117,9 @@ type Config struct {
 	// have the context key stored (via StoreContextKey) for NetworkRecordID.
 	UseContextEncryption bool
 
-	// WireGuardPrivateKey is the raw 32-byte Curve25519 private key that was
-	// published to DWN records. If set, the engine will use this key instead
-	// of generating a new one, ensuring the engine's WireGuard identity
-	// matches what peers see in DWN records.
+	// WireGuardPrivateKey is the raw 32-byte X25519 private key derived from
+	// the node's did:jwk identity. The engine uses this key for WireGuard,
+	// so peers can derive the matching public key from the node's DID.
 	WireGuardPrivateKey [32]byte
 
 	// DiscoKeyRegistry enables disco key exchange between engines. In normal

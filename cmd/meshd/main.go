@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -334,10 +333,10 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 		fmt.Printf("  Created admin member record (encrypted).\n")
 	}
 
-	// 5. Generate WireGuard keys and allocate mesh IP.
-	wgKeys, err := mesh.GenerateWireGuardKeyPair()
+	// 5. Derive WireGuard keys from identity and allocate mesh IP.
+	wgKeys, err := mesh.WireGuardKeyFromIdentity(identity.EncryptionPrivateKey)
 	if err != nil {
-		return fmt.Errorf("generating WireGuard keys: %w", err)
+		return fmt.Errorf("deriving WireGuard keys: %w", err)
 	}
 
 	meshIP, err := mesh.AllocateMeshIP(meshCIDR, identity.URI)
@@ -364,14 +363,12 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 
 	// 7. Persist network state.
 	ns := &state.NetworkState{
-		NetworkRecordID:     record.ID,
-		AnchorDID:           identity.URI,
-		AnchorEndpoint:      endpoint,
-		NetworkName:         name,
-		MeshCIDR:            meshCIDR,
-		MeshIP:              meshIP.String(),
-		WireGuardPublicKey:  wgKeys.PublicKeyBase64(),
-		WireGuardPrivateKey: wgKeys.PrivateKeyBase64(),
+		NetworkRecordID: record.ID,
+		AnchorDID:       identity.URI,
+		AnchorEndpoint:  endpoint,
+		NetworkName:     name,
+		MeshCIDR:        meshCIDR,
+		MeshIP:          meshIP.String(),
 	}
 	if reg != nil {
 		ns.NodeInfoRecordID = reg.NodeInfoRecordID
@@ -465,10 +462,10 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		networkData.MeshCIDR = "10.200.0.0/16"
 	}
 
-	// Generate WireGuard keys and allocate mesh IP.
-	wgKeys, err := mesh.GenerateWireGuardKeyPair()
+	// Derive WireGuard keys from identity and allocate mesh IP.
+	wgKeys, err := mesh.WireGuardKeyFromIdentity(identity.EncryptionPrivateKey)
 	if err != nil {
-		return fmt.Errorf("generating WireGuard keys: %w", err)
+		return fmt.Errorf("deriving WireGuard keys: %w", err)
 	}
 
 	meshIP, err := mesh.AllocateMeshIP(networkData.MeshCIDR, identity.URI)
@@ -530,8 +527,6 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		NetworkName:         networkData.Name,
 		MeshCIDR:            networkData.MeshCIDR,
 		MeshIP:              meshIP.String(),
-		WireGuardPublicKey:  wgKeys.PublicKeyBase64(),
-		WireGuardPrivateKey: wgKeys.PrivateKeyBase64(),
 		NodeInfoRecordID:    nodeInfoRecordID,
 		NodeInfoDateCreated: nodeInfoDateCreated,
 	}
@@ -849,8 +844,12 @@ func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 	if ns.MeshIP != "" {
 		fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
 	}
-	if ns.WireGuardPublicKey != "" {
-		fmt.Printf("  WireGuard Key: %s\n", ns.WireGuardPublicKey)
+	// WireGuard public key is derived from the identity, not stored.
+	if identity != nil {
+		wgPubKey, wgErr := mesh.WireGuardPubKeyFromDID(identity.URI)
+		if wgErr == nil {
+			fmt.Printf("  WireGuard Key: %s\n", wgPubKey)
+		}
 	}
 	if ns.NodeInfoRecordID != "" {
 		fmt.Printf("  NodeInfo Record: %s\n", ns.NodeInfoRecordID)
@@ -1053,6 +1052,13 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		}
 	}
 
+	// Derive WireGuard key pair from identity (no separate WG key generation).
+	wgKeys, err := mesh.WireGuardKeyFromIdentity(identity.EncryptionPrivateKey)
+	if err != nil {
+		return fmt.Errorf("deriving WireGuard keys from identity: %w", err)
+	}
+	wgPubKey := wgKeys.PublicKeyBase64()
+
 	fmt.Printf("Starting meshd...\n")
 	fmt.Printf("  Network: %s\n", ns.NetworkName)
 	fmt.Printf("  DID: %s\n", identity.URI)
@@ -1072,7 +1078,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 			SelfDID:                 identity.URI,
 			Signer:                  signer,
 			EncryptionKeyManager:    encMgr,
-			WireGuardPubKey:         ns.WireGuardPublicKey,
+			WireGuardPubKey:         wgPubKey,
 			MeshIP:                  ns.MeshIP,
 			ProtocolRole:            "network/member",
 			UseContextEncryption:    true,
@@ -1138,19 +1144,6 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		}
 	}
 
-	// Decode the WireGuard private key so the engine uses the same identity
-	// that was published to DWN records.
-	var wgPrivKey [32]byte
-	if ns.WireGuardPrivateKey != "" {
-		wgBytes, decErr := base64.StdEncoding.DecodeString(ns.WireGuardPrivateKey)
-		if decErr != nil {
-			return fmt.Errorf("decoding WireGuard private key: %w", decErr)
-		}
-		if len(wgBytes) == 32 {
-			copy(wgPrivKey[:], wgBytes)
-		}
-	}
-
 	eng, err := engine.New(engine.Config{
 		AnchorEndpoint:       ns.AnchorEndpoint,
 		AnchorTenant:         ns.AnchorDID,
@@ -1162,7 +1155,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		NodeInfoRecordID:     ns.NodeInfoRecordID,
 		AutoKeyDelivery:      autoKeyDelivery,
 		UseContextEncryption: useContextEncryption,
-		WireGuardPrivateKey:  wgPrivKey,
+		WireGuardPrivateKey:  wgKeys.PrivateKey,
 		TUNName:             f.tunName,
 		Domain:               ns.NetworkName,
 		ListenPort:           f.listenPort,

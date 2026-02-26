@@ -161,9 +161,9 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		t.Fatalf("admin member: %d %s", memberStatus.Code, memberStatus.Detail)
 	}
 
-	wgKeysA, err := mesh.GenerateWireGuardKeyPair()
+	wgKeysA, err := mesh.WireGuardKeyFromIdentity(nodeA.identity.EncryptionPrivateKey)
 	if err != nil {
-		t.Fatalf("generating WG keys for A: %v", err)
+		t.Fatalf("deriving WG keys for A: %v", err)
 	}
 	meshIPA, err := mesh.AllocateMeshIP(meshCIDR, nodeA.identity.URI)
 	if err != nil {
@@ -222,9 +222,9 @@ func TestTwoNodeConnectivity(t *testing.T) {
 	}
 	t.Log("  Node B member record created by Node A")
 
-	wgKeysB, err := mesh.GenerateWireGuardKeyPair()
+	wgKeysB, err := mesh.WireGuardKeyFromIdentity(nodeB.identity.EncryptionPrivateKey)
 	if err != nil {
-		t.Fatalf("generating WG keys for B: %v", err)
+		t.Fatalf("deriving WG keys for B: %v", err)
 	}
 	meshIPB, err := mesh.AllocateMeshIP(meshCIDR, nodeB.identity.URI)
 	if err != nil {
@@ -760,7 +760,7 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 	}
 
 	// Register both nodes (initial registration uses Protocol Path encryption).
-	wgA, _ := mesh.GenerateWireGuardKeyPair()
+	wgA, _ := mesh.WireGuardKeyFromIdentity(nodeA.identity.EncryptionPrivateKey)
 	ipA, _ := mesh.AllocateMeshIP(meshCIDR, nodeA.identity.URI)
 	regADisc, _ := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,
@@ -770,7 +770,7 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 		Hostname: "disc-a",
 	})
 
-	wgB, _ := mesh.GenerateWireGuardKeyPair()
+	wgB, _ := mesh.WireGuardKeyFromIdentity(nodeB.identity.EncryptionPrivateKey)
 	ipB, _ := mesh.AllocateMeshIP(meshCIDR, nodeB.identity.URI)
 	regBDisc, _ := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,

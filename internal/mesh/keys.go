@@ -3,12 +3,12 @@
 package mesh
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"io"
 
 	"golang.org/x/crypto/curve25519"
+
+	"github.com/enboxorg/meshd/pkg/dids/didjwk"
 )
 
 // WireGuardKeySize is the size of a WireGuard key in bytes (Curve25519 = 32).
@@ -20,49 +20,36 @@ type WireGuardKeyPair struct {
 	PublicKey  [WireGuardKeySize]byte
 }
 
-// GenerateWireGuardKeyPair generates a new random WireGuard Curve25519 key pair.
+// WireGuardKeyFromIdentity creates a WireGuard key pair from the node's
+// X25519 private key (already derived from Ed25519 by the identity layer).
 //
-// The private key is clamped per Curve25519 convention:
-//   - Bits 0-2 cleared (divisible by 8)
-//   - Bit 255 cleared
-//   - Bit 254 set
-func GenerateWireGuardKeyPair() (*WireGuardKeyPair, error) {
-	var priv [WireGuardKeySize]byte
-	if _, err := io.ReadFull(rand.Reader, priv[:]); err != nil {
-		return nil, fmt.Errorf("generating WireGuard private key: %w", err)
+// This is the primary way to get WireGuard keys — no random generation.
+// The X25519 private key comes from did.DID.EncryptionPrivateKey.
+func WireGuardKeyFromIdentity(x25519PrivateKey []byte) (*WireGuardKeyPair, error) {
+	if len(x25519PrivateKey) != WireGuardKeySize {
+		return nil, fmt.Errorf("X25519 private key must be %d bytes, got %d", WireGuardKeySize, len(x25519PrivateKey))
 	}
 
-	// Clamp per Curve25519 / WireGuard spec.
-	priv[0] &= 248
-	priv[31] &= 127
-	priv[31] |= 64
-
-	pub, err := curve25519.X25519(priv[:], curve25519.Basepoint)
+	pub, err := curve25519.X25519(x25519PrivateKey, curve25519.Basepoint)
 	if err != nil {
 		return nil, fmt.Errorf("deriving WireGuard public key: %w", err)
 	}
 
 	kp := &WireGuardKeyPair{}
-	copy(kp.PrivateKey[:], priv[:])
+	copy(kp.PrivateKey[:], x25519PrivateKey)
 	copy(kp.PublicKey[:], pub)
 	return kp, nil
 }
 
-// WireGuardKeyPairFromPrivate reconstructs a key pair from a private key.
-func WireGuardKeyPairFromPrivate(priv []byte) (*WireGuardKeyPair, error) {
-	if len(priv) != WireGuardKeySize {
-		return nil, fmt.Errorf("WireGuard private key must be %d bytes, got %d", WireGuardKeySize, len(priv))
-	}
-
-	pub, err := curve25519.X25519(priv, curve25519.Basepoint)
+// WireGuardPubKeyFromDID derives a WireGuard public key from a did:jwk URI.
+// This is how peers compute each other's WireGuard public keys without
+// needing a record field — the key is derivable from the DID itself.
+func WireGuardPubKeyFromDID(didJWKURI string) (string, error) {
+	x25519Pub, err := didjwk.DeriveX25519PublicKey(didJWKURI)
 	if err != nil {
-		return nil, fmt.Errorf("deriving WireGuard public key: %w", err)
+		return "", fmt.Errorf("deriving X25519 public key from DID: %w", err)
 	}
-
-	kp := &WireGuardKeyPair{}
-	copy(kp.PrivateKey[:], priv)
-	copy(kp.PublicKey[:], pub)
-	return kp, nil
+	return base64.StdEncoding.EncodeToString(x25519Pub), nil
 }
 
 // PublicKeyBase64 returns the public key as standard base64 (WireGuard convention).
