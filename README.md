@@ -1,25 +1,40 @@
 # meshd
 
+[![CI](https://github.com/enboxorg/meshd/actions/workflows/ci.yml/badge.svg)](https://github.com/enboxorg/meshd/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/enboxorg/meshd/graph/badge.svg)](https://codecov.io/gh/enboxorg/meshd)
+
 Mesh VPN with no accounts, no servers, no company.
 
-Your identity is a cryptographic key. Your devices coordinate directly.
+Your identity is a cryptographic key. Your devices coordinate through
+encrypted records on a [Decentralized Web Node](https://github.com/enboxorg/dwn-spec).
 Invite others with a single command. Everything is encrypted. Nothing to
 sign up for. Nothing to self-host. Nothing to trust.
 
-**Status:** Design phase. See [DESIGN.md](DESIGN.md) for the full design document.
+**Status:** Pre-release. The core engine works (WireGuard tunnels via DWN
+coordination), CLI is functional, and integration tests pass against a live
+DWN. See [DESIGN.md](DESIGN.md) for the full architecture.
 
-## Installation
-
-```bash
-curl -fsSL https://meshd.sh/install | bash
-```
-
-The installer works on Linux, macOS, and Windows (Git Bash/WSL). It installs
-the latest prebuilt `meshd` release binary.
+## Quick start
 
 ```bash
-# Manual install (if you prefer to run steps yourself)
-go install github.com/enboxorg/meshd/cmd/meshd@latest
+# On your first machine
+meshd up --create my-network --endpoint https://dwn.example.com
+# prints: Your device identity: did:jwk:eyJr...
+# prints: Network "my-network" created. Mesh IP: 10.200.x.x
+# prints: To add a peer: meshd peer add <their-did>
+
+# On your second machine
+meshd init
+# prints: Your device identity: did:jwk:eyJr...
+
+# Back on the first machine, add the second
+meshd peer add did:jwk:eyJr...
+
+# On the second machine, join and start
+meshd up --endpoint https://dwn.example.com --anchor <first-did> --network <network-id>
+
+# That's it. The machines can reach each other at 10.200.x.x
+# through encrypted WireGuard tunnels. NAT traversal is automatic.
 ```
 
 ## What is this?
@@ -30,29 +45,7 @@ other, exchange keys, and establish encrypted tunnels -- all coordinated
 through cryptographically signed records on a
 [Decentralized Web Node](https://github.com/enboxorg/dwn-spec).
 
-You don't need to know what that means. `meshd init` handles everything.
-
-## Quick start (planned)
-
-```bash
-# On your first machine
-meshd init
-meshd network create --name "my-network"
-
-# On your second machine
-meshd init
-# prints: Your device identity: did:dht:k5f8...
-
-# Back on the first machine, add the second
-meshd peer add did:dht:k5f8...
-
-# On the second machine, join
-meshd network join did:dht:abc1... <network-id>
-meshd up
-
-# That's it. The machines can reach each other at 100.64.0.x
-# through encrypted WireGuard tunnels. NAT traversal is automatic.
-```
+You don't need to know what that means. `meshd up --create` handles everything.
 
 ## How is this different?
 
@@ -69,25 +62,51 @@ the storage, they can't read your keys or endpoints.
 
 **vs raw WireGuard:** No manual key distribution. No editing config files.
 No figuring out NAT traversal. Add a peer with one command. Endpoint
-changes propagate automatically in real-time.
+changes propagate automatically.
 
 ## What you get
 
 **Encrypted mesh in minutes.** Connect your devices across any network.
 Behind NATs, on different continents, on cellular -- it just works.
 
-**No infrastructure to run.** There is no coordination server. Your
-devices coordinate directly using signed, encrypted records. The
-"server" is an embedded component that starts when you run `meshd up`.
+**No infrastructure to run.** There is no coordination server. Devices
+coordinate through signed, encrypted records on a DWN. The control plane
+is a protocol, not a service.
 
 **Add people, not just devices.** Invite collaborators into your mesh.
 They bring their own devices. You control access with ACL policies.
-Remove someone and their access is revoked across every node immediately.
+Remove someone and their access is revoked across every node.
 
 **Privacy by default.** All mesh coordination data (keys, endpoints,
-membership, policies) is encrypted at rest. Not just the tunnel traffic --
-the metadata too. Nobody can see who's in your network, where they are,
-or what the rules are.
+membership, policies) is encrypted at rest using JWE (ECDH-ES+A256KW
+with A256GCM). Not just the tunnel traffic -- the metadata too. Nobody
+can see who's in your network, where they are, or what the rules are.
+
+## CLI
+
+```
+meshd <command> [arguments]
+
+Identity:
+  init              Generate DID identity and store locally
+  auth login        Create a named identity profile
+  auth list         List all profiles
+  auth use <name>   Set the default profile
+  auth logout       Remove a profile from config
+
+Network:
+  network create    Create a new mesh network on a DWN
+  network join      Join an existing mesh network
+  network leave     Leave the current mesh network
+  peer add          Add a peer to the mesh (anchor only)
+  peer list         List all peers in the mesh
+  peer approve      Deliver encryption keys to a peer (anchor only)
+  acl set <file>    Set ACL policy from a JSON file (anchor only)
+  acl show          Show the current ACL policy
+  status            Show mesh status and identity info
+  up                Start the mesh agent daemon
+  down              Stop the mesh agent daemon
+```
 
 ## If you already have a DID and DWN
 
@@ -109,7 +128,7 @@ Private (the mesh, invisible to outsiders):
 
      dwn.alice.com       nas.alice          laptop.alice
      (VPS, public)    (home, behind NAT)   (roaming)
-     100.64.0.1        100.64.0.2          100.64.0.3
+     10.200.0.1        10.200.0.2          10.200.0.3
           |                 |                    |
           +-- WireGuard ----+---- WireGuard -----+
                    encrypted mesh
@@ -118,69 +137,104 @@ Private (the mesh, invisible to outsiders):
 
 Your private DWN replicas sync with your public DWN over the encrypted
 mesh. They never need a public IP. They never appear in your DID document.
-DWN's built-in `MessagesSync` runs transparently over mesh IPs.
-
-Invite collaborators and their DWNs can reach your private endpoints.
-All traffic stays on the mesh -- private, encrypted, no middleman.
-
-See [DESIGN.md](DESIGN.md) for the complete architecture.
 
 ## How it works under the hood
 
-**Networking:** meshd uses [dexnet](https://github.com/WebP2P/dexnet)
-as its networking engine -- a fork of Tailscale's open-source client with
-its own IP space (`10.200.0.0/16`) so it runs side-by-side with Tailscale.
-This gives us battle-tested WireGuard management, NAT traversal, STUN,
-DERP relay, and UDP hole punching out of the box.
+**Identity:** Each device gets a `did:jwk` identity -- an Ed25519 key pair
+encoded as a DID. The WireGuard key is derived from the same identity
+(Ed25519 to X25519 birational map), so there is exactly one key to manage.
 
-**Coordination:** meshd replaces Tailscale's coordination server with
-DWN protocols. Every device gets a **DID** (a cryptographic identity --
-think self-signed certificate the whole internet can verify) and runs an
-embedded **DWN** (a tiny personal data store). Devices discover each other
-by reading cryptographically signed, encrypted records from each other's
-DWNs and subscribing to real-time updates.
+**Networking:** meshd uses [meshnet](https://github.com/enboxorg/meshnet),
+a fork of Tailscale's open-source networking engine. This gives us
+battle-tested WireGuard management, NAT traversal, STUN, DERP relay,
+and UDP hole punching. meshd uses `10.200.0.0/16` for its mesh IP space.
 
-**The glue:** A DWN-based control client translates DWN records into the
-data structures dexnet's WireGuard engine expects. This means we get the
-entire Tailscale data plane without modification -- we only replace the
-part that answers "who are my peers and how do I reach them?"
+**Coordination:** meshd replaces Tailscale's coordination server with a
+DWN protocol (`wireguard-mesh`). Devices discover each other by reading
+encrypted records from the anchor's DWN. The DWN-based control client
+translates these records into the data structures the WireGuard engine
+expects.
+
+**Encryption:** All sensitive records (node membership, endpoints, ACL
+policies) are encrypted with JWE using ECDH-ES+A256KW key agreement
+and A256GCM content encryption. Encryption keys are derived
+hierarchically via HKDF from the protocol root key.
 
 ```
 meshd = DWN coordination (identity, membership, ACLs, encryption)
-         + dexnet engine (WireGuard, NAT traversal, DERP, hole punching)
+       + meshnet engine (WireGuard, NAT traversal, DERP, hole punching)
 ```
 
-The mesh uses two DWN protocols:
+### Protocol structure
 
-- **`wireguard-mesh`** on an anchor DWN: network membership, ACLs, relays
-- **`wireguard-node`** on each device: WireGuard public key + endpoint
+The mesh is coordinated through a single DWN protocol (`wireguard-mesh`)
+on the anchor's DWN:
 
-All records are signed with DIDs and encrypted with JWE. The protocols
-enforce access control declaratively.
+```
+network
+  +-- node ($role, recipient = device DID)    -- owner-provisioned devices
+  |     +-- nodeInfo                          -- device writes: hostname, OS
+  |     +-- endpoint                          -- device writes: IPs, NAT type
+  |
+  +-- member ($role, recipient = member DID)  -- invited members
+  |     +-- nodeRequest                       -- member proposes a device
+  |     +-- node ($role, recipient = device DID)
+  |           +-- nodeInfo
+  |           +-- endpoint
+  |
+  +-- aclPolicy                               -- packet filter rules
+  +-- relay                                   -- custom DERP relays
+```
+
+Devices write their own `nodeInfo` and `endpoint` records using
+recipient-based authorization. The network owner manages membership
+and node records.
 
 ## Coexistence with Tailscale
 
-dexnet uses `10.200.0.0/16` (IPv4) and `fd0d:e100:d3c5::/48` (IPv6),
-while Tailscale uses `100.64.0.0/10` and `fd7a:115c:a1e0::/48`. Different
-socket names (`dexnetd` vs `tailscaled`), different state directories.
-You can run both simultaneously on the same machine -- Tailscale for work,
-meshd for your personal infrastructure.
+meshd uses `10.200.0.0/16` (IPv4) and `fd0d:e100:d3c5::/48` (IPv6).
+Tailscale uses `100.64.0.0/10` and `fd7a:115c:a1e0::/48`. Different
+socket names, different state directories. You can run both simultaneously
+on the same machine.
 
 ## Project structure
 
 ```
-cmd/meshd/           CLI entrypoint
+cmd/meshd/              CLI entrypoint
 internal/
-  did/                  DID generation (did:dht), key derivation, persistence
-  dwn/                  DWN HTTP client, JWS signing, CID computation, subscriptions
-  control/              DWN-based control client → MapResponse for networking engine
-  state/                On-disk state management (identity, network membership)
-protocols/              DWN protocol definitions (encrypted)
+  control/              DWN-based control client -> MapResponse for engine
+  dwn/                  DWN HTTP client, JWS signing, CID, subscriptions
+    crypto/             JWE encryption, HKDF key derivation, key delivery
+  engine/               WireGuard engine integration (meshnet)
+  mesh/                 Mesh registration, node/endpoint/ACL writes
+  did/                  DID generation (did:jwk), key derivation, persistence
+  state/                On-disk state management
+  daemon/               Unix socket daemon for up/down/status
+  profile/              Multi-identity profile management
+pkg/
+  dids/                 DID resolution (did:jwk, did:web, did:dht)
+  jwk/                  JWK key operations
+  crypto/               DSA helpers (Ed25519, ECDSA)
+protocols/              DWN protocol definitions (wireguard-mesh, key-delivery)
 schemas/                JSON schemas for record data
-
-External dependency (not yet integrated):
-  github.com/enboxorg/dexnet   (Tailscale fork -- WireGuard, NAT, DERP)
+vendor/                 Vendored dependencies (including meshnet fork)
 ```
+
+## Development
+
+```bash
+# Build
+GOFLAGS=-mod=vendor go build ./...
+
+# Run tests (unit tests only; integration tests need DWN_ENDPOINT)
+GOFLAGS=-mod=vendor go test ./... -count=1 -race
+
+# Run integration tests (requires a DWN server)
+DWN_ENDPOINT=https://your-dwn.example.com GOFLAGS=-mod=vendor \
+  go test ./internal/mesh/ -run TestE2E -v -count=1 -timeout 180s
+```
+
+See [CLAUDE.md](CLAUDE.md) for development conventions.
 
 ## License
 
