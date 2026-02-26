@@ -27,7 +27,13 @@ jobs:
         run: go vet ./...
 
       - name: Unit Tests
-        run: go test ./... -count=1 -race
+        run: go test ./... -count=1 -race -coverprofile=coverage.out -covermode=atomic
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.out
+          fail_ci_if_error: false
 
   integration:
     runs-on: ubuntu-latest
