@@ -142,11 +142,11 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            nodeA.identity.URI,
 		NetworkRecordID:      networkRecordID,
-		SelfDID:              nodeA.identity.URI,
+		NodeDID:              nodeA.identity.URI,
 		Signer:               nodeA.signer,
 		EncryptionKeyManager: nodeA.encMgr,
 		MeshIP:               meshIPA.String(),
-		Hostname:             "node-a",
+		Label:                "node-a",
 	})
 	if err != nil {
 		t.Fatalf("registering node A: %v", err)
@@ -185,11 +185,11 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            nodeA.identity.URI,
 		NetworkRecordID:      networkRecordID,
-		SelfDID:              nodeB.identity.URI,
+		NodeDID:              nodeB.identity.URI,
 		Signer:               nodeA.signer, // Node A creates B's record
 		EncryptionKeyManager: nodeA.encMgr,
 		MeshIP:               meshIPB.String(),
-		Hostname:             "node-b",
+		Label:                "node-b",
 	})
 	if err != nil {
 		t.Fatalf("Node B node registration failed: %v", err)
@@ -257,11 +257,11 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            nodeA.identity.URI,
 		NetworkRecordID:      networkRecordID,
-		SelfDID:              nodeA.identity.URI,
+		NodeDID:              nodeA.identity.URI,
 		Signer:               nodeA.signer,
 		EncryptionKeyManager: nodeA.encMgr,
 		MeshIP:               meshIPA.String(),
-		Hostname:             "node-a",
+		Label:                "node-a",
 		UseContextEncryption: true,
 		ExistingNodeRecordID: regA.NodeRecordID,
 		ExistingDateCreated:  regA.DateCreated,
@@ -299,16 +299,17 @@ func TestTwoNodeConnectivity(t *testing.T) {
 	// Re-register Node B's node record with Protocol Context encryption.
 	// This is an UPDATE (same recordId, preserved dateCreated) which replaces
 	// the old Protocol Path encrypted record in-place, avoiding duplicates.
+	// Note: In the new protocol, only the network owner can write node records.
+	// Node A (anchor) re-writes B's record with context encryption.
 	regB2, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            nodeA.identity.URI,
 		NetworkRecordID:      networkRecordID,
-		SelfDID:              nodeB.identity.URI,
-		Signer:               nodeB.signer,
-		EncryptionKeyManager: nodeB.encMgr,
+		NodeDID:              nodeB.identity.URI,
+		Signer:               nodeA.signer, // anchor writes node records
+		EncryptionKeyManager: nodeA.encMgr,
 		MeshIP:               meshIPB.String(),
-		Hostname:             "node-b",
-		ProtocolRole:         "network/node",
+		Label:                "node-b",
 		UseContextEncryption: true,
 		ExistingNodeRecordID: regB.NodeRecordID,
 		ExistingDateCreated:  regB.DateCreated,
@@ -704,18 +705,18 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 	ipA, _ := mesh.AllocateMeshIP(meshCIDR, nodeA.identity.URI)
 	regADisc, _ := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,
-		NetworkRecordID: networkRecordID, SelfDID: nodeA.identity.URI,
+		NetworkRecordID: networkRecordID, NodeDID: nodeA.identity.URI,
 		Signer: nodeA.signer, EncryptionKeyManager: nodeA.encMgr,
-		MeshIP: ipA.String(), Hostname: "disc-a",
+		MeshIP: ipA.String(), Label: "disc-a",
 	})
 
 	// Node A creates Node B's node record (assigns network/node role via Recipient).
 	ipB, _ := mesh.AllocateMeshIP(meshCIDR, nodeB.identity.URI)
 	regBDisc, _ := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,
-		NetworkRecordID: networkRecordID, SelfDID: nodeB.identity.URI,
+		NetworkRecordID: networkRecordID, NodeDID: nodeB.identity.URI,
 		Signer: nodeA.signer, EncryptionKeyManager: nodeA.encMgr,
-		MeshIP: ipB.String(), Hostname: "disc-b",
+		MeshIP: ipB.String(), Label: "disc-b",
 	})
 
 	// Deliver context key to Node B, then re-register both nodes with context encryption.
@@ -737,9 +738,9 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 	// Re-register Node A (anchor) with context encryption.
 	mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,
-		NetworkRecordID: networkRecordID, SelfDID: nodeA.identity.URI,
+		NetworkRecordID: networkRecordID, NodeDID: nodeA.identity.URI,
 		Signer: nodeA.signer, EncryptionKeyManager: nodeA.encMgr,
-		MeshIP: ipA.String(), Hostname: "disc-a", UseContextEncryption: true,
+		MeshIP: ipA.String(), Label: "disc-a", UseContextEncryption: true,
 		ExistingNodeRecordID: regADisc.NodeRecordID,
 		ExistingDateCreated:  regADisc.DateCreated,
 	})
@@ -762,12 +763,12 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 		nodeB.encMgr.StoreContextKey(networkRecordID, contextKeyBytes)
 
 		// Re-register Node B with context encryption (update, same recordId).
+		// Anchor re-writes B's record with context encryption.
 		mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 			AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,
-			NetworkRecordID: networkRecordID, SelfDID: nodeB.identity.URI,
-			Signer: nodeB.signer, EncryptionKeyManager: nodeB.encMgr,
-			MeshIP: ipB.String(), Hostname: "disc-b",
-			ProtocolRole:         "network/node",
+			NetworkRecordID: networkRecordID, NodeDID: nodeB.identity.URI,
+			Signer: nodeA.signer, EncryptionKeyManager: nodeA.encMgr,
+			MeshIP: ipB.String(), Label: "disc-b",
 			UseContextEncryption: true,
 			ExistingNodeRecordID: regBDisc.NodeRecordID,
 			ExistingDateCreated:  regBDisc.DateCreated,

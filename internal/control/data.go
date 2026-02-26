@@ -8,20 +8,44 @@ type NetworkConfig struct {
 	MagicDNSSuffix string   `json:"magicDNSSuffix,omitempty"`
 }
 
-// NodeRecord is the parsed node record data.
+// MemberRecord is the parsed member record data.
+// A member represents a person/entity that has been invited to the network.
+// Their DID comes from the recipient descriptor field.
+type MemberRecord struct {
+	DID      string `json:"-"`               // did:jwk from the recipient descriptor field
+	Label    string `json:"label,omitempty"`
+	AddedAt  string `json:"addedAt"`
+	RecordID string `json:"-"`
+}
+
+// NodeRecord is the parsed node record data (owner-controlled membership fields).
 // The WireGuard public key is NOT stored here — it is derived from
 // the DID (did:jwk → X25519 birational map) at conversion time.
 type NodeRecord struct {
-	DID          string         `json:"-"`                     // did:jwk from the recipient descriptor field
-	MeshIP       string         `json:"meshIP"`
-	Hostname     string         `json:"hostname,omitempty"`
-	OS           string         `json:"os,omitempty"`
-	Capabilities []string       `json:"capabilities,omitempty"`
-	AllowedIPs   []string       `json:"allowedIPs,omitempty"`
-	AddedAt      string         `json:"addedAt"`
-	Label        string         `json:"label,omitempty"`
-	Endpoints    []EndpointData `json:"-"`
-	RecordID     string         `json:"-"`
+	DID        string `json:"-"`                  // did:jwk from the recipient descriptor field
+	MeshIP     string `json:"meshIP"`
+	AllowedIPs []string `json:"allowedIPs,omitempty"`
+	AddedAt    string `json:"addedAt"`
+	Label      string `json:"label,omitempty"`
+	SourceDWN  string `json:"sourceDWN,omitempty"` // for cross-DWN member devices
+
+	// Fields populated from child records (not from this record's data).
+	Info      *NodeInfoData  `json:"-"`
+	Endpoints []EndpointData `json:"-"`
+	RecordID  string         `json:"-"`
+
+	// MemberRecordID is the parent member record ID, if this node is
+	// under a member (network/member/node path). Empty for owner-provisioned
+	// top-level nodes (network/node path).
+	MemberRecordID string `json:"-"`
+}
+
+// NodeInfoData is the parsed nodeInfo record data (device-controlled).
+// This contains operational information that the device itself manages.
+type NodeInfoData struct {
+	Hostname     string   `json:"hostname,omitempty"`
+	OS           string   `json:"os,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // EndpointData is the parsed endpoint record data.

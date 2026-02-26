@@ -32,9 +32,10 @@ var (
 
 // dwnClientOptions holds configuration for the DWN control client.
 type dwnClientOptions struct {
-	logger     *slog.Logger
-	resolver   Resolver
-	encManager *dwncrypto.EncryptionKeyManager
+	logger       *slog.Logger
+	resolver     Resolver
+	encManager   *dwncrypto.EncryptionKeyManager
+	protocolRole string
 }
 
 // Option configures a DWNClient.
@@ -63,6 +64,16 @@ func WithEncryptionKeyManager(mgr *dwncrypto.EncryptionKeyManager) Option {
 	}
 }
 
+// WithProtocolRole sets the DWN protocol role used for read queries.
+// The anchor (network owner) should leave this empty (reads as author).
+// Non-anchor nodes should set "network/node" (assigned via the recipient
+// field on their node record).
+func WithProtocolRole(role string) Option {
+	return func(o *dwnClientOptions) {
+		o.protocolRole = role
+	}
+}
+
 // DWNClient reads mesh state from DWN records and produces MapResponse
 // snapshots for the networking engine.
 type DWNClient struct {
@@ -75,8 +86,15 @@ type DWNClient struct {
 	resolver        Resolver
 	encManager      *dwncrypto.EncryptionKeyManager
 
-	mu     sync.RWMutex
+	// protocolRole is the DWN protocol role used for read queries.
+	// The anchor (network author) leaves this empty (reads as author).
+	// Non-anchor nodes use "network/node" (assigned via the recipient
+	// field on their node record).
+	protocolRole string
+
+	mu      sync.RWMutex
 	network *NetworkConfig
+	members map[string]*MemberRecord
 	nodes   map[string]*NodeRecord
 	relays  []*RelayData
 	acl     *ACLPolicyData
@@ -110,6 +128,8 @@ func NewDWNClient(
 		logger:          options.logger,
 		resolver:        options.resolver,
 		encManager:      options.encManager,
+		protocolRole:    options.protocolRole,
+		members:         make(map[string]*MemberRecord),
 		nodes:           make(map[string]*NodeRecord),
 		peerEndpoints:   make(map[string]*PeerEndpointInfo),
 	}
@@ -117,7 +137,21 @@ func NewDWNClient(
 
 // LoadState reads the current mesh state from the anchor DWN and builds
 // an initial MapResponse.
+//
+// The new protocol has two node paths:
+//   - network/node — owner-provisioned devices
+//   - network/member/node — member-associated devices
+//
+// Both paths have nodeInfo and endpoint child records. LoadState queries
+// all paths and merges them into a unified node map keyed by DID.
 func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
+	// Determine the protocol role for queries. The anchor (network owner)
+	// can read as author without a role. Non-anchor nodes use their node
+	// role. Both network/node and network/member roles grant read access
+	// to all record types, so we use network/node universally for
+	// non-anchor reads.
+	role := c.protocolRole
+
 	// 1. Read network config.
 	c.logger.DebugContext(ctx, "reading network record",
 		slog.String("recordId", c.networkRecordID),
@@ -125,7 +159,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 
 	netResp, err := c.anchorDWN.RecordsRead(ctx, c.anchorTenant, dwn.RecordsFilter{
 		RecordID: c.networkRecordID,
-	}, "network/node")
+	}, role)
 	if err != nil {
 		return nil, fmt.Errorf("reading network: %w", err)
 	}
@@ -148,14 +182,14 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	c.network = &network
 	c.mu.Unlock()
 
-	// 2. Query node records.
-	c.logger.DebugContext(ctx, "querying nodes")
+	// 2. Query owner-provisioned node records (network/node).
+	c.logger.DebugContext(ctx, "querying owner-provisioned nodes")
 
 	nodesResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/node",
 		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, "network/node")
+	}, "createdAscending", nil, role)
 	if err != nil {
 		return nil, fmt.Errorf("querying nodes: %w", err)
 	}
@@ -169,42 +203,104 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	c.mu.Lock()
 	clear(c.nodes) // Clear stale nodes before repopulating.
 	for _, entry := range nodeEntries {
-		// DID comes from the recipient descriptor field.
-		meta := extractEntryMetadata(entry)
-		nodeDID := meta.Recipient
-
-		var node NodeRecord
-		if err := parseEntryData(entry, &node, nodeDecryptor); err != nil {
-			c.logger.DebugContext(ctx, "parsing node entry",
-				slog.Any("error", err),
-				slog.String("nodeDID", nodeDID),
-			)
-			// Even if we can't decrypt the data payload, track the node DID
-			// from the unencrypted recipient field. This allows peer discovery
-			// and auto key delivery to work even before context key exchange.
-			if nodeDID != "" {
-				node.DID = nodeDID
-				node.RecordID = meta.RecordID
-				c.nodes[nodeDID] = &node
-			}
-			continue
-		}
-		node.DID = nodeDID
-		node.RecordID = meta.RecordID
-		if nodeDID != "" {
-			c.nodes[nodeDID] = &node
-		}
+		c.loadNodeEntry(ctx, entry, nodeDecryptor, "")
 	}
 	c.mu.Unlock()
 
-	c.logger.DebugContext(ctx, "loaded nodes", slog.Int("count", len(nodeEntries)))
+	c.logger.DebugContext(ctx, "loaded owner-provisioned nodes", slog.Int("count", len(nodeEntries)))
 
-	// 3. Query relay records.
+	// 3. Query member records (network/member) to discover members.
+	c.logger.DebugContext(ctx, "querying members")
+
+	membersResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
+		Protocol:     protocols.MeshProtocolURI,
+		ProtocolPath: "network/member",
+		ContextID:    c.networkRecordID,
+	}, "createdAscending", nil, role)
+	if err != nil {
+		// Non-fatal: members are optional (a simple personal mesh may have none).
+		c.logger.DebugContext(ctx, "querying members failed", slog.Any("error", err))
+	} else {
+		memberEntries, err := dwn.QueryResult(membersResp)
+		if err != nil {
+			c.logger.DebugContext(ctx, "parsing member results", slog.Any("error", err))
+		} else {
+			memberDecryptor := c.makeDecryptor("network/member")
+			c.mu.Lock()
+			clear(c.members) // Clear stale members before repopulating.
+			for _, entry := range memberEntries {
+				meta := extractEntryMetadata(entry)
+				memberDID := meta.Recipient
+
+				var member MemberRecord
+				if err := parseEntryData(entry, &member, memberDecryptor); err != nil {
+					c.logger.DebugContext(ctx, "parsing member entry",
+						slog.Any("error", err),
+						slog.String("memberDID", memberDID),
+					)
+					// Track the member even if we can't decrypt.
+					if memberDID != "" {
+						member.DID = memberDID
+						member.RecordID = meta.RecordID
+						c.members[memberDID] = &member
+					}
+					continue
+				}
+				member.DID = memberDID
+				member.RecordID = meta.RecordID
+				if memberDID != "" {
+					c.members[memberDID] = &member
+				}
+			}
+			c.mu.Unlock()
+
+			c.logger.DebugContext(ctx, "loaded members", slog.Int("count", len(memberEntries)))
+		}
+	}
+
+	// 4. Query member-associated node records (network/member/node).
+	c.logger.DebugContext(ctx, "querying member nodes")
+
+	memberNodesResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
+		Protocol:     protocols.MeshProtocolURI,
+		ProtocolPath: "network/member/node",
+		ContextID:    c.networkRecordID,
+	}, "createdAscending", nil, role)
+	if err != nil {
+		// Non-fatal: member nodes are optional.
+		c.logger.DebugContext(ctx, "querying member nodes failed", slog.Any("error", err))
+	} else {
+		memberNodeEntries, err := dwn.QueryResult(memberNodesResp)
+		if err != nil {
+			c.logger.DebugContext(ctx, "parsing member node results", slog.Any("error", err))
+		} else {
+			memberNodeDecryptor := c.makeDecryptor("network/member/node")
+			c.mu.Lock()
+			for _, entry := range memberNodeEntries {
+				// For member nodes, we need to find which member this node
+				// belongs to by matching the parentId to a member's recordID.
+				meta := extractEntryMetadata(entry)
+				var memberRecordID string
+				for _, m := range c.members {
+					if m.RecordID == meta.ParentID {
+						memberRecordID = m.RecordID
+						break
+					}
+				}
+				c.loadNodeEntry(ctx, entry, memberNodeDecryptor, memberRecordID)
+			}
+			c.mu.Unlock()
+
+			c.logger.DebugContext(ctx, "loaded member nodes", slog.Int("count", len(memberNodeEntries)))
+		}
+	}
+
+	// 5. Query relay records.
 	relayResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/relay",
 		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, "network/node")
+	}, "createdAscending", nil, role)
 	if err != nil {
 		return nil, fmt.Errorf("querying relays: %w", err)
 	}
@@ -227,12 +323,12 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	}
 	c.mu.Unlock()
 
-	// 4. Query ACL policy record.
+	// 6. Query ACL policy record.
 	aclResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/aclPolicy",
 		ContextID:    c.networkRecordID,
-	}, "createdDescending", nil, "network/node")
+	}, "createdDescending", nil, role)
 	if err != nil {
 		// Non-fatal: ACL policy is optional. Default to allow-all.
 		c.logger.DebugContext(ctx, "querying ACL policy failed", slog.Any("error", err))
@@ -258,53 +354,23 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		}
 	}
 
-	// 5. Query endpoint records for each node.
-	// Endpoint records are children of node records. We query all
-	// endpoint records in the network context and attach them to their
-	// parent node via the parentId descriptor field.
-	endpointResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
-		Protocol:     protocols.MeshProtocolURI,
-		ProtocolPath: "network/node/endpoint",
-		ContextID:    c.networkRecordID,
-	}, "createdDescending", nil, "network/node")
-	if err != nil {
-		// Non-fatal: endpoints are optional. Log and continue.
-		c.logger.DebugContext(ctx, "querying endpoints failed", slog.Any("error", err))
-	} else {
-		endpointEntries, err := dwn.QueryResult(endpointResp)
-		if err != nil {
-			c.logger.DebugContext(ctx, "parsing endpoint results", slog.Any("error", err))
-		} else {
-			endpointDecryptor := c.makeDecryptor("network/node/endpoint")
-			c.mu.Lock()
-			for _, entry := range endpointEntries {
-				meta := extractEntryMetadata(entry)
-				var ep EndpointData
-				if err := parseEntryData(entry, &ep, endpointDecryptor); err != nil {
-					c.logger.DebugContext(ctx, "parsing endpoint entry", slog.Any("error", err))
-					continue
-				}
+	// 7. Query nodeInfo records for owner-provisioned nodes (network/node/nodeInfo).
+	c.loadChildRecords(ctx, "network/node/nodeInfo", role, c.loadNodeInfoEntry)
 
-				// Find the parent node by matching the parentId from
-				// the endpoint's descriptor to a node's recordID.
-				parentID := meta.ParentID
-				for _, node := range c.nodes {
-					if node.RecordID != "" && node.RecordID == parentID {
-						node.Endpoints = append(node.Endpoints, ep)
-						break
-					}
-				}
-			}
-			c.mu.Unlock()
+	// 8. Query nodeInfo records for member nodes (network/member/node/nodeInfo).
+	c.loadChildRecords(ctx, "network/member/node/nodeInfo", role, c.loadNodeInfoEntry)
 
-			c.logger.DebugContext(ctx, "loaded endpoints", slog.Int("count", len(endpointEntries)))
-		}
-	}
+	// 9. Query endpoint records for owner-provisioned nodes (network/node/endpoint).
+	c.loadChildRecords(ctx, "network/node/endpoint", role, c.loadEndpointEntry)
+
+	// 10. Query endpoint records for member nodes (network/member/node/endpoint).
+	c.loadChildRecords(ctx, "network/member/node/endpoint", role, c.loadEndpointEntry)
 
 	hasACL := c.acl != nil
 	c.logger.DebugContext(ctx, "mesh state loaded",
 		slog.String("network", network.Name),
 		slog.Int("nodes", len(c.nodes)),
+		slog.Int("members", len(c.members)),
 		slog.Int("relays", len(c.relays)),
 		slog.Bool("aclPolicy", hasACL),
 	)
@@ -316,11 +382,135 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	return resp, nil
 }
 
+// loadNodeEntry parses a node record entry and adds it to the nodes map.
+// memberRecordID is the parent member record ID (empty for owner-provisioned nodes).
+// Caller must hold c.mu.
+func (c *DWNClient) loadNodeEntry(ctx context.Context, entry json.RawMessage, decryptor entryDecryptor, memberRecordID string) {
+	meta := extractEntryMetadata(entry)
+	nodeDID := meta.Recipient
+
+	var node NodeRecord
+	if err := parseEntryData(entry, &node, decryptor); err != nil {
+		c.logger.DebugContext(ctx, "parsing node entry",
+			slog.Any("error", err),
+			slog.String("nodeDID", nodeDID),
+		)
+		// Even if we can't decrypt the data payload, track the node DID
+		// from the unencrypted recipient field. This allows peer discovery
+		// and auto key delivery to work even before context key exchange.
+		if nodeDID != "" {
+			node.DID = nodeDID
+			node.RecordID = meta.RecordID
+			node.MemberRecordID = memberRecordID
+			c.nodes[nodeDID] = &node
+		}
+		return
+	}
+	node.DID = nodeDID
+	node.RecordID = meta.RecordID
+	node.MemberRecordID = memberRecordID
+	if nodeDID != "" {
+		c.nodes[nodeDID] = &node
+	}
+}
+
+// loadChildRecords queries child records at the given protocol path and
+// processes each entry with the provided handler function.
+func (c *DWNClient) loadChildRecords(ctx context.Context, protocolPath string, role string, handler func(ctx context.Context, entry json.RawMessage, decryptor entryDecryptor)) {
+	resp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
+		Protocol:     protocols.MeshProtocolURI,
+		ProtocolPath: protocolPath,
+		ContextID:    c.networkRecordID,
+	}, "createdDescending", nil, role)
+	if err != nil {
+		c.logger.DebugContext(ctx, "querying child records failed",
+			slog.String("path", protocolPath),
+			slog.Any("error", err),
+		)
+		return
+	}
+
+	entries, err := dwn.QueryResult(resp)
+	if err != nil {
+		c.logger.DebugContext(ctx, "parsing child record results",
+			slog.String("path", protocolPath),
+			slog.Any("error", err),
+		)
+		return
+	}
+
+	decryptor := c.makeDecryptor(protocolPath)
+	c.mu.Lock()
+	for _, entry := range entries {
+		handler(ctx, entry, decryptor)
+	}
+	c.mu.Unlock()
+
+	c.logger.DebugContext(ctx, "loaded child records",
+		slog.String("path", protocolPath),
+		slog.Int("count", len(entries)),
+	)
+}
+
+// loadNodeInfoEntry parses a nodeInfo entry and attaches it to the parent node.
+// Caller must hold c.mu.
+func (c *DWNClient) loadNodeInfoEntry(ctx context.Context, entry json.RawMessage, decryptor entryDecryptor) {
+	meta := extractEntryMetadata(entry)
+	var info NodeInfoData
+	if err := parseEntryData(entry, &info, decryptor); err != nil {
+		c.logger.DebugContext(ctx, "parsing nodeInfo entry", slog.Any("error", err))
+		return
+	}
+
+	// Attach to parent node by matching parentId to a node's recordID.
+	parentID := meta.ParentID
+	for _, node := range c.nodes {
+		if node.RecordID != "" && node.RecordID == parentID {
+			node.Info = &info
+			break
+		}
+	}
+}
+
+// loadEndpointEntry parses an endpoint entry and attaches it to the parent node.
+// Caller must hold c.mu.
+func (c *DWNClient) loadEndpointEntry(ctx context.Context, entry json.RawMessage, decryptor entryDecryptor) {
+	meta := extractEntryMetadata(entry)
+	var ep EndpointData
+	if err := parseEntryData(entry, &ep, decryptor); err != nil {
+		c.logger.DebugContext(ctx, "parsing endpoint entry", slog.Any("error", err))
+		return
+	}
+
+	// Attach to parent node by matching parentId to a node's recordID.
+	parentID := meta.ParentID
+	for _, node := range c.nodes {
+		if node.RecordID != "" && node.RecordID == parentID {
+			node.Endpoints = append(node.Endpoints, ep)
+			break
+		}
+	}
+}
+
 // ACLPolicy returns the loaded ACL policy, or nil if none is configured.
 func (c *DWNClient) ACLPolicy() *ACLPolicyData {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.acl
+}
+
+// Members returns the loaded member records, keyed by member DID.
+func (c *DWNClient) Members() map[string]*MemberRecord {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.members
+}
+
+// Nodes returns the loaded node records, keyed by node DID.
+func (c *DWNClient) Nodes() map[string]*NodeRecord {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.nodes
 }
 
 // BuildStaticMapResponse creates a MapResponse from explicitly provided
@@ -427,11 +617,20 @@ func nodeRecordToNode(id int64, did string, rec *NodeRecord) *Node {
 // the Key field is left empty and logged.
 func nodeRecordToNodeWithThreshold(id int64, nodeDID string, rec *NodeRecord, staleThreshold time.Duration, now time.Time) *Node {
 	node := &Node{
-		ID:           id,
-		Name:         rec.Hostname,
-		DID:          nodeDID,
-		OS:           rec.OS,
-		Capabilities: rec.Capabilities,
+		ID:  id,
+		DID: nodeDID,
+	}
+
+	// Populate operational fields from the nodeInfo child record if available.
+	if rec.Info != nil {
+		node.Name = rec.Info.Hostname
+		node.OS = rec.Info.OS
+		node.Capabilities = rec.Info.Capabilities
+	}
+
+	// Fall back to node label if no hostname from nodeInfo.
+	if node.Name == "" && rec.Label != "" {
+		node.Name = rec.Label
 	}
 
 	// Derive WireGuard public key from did:jwk.

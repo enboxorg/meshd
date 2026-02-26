@@ -101,6 +101,16 @@ type Config struct {
 	// Required for writing endpoint updates back to DWN.
 	NodeRecordID string
 
+	// MemberRecordID is this node's member record ID, if the node was
+	// added as a member-associated device (network/member/node path).
+	// Empty for owner-provisioned devices (network/node path).
+	MemberRecordID string
+
+	// ProtocolRole is the DWN protocol role used for read queries.
+	// The anchor (network owner) leaves this empty (reads as author).
+	// Non-anchor nodes use "network/node".
+	ProtocolRole string
+
 	// AutoKeyDelivery enables automatic context key delivery to new nodes.
 	// Only active when this node is the anchor and has the root private key.
 	// If nil, auto delivery is disabled.
@@ -186,6 +196,9 @@ func New(cfg Config) (*Engine, error) {
 	}
 	if cfg.EncryptionKeyManager != nil {
 		controlOpts = append(controlOpts, control.WithEncryptionKeyManager(cfg.EncryptionKeyManager))
+	}
+	if cfg.ProtocolRole != "" {
+		controlOpts = append(controlOpts, control.WithProtocolRole(cfg.ProtocolRole))
 	}
 	dwnClient := control.NewDWNClient(
 		cfg.AnchorEndpoint,
@@ -594,10 +607,21 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 			slog.String("discoKey", discoKeyB64),
 		)
 
+		// Determine the protocol role for the endpoint write. Devices write
+		// their own endpoint records using recipient-based authorization:
+		//   - Owner-provisioned: recipient of network/node
+		//   - Member-associated: recipient of network/member/node
+		// The protocol role is passed to authorize the write.
+		protocolRole := "network/node"
+		if cfg.MemberRecordID != "" {
+			protocolRole = "network/member/node"
+		}
+
 		err := mesh.WriteEndpoint(ctx, mesh.WriteEndpointParams{
 			AnchorEndpoint:       cfg.AnchorEndpoint,
 			AnchorDID:            cfg.AnchorTenant,
 			NetworkRecordID:      cfg.NetworkRecordID,
+			MemberRecordID:       cfg.MemberRecordID,
 			NodeRecordID:         cfg.NodeRecordID,
 			Signer:               cfg.Signer,
 			EncryptionKeyManager: cfg.EncryptionKeyManager,
@@ -605,7 +629,7 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 			LocalEndpoints:       localEPs,
 			DiscoKey:             discoKeyB64,
 			NATType:              "unknown",
-			ProtocolRole:         "network/node",
+			ProtocolRole:         protocolRole,
 			UseContextEncryption: cfg.UseContextEncryption,
 		})
 		if err != nil {

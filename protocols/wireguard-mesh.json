@@ -6,8 +6,21 @@
       "schema": "https://enbox.org/schemas/wireguard-mesh/network",
       "dataFormats": ["application/json"]
     },
+    "member": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/member",
+      "dataFormats": ["application/json"]
+    },
+    "nodeRequest": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/node-request",
+      "dataFormats": ["application/json"]
+    },
     "node": {
       "schema": "https://enbox.org/schemas/wireguard-mesh/node",
+      "dataFormats": ["application/json"],
+      "encryptionRequired": true
+    },
+    "nodeInfo": {
+      "schema": "https://enbox.org/schemas/wireguard-mesh/node-info",
       "dataFormats": ["application/json"],
       "encryptionRequired": true
     },
@@ -42,6 +55,73 @@
         { "who": "anyone", "can": ["read"] }
       ],
 
+      "member": {
+        "$role": true,
+        "$encryption": {
+          "rootKeyId": "#dwn-enc",
+          "publicKeyJwk": {}
+        },
+        "$actions": [
+          { "who": "author", "of": "network", "can": ["create", "update", "co-delete", "co-prune"] },
+          { "role": "network/member", "can": ["read"] },
+          { "role": "network/node", "can": ["read"] }
+        ],
+
+        "nodeRequest": {
+          "$size": { "max": 2000 },
+          "$actions": [
+            { "who": "recipient", "of": "network/member", "can": ["create", "delete"] },
+            { "who": "author", "of": "network", "can": ["read", "co-delete"] },
+            { "role": "network/member", "can": ["read"] }
+          ]
+        },
+
+        "node": {
+          "$role": true,
+          "$squash": true,
+          "$size": { "max": 10000 },
+          "$encryption": {
+            "rootKeyId": "#dwn-enc",
+            "publicKeyJwk": {}
+          },
+          "$actions": [
+            { "who": "author", "of": "network", "can": ["create", "update", "delete"] },
+            { "role": "network/member", "can": ["read"] },
+            { "role": "network/node", "can": ["read"] }
+          ],
+
+          "nodeInfo": {
+            "$squash": true,
+            "$size": { "max": 5000 },
+            "$encryption": {
+              "rootKeyId": "#dwn-enc",
+              "publicKeyJwk": {}
+            },
+            "$recordLimit": { "max": 1, "strategy": "purgeOldest" },
+            "$actions": [
+              { "who": "recipient", "of": "network/member/node", "can": ["create", "update"] },
+              { "role": "network/member", "can": ["read"] },
+              { "role": "network/node", "can": ["read"] }
+            ]
+          },
+
+          "endpoint": {
+            "$squash": true,
+            "$size": { "max": 2000 },
+            "$encryption": {
+              "rootKeyId": "#dwn-enc",
+              "publicKeyJwk": {}
+            },
+            "$recordLimit": { "max": 1, "strategy": "purgeOldest" },
+            "$actions": [
+              { "who": "recipient", "of": "network/member/node", "can": ["create", "update"] },
+              { "role": "network/member", "can": ["read"] },
+              { "role": "network/node", "can": ["read"] }
+            ]
+          }
+        }
+      },
+
       "node": {
         "$role": true,
         "$squash": true,
@@ -52,8 +132,24 @@
         },
         "$actions": [
           { "who": "author", "of": "network", "can": ["create", "update", "delete"] },
+          { "role": "network/member", "can": ["read"] },
           { "role": "network/node", "can": ["read"] }
         ],
+
+        "nodeInfo": {
+          "$squash": true,
+          "$size": { "max": 5000 },
+          "$encryption": {
+            "rootKeyId": "#dwn-enc",
+            "publicKeyJwk": {}
+          },
+          "$recordLimit": { "max": 1, "strategy": "purgeOldest" },
+          "$actions": [
+            { "who": "recipient", "of": "network/node", "can": ["create", "update"] },
+            { "role": "network/member", "can": ["read"] },
+            { "role": "network/node", "can": ["read"] }
+          ]
+        },
 
         "endpoint": {
           "$squash": true,
@@ -64,7 +160,8 @@
           },
           "$recordLimit": { "max": 1, "strategy": "purgeOldest" },
           "$actions": [
-            { "who": "author", "of": "network/node", "can": ["create", "update"] },
+            { "who": "recipient", "of": "network/node", "can": ["create", "update"] },
+            { "role": "network/member", "can": ["read"] },
             { "role": "network/node", "can": ["read"] }
           ]
         }
@@ -79,6 +176,7 @@
         "$recordLimit": { "max": 1, "strategy": "purgeOldest" },
         "$actions": [
           { "who": "author", "of": "network", "can": ["create", "update"] },
+          { "role": "network/member", "can": ["read"] },
           { "role": "network/node", "can": ["read"] }
         ]
       },
@@ -90,6 +188,7 @@
         },
         "$actions": [
           { "who": "author", "of": "network", "can": ["create", "update", "delete"] },
+          { "role": "network/member", "can": ["read"] },
           { "role": "network/node", "can": ["read"] }
         ]
       },
