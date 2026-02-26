@@ -17,16 +17,14 @@ import (
 const (
 	protocolMesh = "https://enbox.org/protocols/wireguard-mesh"
 
-	schemaNodeInfo = "https://enbox.org/schemas/wireguard-mesh/node-info"
+	schemaNode     = "https://enbox.org/schemas/wireguard-mesh/node"
 	schemaEndpoint = "https://enbox.org/schemas/wireguard-mesh/endpoint"
-	schemaMember   = "https://enbox.org/schemas/wireguard-mesh/member"
 )
 
 // NodeRegistration holds the result of registering a node on DWN.
 type NodeRegistration struct {
-	NodeInfoRecordID string
-	MeshIP           string
-	WireGuardPubKey  string
+	NodeRecordID string
+	MeshIP       string
 
 	// DateCreated is the dateCreated timestamp from the initial write.
 	// Store this and pass it back for subsequent updates so the immutable
@@ -45,7 +43,7 @@ type RegisterNodeParams struct {
 	// NetworkRecordID is the root network record ID (used as contextId).
 	NetworkRecordID string
 
-	// SelfDID is this node's DID URI.
+	// SelfDID is this node's DID URI (did:jwk).
 	SelfDID string
 
 	// Signer signs DWN messages.
@@ -54,12 +52,9 @@ type RegisterNodeParams struct {
 	// EncryptionKeyManager derives encryption keys for protocol paths.
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 
-	// WireGuardPubKey is this node's WireGuard public key (base64).
-	WireGuardPubKey string
-
 	// DiscoKey is this node's disco public key (base64). The disco key
 	// enables DERP relay and direct connection upgrades between peers.
-	// Optional: if empty, the disco key is omitted from the nodeInfo record.
+	// Optional: if empty, the disco key is omitted from the node record.
 	DiscoKey string
 
 	// MeshIP is this node's allocated mesh IP.
@@ -68,16 +63,19 @@ type RegisterNodeParams struct {
 	// Hostname is the machine hostname. Auto-detected if empty.
 	Hostname string
 
-	// ExistingNodeInfoRecordID is set when updating an existing nodeInfo.
+	// Label is a human-readable label for this node.
+	Label string
+
+	// ExistingNodeRecordID is set when updating an existing node record.
 	// Leave empty for initial registration.
-	ExistingNodeInfoRecordID string
+	ExistingNodeRecordID string
 
 	// ExistingDateCreated is the dateCreated timestamp from the initial write.
-	// Required when ExistingNodeInfoRecordID is set (updates), because
+	// Required when ExistingNodeRecordID is set (updates), because
 	// dateCreated is immutable across record updates.
 	ExistingDateCreated string
 
-	// ProtocolRole is the role to invoke for authorization (e.g., "network/member").
+	// ProtocolRole is the role to invoke for authorization (e.g., "network/node").
 	// Required when writing to another party's DWN as a non-owner.
 	ProtocolRole string
 
@@ -90,19 +88,18 @@ type RegisterNodeParams struct {
 
 	// Squash indicates this is a squash (snapshot) write. When true,
 	// the server atomically creates this new record and deletes all
-	// older sibling nodeInfo records at the same protocol path within
+	// older sibling node records at the same protocol path within
 	// the same parent context. Use this when re-registering to replace
-	// a previous nodeInfo record. Requires $squash: true on the
-	// nodeInfo protocol rule set.
+	// a previous node record.
 	Squash bool
 }
 
-// RegisterNode writes or updates the node's nodeInfo record (encrypted) on
-// the anchor DWN.
+// RegisterNode writes or updates the node record (encrypted) on the anchor DWN.
 //
-// It creates a nodeInfo record under the network context with the node's
-// WireGuard public key, mesh IP, hostname, and OS. The record is encrypted
-// using the protocol path derivation scheme at "network/nodeInfo".
+// The node record is a merged record containing the node's mesh IP, hostname,
+// OS, and capabilities. The WireGuard public key is NOT stored — peers derive
+// it from the node's did:jwk identity. The recipient field is set to the node's
+// DID, which assigns the network/node role for authorization.
 func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistration, error) {
 	if params.EncryptionKeyManager == nil {
 		return nil, fmt.Errorf("EncryptionKeyManager is required for encrypted writes")
@@ -113,18 +110,18 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 		hostname, _ = os.Hostname()
 	}
 
-	nodeInfo := map[string]any{
-		"wireguardPublicKey": params.WireGuardPubKey,
-		"meshIP":             params.MeshIP,
-		"hostname":           hostname,
-		"os":                 runtime.GOOS,
+	nodeData := map[string]any{
+		"meshIP":   params.MeshIP,
+		"hostname": hostname,
+		"os":       runtime.GOOS,
+		"addedAt":  time.Now().UTC().Format(time.RFC3339),
 	}
-	if params.DiscoKey != "" {
-		nodeInfo["discoKey"] = params.DiscoKey
+	if params.Label != "" {
+		nodeData["label"] = params.Label
 	}
-	nodeInfoData, err := json.Marshal(nodeInfo)
+	nodeDataBytes, err := json.Marshal(nodeData)
 	if err != nil {
-		return nil, fmt.Errorf("marshaling nodeInfo: %w", err)
+		return nil, fmt.Errorf("marshaling node data: %w", err)
 	}
 
 	// Derive encryption recipients.
@@ -135,12 +132,12 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 	if params.UseContextEncryption {
 		recipients, err = params.EncryptionKeyManager.DeriveContextWriteEncryption(params.NetworkRecordID)
 		if err != nil {
-			return nil, fmt.Errorf("deriving nodeInfo context encryption: %w", err)
+			return nil, fmt.Errorf("deriving node context encryption: %w", err)
 		}
 	} else {
-		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/nodeInfo")
+		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/node")
 		if err != nil {
-			return nil, fmt.Errorf("deriving nodeInfo encryption: %w", err)
+			return nil, fmt.Errorf("deriving node encryption: %w", err)
 		}
 	}
 
@@ -149,34 +146,29 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 
 	writeParams := dwn.WriteParams{
 		Protocol:             protocolMesh,
-		ProtocolPath:         "network/nodeInfo",
-		Schema:               schemaNodeInfo,
+		ProtocolPath:         "network/node",
+		Schema:               schemaNode,
 		DataFormat:           "application/json",
-		Recipient:            params.AnchorDID,
+		Recipient:            params.SelfDID,
 		ParentContextID:     params.NetworkRecordID,
-		Data:                 nodeInfoData,
-		Tags: map[string]any{
-			"did":      params.SelfDID,
-			"hostname": hostname,
-			"os":       runtime.GOOS,
-		},
+		Data:                 nodeDataBytes,
 		ProtocolRole:         params.ProtocolRole,
 		EncryptionRecipients: recipients,
 		Squash:               params.Squash,
 	}
 
 	// If updating, set the existing record ID and preserve dateCreated.
-	if params.ExistingNodeInfoRecordID != "" {
-		writeParams.RecordID = params.ExistingNodeInfoRecordID
+	if params.ExistingNodeRecordID != "" {
+		writeParams.RecordID = params.ExistingNodeRecordID
 		writeParams.DateCreated = params.ExistingDateCreated
 	}
 
 	record, status, err := api.Write(ctx, params.AnchorDID, writeParams)
 	if err != nil {
-		return nil, fmt.Errorf("writing nodeInfo: %w", err)
+		return nil, fmt.Errorf("writing node record: %w", err)
 	}
 	if status.Code >= 300 {
-		return nil, fmt.Errorf("nodeInfo write failed: %d %s", status.Code, status.Detail)
+		return nil, fmt.Errorf("node write failed: %d %s", status.Code, status.Detail)
 	}
 
 	// Extract dateCreated from the record — callers need this for future updates.
@@ -186,16 +178,15 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 	}
 
 	return &NodeRegistration{
-		NodeInfoRecordID: record.ID,
-		MeshIP:           params.MeshIP,
-		WireGuardPubKey:  params.WireGuardPubKey,
-		DateCreated:      dateCreated,
+		NodeRecordID: record.ID,
+		MeshIP:       params.MeshIP,
+		DateCreated:  dateCreated,
 	}, nil
 }
 
 // WriteEndpoint writes or updates the node's endpoint record (encrypted).
 //
-// The endpoint record is a child of the nodeInfo record and contains the
+// The endpoint record is a child of the node record and contains the
 // node's network-reachable endpoints (public IPs, local IPs, NAT type).
 func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 	if params.EncryptionKeyManager == nil {
@@ -224,7 +215,7 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 			return fmt.Errorf("deriving endpoint context encryption: %w", err)
 		}
 	} else {
-		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/nodeInfo/endpoint")
+		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/node/endpoint")
 		if err != nil {
 			return fmt.Errorf("deriving endpoint encryption: %w", err)
 		}
@@ -233,15 +224,15 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
 	api := dwn.NewDwnAPI(agent)
 
-	// The endpoint's parent is nodeInfo, whose contextId is networkRecordID/nodeInfoRecordID.
-	nodeInfoContextID := params.NetworkRecordID + "/" + params.NodeInfoRecordID
+	// The endpoint's parent is the node record, whose contextId is networkRecordID/nodeRecordID.
+	nodeContextID := params.NetworkRecordID + "/" + params.NodeRecordID
 	_, status, err := api.Write(ctx, params.AnchorDID, dwn.WriteParams{
 		Protocol:             protocolMesh,
-		ProtocolPath:         "network/nodeInfo/endpoint",
+		ProtocolPath:         "network/node/endpoint",
 		Schema:               schemaEndpoint,
 		DataFormat:           "application/json",
 		Recipient:            params.AnchorDID,
-		ParentContextID:     nodeInfoContextID,
+		ParentContextID:     nodeContextID,
 		Data:                 endpointData,
 		ProtocolRole:         params.ProtocolRole,
 		EncryptionRecipients: recipients,
@@ -262,7 +253,7 @@ type WriteEndpointParams struct {
 	AnchorEndpoint       string
 	AnchorDID            string
 	NetworkRecordID      string
-	NodeInfoRecordID     string
+	NodeRecordID         string
 	Signer               *dwn.Signer
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 	PublicEndpoints      []PublicEndpoint
@@ -290,72 +281,6 @@ type PublicEndpoint struct {
 	Port     int    `json:"port"`
 	Priority int    `json:"priority,omitempty"`
 	Source   string `json:"source,omitempty"`
-}
-
-// CreateMember creates an encrypted member record on the anchor DWN.
-func CreateMember(ctx context.Context, params CreateMemberParams) error {
-	if params.EncryptionKeyManager == nil {
-		return fmt.Errorf("EncryptionKeyManager is required for encrypted writes")
-	}
-
-	memberData, err := json.Marshal(map[string]any{
-		"joinedAt": time.Now().UTC().Format(time.RFC3339),
-		"label":    params.Label,
-	})
-	if err != nil {
-		return fmt.Errorf("marshaling member: %w", err)
-	}
-
-	var recipients []dwncrypto.KeyEncryptionInput
-	if params.UseContextEncryption {
-		recipients, err = params.EncryptionKeyManager.DeriveContextWriteEncryption(params.NetworkRecordID)
-		if err != nil {
-			return fmt.Errorf("deriving member context encryption: %w", err)
-		}
-	} else {
-		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/member")
-		if err != nil {
-			return fmt.Errorf("deriving member encryption: %w", err)
-		}
-	}
-
-	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
-	api := dwn.NewDwnAPI(agent)
-
-	_, status, err := api.Write(ctx, params.AnchorDID, dwn.WriteParams{
-		Protocol:             protocolMesh,
-		ProtocolPath:         "network/member",
-		Schema:               schemaMember,
-		DataFormat:           "application/json",
-		Recipient:            params.MemberDID,
-		ParentContextID:     params.NetworkRecordID,
-		Data:                 memberData,
-		Tags:                 map[string]any{"status": "active"},
-		EncryptionRecipients: recipients,
-	})
-	if err != nil {
-		return fmt.Errorf("writing member: %w", err)
-	}
-	if status.Code >= 300 {
-		return fmt.Errorf("member write failed: %d %s", status.Code, status.Detail)
-	}
-
-	return nil
-}
-
-// CreateMemberParams configures a member record creation.
-type CreateMemberParams struct {
-	AnchorEndpoint       string
-	AnchorDID            string
-	NetworkRecordID      string
-	MemberDID            string
-	Label                string
-	Signer               *dwn.Signer
-	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
-
-	// UseContextEncryption enables Protocol Context encryption instead of
-	// Protocol Path encryption. See RegisterNodeParams.UseContextEncryption.
-	UseContextEncryption bool
 }
 
 // DiscoverLocalEndpoints discovers local network endpoints for this node.

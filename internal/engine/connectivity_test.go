@@ -29,10 +29,10 @@ import (
 //  1. Creates two DID identities (node A = anchor, node B = joiner)
 //  2. Node A installs wireguard-mesh + key-delivery protocols with encryption
 //  3. Node A creates the network record
-//  4. Node A creates admin member + nodeInfo (encrypted with Protocol Path)
-//  5. Node B joins: member created by A, nodeInfo + endpoint by B (Protocol Path)
+//  4. Node A registers its node record (encrypted, no WireGuardPubKey — derived from did:jwk)
+//  5. Node A registers Node B's node record (recipient = B's DID, assigns network/node role)
 //  6. Node A delivers context key to both nodes
-//  6b. Node B fetches context key, re-registers nodeInfo + endpoint with Protocol Context encryption
+//  6b. Node B fetches context key, re-registers node + endpoint with Protocol Context encryption
 //  7. Both nodes create real engines (UserspaceEngine + netstack)
 //  8. Both engines start, poll DWN, and discover each other
 //  9. TCP connectivity test: B dials A's mesh IP, echo round-trip verified
@@ -130,41 +130,10 @@ func TestTwoNodeConnectivity(t *testing.T) {
 	t.Logf("  Network record: %s", networkRecordID)
 
 	// ================================================================
-	// Step 4: Node A creates admin member + nodeInfo (encrypted)
+	// Step 4: Node A registers its own node record (encrypted)
 	// ================================================================
-	t.Log("Step 4: Node A creates admin member and nodeInfo records")
+	t.Log("Step 4: Node A registers its own node record")
 
-	memberRecipients, err := nodeA.encMgr.DeriveWriteEncryption("network/member")
-	if err != nil {
-		t.Fatalf("deriving member encryption: %v", err)
-	}
-
-	memberData, _ := json.Marshal(map[string]any{
-		"joinedAt": time.Now().UTC().Format(time.RFC3339),
-		"label":    "admin",
-	})
-	_, memberStatus, err := nodeA.api.Write(ctx, nodeA.identity.URI, dwn.WriteParams{
-		Protocol:             protocols.MeshProtocolURI,
-		ProtocolPath:         "network/member",
-		Schema:               "https://enbox.org/schemas/wireguard-mesh/member",
-		DataFormat:           "application/json",
-		Recipient:            nodeA.identity.URI,
-		ParentContextID:     networkRecordID,
-		Data:                 memberData,
-		Tags:                 map[string]any{"status": "active"},
-		EncryptionRecipients: memberRecipients,
-	})
-	if err != nil {
-		t.Fatalf("creating admin member: %v", err)
-	}
-	if memberStatus.Code >= 300 {
-		t.Fatalf("admin member: %d %s", memberStatus.Code, memberStatus.Detail)
-	}
-
-	wgKeysA, err := mesh.WireGuardKeyFromIdentity(nodeA.identity.EncryptionPrivateKey)
-	if err != nil {
-		t.Fatalf("deriving WG keys for A: %v", err)
-	}
 	meshIPA, err := mesh.AllocateMeshIP(meshCIDR, nodeA.identity.URI)
 	if err != nil {
 		t.Fatalf("allocating mesh IP for A: %v", err)
@@ -177,21 +146,20 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		SelfDID:              nodeA.identity.URI,
 		Signer:               nodeA.signer,
 		EncryptionKeyManager: nodeA.encMgr,
-		WireGuardPubKey:      wgKeysA.PublicKeyBase64(),
 		MeshIP:               meshIPA.String(),
 		Hostname:             "node-a",
 	})
 	if err != nil {
 		t.Fatalf("registering node A: %v", err)
 	}
-	t.Logf("  Node A: IP=%s, nodeInfo=%s", meshIPA, regA.NodeInfoRecordID)
+	t.Logf("  Node A: IP=%s, nodeRecord=%s", meshIPA, regA.NodeRecordID)
 
 	// Write endpoint record for node A.
 	err = mesh.WriteEndpoint(ctx, mesh.WriteEndpointParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            nodeA.identity.URI,
 		NetworkRecordID:      networkRecordID,
-		NodeInfoRecordID:     regA.NodeInfoRecordID,
+		NodeRecordID:         regA.NodeRecordID,
 		Signer:               nodeA.signer,
 		EncryptionKeyManager: nodeA.encMgr,
 		LocalEndpoints:       mesh.DiscoverLocalEndpoints(0),
@@ -206,26 +174,9 @@ func TestTwoNodeConnectivity(t *testing.T) {
 	// ================================================================
 	t.Log("Step 5: Node B joins the network")
 
-	// Node A (network author) creates Node B's member record on the anchor DWN.
-	// Per the protocol's $actions: only the network author can create members.
-	err = mesh.CreateMember(ctx, mesh.CreateMemberParams{
-		AnchorEndpoint:       endpoint,
-		AnchorDID:            nodeA.identity.URI,
-		NetworkRecordID:      networkRecordID,
-		MemberDID:            nodeB.identity.URI,
-		Label:                "member",
-		Signer:               nodeA.signer,
-		EncryptionKeyManager: nodeA.encMgr,
-	})
-	if err != nil {
-		t.Fatalf("Node B member creation (by Node A) failed: %v", err)
-	}
-	t.Log("  Node B member record created by Node A")
-
-	wgKeysB, err := mesh.WireGuardKeyFromIdentity(nodeB.identity.EncryptionPrivateKey)
-	if err != nil {
-		t.Fatalf("deriving WG keys for B: %v", err)
-	}
+	// Node A (network author) creates Node B's node record on the anchor DWN.
+	// The node record's Recipient is set to Node B's DID, assigning Node B
+	// the network/node role for authorization.
 	meshIPB, err := mesh.AllocateMeshIP(meshCIDR, nodeB.identity.URI)
 	if err != nil {
 		t.Fatalf("allocating mesh IP for B: %v", err)
@@ -236,29 +187,28 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		AnchorDID:            nodeA.identity.URI,
 		NetworkRecordID:      networkRecordID,
 		SelfDID:              nodeB.identity.URI,
-		Signer:               nodeB.signer,
-		EncryptionKeyManager: nodeB.encMgr,
-		WireGuardPubKey:      wgKeysB.PublicKeyBase64(),
+		Signer:               nodeA.signer, // Node A creates B's record
+		EncryptionKeyManager: nodeA.encMgr,
 		MeshIP:               meshIPB.String(),
 		Hostname:             "node-b",
-		ProtocolRole:         "network/member",
 	})
 	if err != nil {
-		t.Fatalf("Node B nodeInfo registration failed: %v", err)
+		t.Fatalf("Node B node registration failed: %v", err)
 	}
-	t.Logf("  Node B: IP=%s, nodeInfo=%s", meshIPB, regB.NodeInfoRecordID)
+	t.Logf("  Node B: IP=%s, nodeRecord=%s", meshIPB, regB.NodeRecordID)
 
-	// Write endpoint record for node B.
-	if regB != nil && regB.NodeInfoRecordID != "" {
+	// Write endpoint record for node B (authored by B using network/node role).
+	if regB != nil && regB.NodeRecordID != "" {
 		err = mesh.WriteEndpoint(ctx, mesh.WriteEndpointParams{
 			AnchorEndpoint:       endpoint,
 			AnchorDID:            nodeA.identity.URI,
 			NetworkRecordID:      networkRecordID,
-			NodeInfoRecordID:     regB.NodeInfoRecordID,
+			NodeRecordID:         regB.NodeRecordID,
 			Signer:               nodeB.signer,
 			EncryptionKeyManager: nodeB.encMgr,
 			LocalEndpoints:       mesh.DiscoverLocalEndpoints(0),
 			NATType:              "unknown",
+			ProtocolRole:         "network/node",
 		})
 		if err != nil {
 			t.Logf("  Warning: Node B endpoint write failed: %v", err)
@@ -302,26 +252,25 @@ func TestTwoNodeConnectivity(t *testing.T) {
 	}
 	t.Log("  Context key delivered to Node B")
 
-	// Node A (anchor) also re-registers with context encryption so non-anchor
-	// nodes can decrypt its nodeInfo using the shared context key.
+	// Node A (anchor) re-registers with context encryption so non-anchor
+	// nodes can decrypt its node record using the shared context key.
 	regA2, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
-		AnchorEndpoint:          endpoint,
-		AnchorDID:               nodeA.identity.URI,
-		NetworkRecordID:         networkRecordID,
-		SelfDID:                 nodeA.identity.URI,
-		Signer:                  nodeA.signer,
-		EncryptionKeyManager:    nodeA.encMgr,
-		WireGuardPubKey:         wgKeysA.PublicKeyBase64(),
-		MeshIP:                  meshIPA.String(),
-		Hostname:                "node-a",
-		UseContextEncryption:    true,
-		ExistingNodeInfoRecordID: regA.NodeInfoRecordID,
-		ExistingDateCreated:     regA.DateCreated,
+		AnchorEndpoint:       endpoint,
+		AnchorDID:            nodeA.identity.URI,
+		NetworkRecordID:      networkRecordID,
+		SelfDID:              nodeA.identity.URI,
+		Signer:               nodeA.signer,
+		EncryptionKeyManager: nodeA.encMgr,
+		MeshIP:               meshIPA.String(),
+		Hostname:             "node-a",
+		UseContextEncryption: true,
+		ExistingNodeRecordID: regA.NodeRecordID,
+		ExistingDateCreated:  regA.DateCreated,
 	})
 	if err != nil {
 		t.Fatalf("re-registering Node A with context encryption: %v", err)
 	}
-	t.Logf("  Node A re-registered with context encryption: %s", regA2.NodeInfoRecordID)
+	t.Logf("  Node A re-registered with context encryption: %s", regA2.NodeRecordID)
 
 	// ================================================================
 	// Step 6b: Node B fetches and stores context key, re-registers with context encryption
@@ -348,37 +297,34 @@ func TestTwoNodeConnectivity(t *testing.T) {
 	nodeB.encMgr.StoreContextKey(networkRecordID, contextKeyBytes)
 	t.Log("  Node B stored context key")
 
-	// Re-register Node B's nodeInfo with Protocol Context encryption.
+	// Re-register Node B's node record with Protocol Context encryption.
 	// This is an UPDATE (same recordId, preserved dateCreated) which replaces
 	// the old Protocol Path encrypted record in-place, avoiding duplicates.
 	regB2, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
-		AnchorEndpoint:          endpoint,
-		AnchorDID:               nodeA.identity.URI,
-		NetworkRecordID:         networkRecordID,
-		SelfDID:                 nodeB.identity.URI,
-		Signer:                  nodeB.signer,
-		EncryptionKeyManager:    nodeB.encMgr,
-		WireGuardPubKey:         wgKeysB.PublicKeyBase64(),
-		MeshIP:                  meshIPB.String(),
-		Hostname:                "node-b",
-		ProtocolRole:            "network/member",
-		UseContextEncryption:    true,
-		ExistingNodeInfoRecordID: regB.NodeInfoRecordID,
-		ExistingDateCreated:     regB.DateCreated,
+		AnchorEndpoint:       endpoint,
+		AnchorDID:            nodeA.identity.URI,
+		NetworkRecordID:      networkRecordID,
+		SelfDID:              nodeB.identity.URI,
+		Signer:               nodeB.signer,
+		EncryptionKeyManager: nodeB.encMgr,
+		MeshIP:               meshIPB.String(),
+		Hostname:             "node-b",
+		ProtocolRole:         "network/node",
+		UseContextEncryption: true,
+		ExistingNodeRecordID: regB.NodeRecordID,
+		ExistingDateCreated:  regB.DateCreated,
 	})
 	if err != nil {
 		t.Fatalf("re-registering Node B with context encryption: %v", err)
 	}
-	t.Logf("  Node B re-registered with context encryption: %s", regB2.NodeInfoRecordID)
+	t.Logf("  Node B re-registered with context encryption: %s", regB2.NodeRecordID)
 
-	// Re-write Node B's endpoint with context encryption, parented under the new nodeInfo.
-	// No ProtocolRole needed — the "who": "author", "of": "network/nodeInfo" action
-	// authorizes the nodeInfo author to create endpoint records.
+	// Re-write Node B's endpoint with context encryption, parented under the node record.
 	err = mesh.WriteEndpoint(ctx, mesh.WriteEndpointParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            nodeA.identity.URI,
 		NetworkRecordID:      networkRecordID,
-		NodeInfoRecordID:     regB2.NodeInfoRecordID,
+		NodeRecordID:         regB2.NodeRecordID,
 		Signer:               nodeB.signer,
 		EncryptionKeyManager: nodeB.encMgr,
 		LocalEndpoints:       mesh.DiscoverLocalEndpoints(0),
@@ -396,15 +342,27 @@ func TestTwoNodeConnectivity(t *testing.T) {
 	// ================================================================
 	t.Log("Step 7: Creating engines for both nodes")
 
+	// Derive WireGuard keys from identity for engine Config.
+	// The engine needs the raw X25519 private key for WireGuard, even though
+	// the public key is no longer stored in DWN records (peers derive it
+	// from the did:jwk).
+	wgKeysA, err := mesh.WireGuardKeyFromIdentity(nodeA.identity.EncryptionPrivateKey)
+	if err != nil {
+		t.Fatalf("deriving WG keys for A: %v", err)
+	}
+	wgKeysB, err := mesh.WireGuardKeyFromIdentity(nodeB.identity.EncryptionPrivateKey)
+	if err != nil {
+		t.Fatalf("deriving WG keys for B: %v", err)
+	}
+
 	// Diagnostic: verify that the NodePublic derived from the private key
-	// matches the public key stored in DWN records. This is critical for
-	// disco key lookup — if these don't match, disco keys won't be found.
+	// matches the public key that peers will derive from the did:jwk.
 	nodePrivA := key.NodePrivateFromRaw32(go4mem.B(wgKeysA.PrivateKey[:]))
 	nodePrivB := key.NodePrivateFromRaw32(go4mem.B(wgKeysB.PrivateKey[:]))
 	nodePubA := nodePrivA.Public()
 	nodePubB := nodePrivB.Public()
 
-	// Parse the public keys from the DWN-stored base64 (same path as converter)
+	// Parse the public keys from the base64 (same path as converter)
 	dwnPubA, _ := parseTestWireGuardKey(wgKeysA.PublicKeyBase64())
 	dwnPubB, _ := parseTestWireGuardKey(wgKeysB.PublicKeyBase64())
 
@@ -736,22 +694,6 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 		}
 	}
 
-	// Create member records (Node A is network author, so it creates both).
-	memberRecipients, _ := nodeA.encMgr.DeriveWriteEncryption("network/member")
-	mData, _ := json.Marshal(map[string]any{"joinedAt": time.Now().UTC().Format(time.RFC3339)})
-	nodeA.api.Write(ctx, nodeA.identity.URI, dwn.WriteParams{
-		Protocol: protocols.MeshProtocolURI, ProtocolPath: "network/member",
-		Schema: "https://enbox.org/schemas/wireguard-mesh/member", DataFormat: "application/json",
-		Recipient: nodeA.identity.URI, ParentContextID: networkRecordID,
-		Data: mData, Tags: map[string]any{"status": "active"}, EncryptionRecipients: memberRecipients,
-	})
-	nodeA.api.Write(ctx, nodeA.identity.URI, dwn.WriteParams{
-		Protocol: protocols.MeshProtocolURI, ProtocolPath: "network/member",
-		Schema: "https://enbox.org/schemas/wireguard-mesh/member", DataFormat: "application/json",
-		Recipient: nodeB.identity.URI, ParentContextID: networkRecordID,
-		Data: mData, Tags: map[string]any{"status": "active"}, EncryptionRecipients: memberRecipients,
-	})
-
 	// Install key-delivery protocol on anchor.
 	err = mesh.EnsureKeyDeliveryProtocol(ctx, endpoint, nodeA.identity.URI, nodeA.signer,
 		nodeA.identity.EncryptionPrivateKey, nodeA.identity.EncryptionKeyID())
@@ -759,25 +701,22 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 		t.Fatalf("EnsureKeyDeliveryProtocol: %v", err)
 	}
 
-	// Register both nodes (initial registration uses Protocol Path encryption).
-	wgA, _ := mesh.WireGuardKeyFromIdentity(nodeA.identity.EncryptionPrivateKey)
+	// Register both nodes. Node A is the anchor (network author).
 	ipA, _ := mesh.AllocateMeshIP(meshCIDR, nodeA.identity.URI)
 	regADisc, _ := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,
 		NetworkRecordID: networkRecordID, SelfDID: nodeA.identity.URI,
 		Signer: nodeA.signer, EncryptionKeyManager: nodeA.encMgr,
-		WireGuardPubKey: wgA.PublicKeyBase64(), MeshIP: ipA.String(),
-		Hostname: "disc-a",
+		MeshIP: ipA.String(), Hostname: "disc-a",
 	})
 
-	wgB, _ := mesh.WireGuardKeyFromIdentity(nodeB.identity.EncryptionPrivateKey)
+	// Node A creates Node B's node record (assigns network/node role via Recipient).
 	ipB, _ := mesh.AllocateMeshIP(meshCIDR, nodeB.identity.URI)
 	regBDisc, _ := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,
 		NetworkRecordID: networkRecordID, SelfDID: nodeB.identity.URI,
-		Signer: nodeB.signer, EncryptionKeyManager: nodeB.encMgr,
-		WireGuardPubKey: wgB.PublicKeyBase64(), MeshIP: ipB.String(),
-		Hostname: "disc-b", ProtocolRole: "network/member",
+		Signer: nodeA.signer, EncryptionKeyManager: nodeA.encMgr,
+		MeshIP: ipB.String(), Hostname: "disc-b",
 	})
 
 	// Deliver context key to Node B, then re-register both nodes with context encryption.
@@ -801,10 +740,9 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 		AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,
 		NetworkRecordID: networkRecordID, SelfDID: nodeA.identity.URI,
 		Signer: nodeA.signer, EncryptionKeyManager: nodeA.encMgr,
-		WireGuardPubKey: wgA.PublicKeyBase64(), MeshIP: ipA.String(),
-		Hostname: "disc-a", UseContextEncryption: true,
-		ExistingNodeInfoRecordID: regADisc.NodeInfoRecordID,
-		ExistingDateCreated:      regADisc.DateCreated,
+		MeshIP: ipA.String(), Hostname: "disc-a", UseContextEncryption: true,
+		ExistingNodeRecordID: regADisc.NodeRecordID,
+		ExistingDateCreated:  regADisc.DateCreated,
 	})
 
 	// Node B fetches and stores context key.
@@ -829,13 +767,16 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 			AnchorEndpoint: endpoint, AnchorDID: nodeA.identity.URI,
 			NetworkRecordID: networkRecordID, SelfDID: nodeB.identity.URI,
 			Signer: nodeB.signer, EncryptionKeyManager: nodeB.encMgr,
-			WireGuardPubKey: wgB.PublicKeyBase64(), MeshIP: ipB.String(),
-			Hostname: "disc-b", ProtocolRole: "network/member",
+			MeshIP: ipB.String(), Hostname: "disc-b",
+			ProtocolRole:         "network/node",
 			UseContextEncryption: true,
-			ExistingNodeInfoRecordID: regBDisc.NodeInfoRecordID,
-			ExistingDateCreated:      regBDisc.DateCreated,
+			ExistingNodeRecordID: regBDisc.NodeRecordID,
+			ExistingDateCreated:  regBDisc.DateCreated,
 		})
 	}
+
+	// Derive WireGuard key for engine Config.
+	wgA, _ := mesh.WireGuardKeyFromIdentity(nodeA.identity.EncryptionPrivateKey)
 
 	// Create engine A.
 	discoReg := engine.NewInMemoryDiscoRegistry()
@@ -868,7 +809,7 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 			t.Logf("  Engine A NetMap: domain=%s, selfNode=%v, peers=%d",
 				nm.Domain, nm.SelfNode.Valid(), len(nm.Peers))
 
-			// Check if we see at least 1 nodeInfo (ourselves).
+			// Check if we see at least 1 node (ourselves).
 			if nm.SelfNode.Valid() {
 				t.Log("  Engine A successfully loaded network map from DWN")
 				return

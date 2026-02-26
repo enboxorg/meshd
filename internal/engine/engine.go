@@ -608,14 +608,14 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 			AnchorEndpoint:       cfg.AnchorEndpoint,
 			AnchorDID:            cfg.AnchorTenant,
 			NetworkRecordID:      cfg.NetworkRecordID,
-			NodeInfoRecordID:     cfg.NodeInfoRecordID,
+			NodeRecordID:         cfg.NodeInfoRecordID,
 			Signer:               cfg.Signer,
 			EncryptionKeyManager: cfg.EncryptionKeyManager,
 			PublicEndpoints:      publicEPs,
 			LocalEndpoints:       localEPs,
 			DiscoKey:             discoKeyB64,
 			NATType:              "unknown",
-			ProtocolRole:         "network/member",
+			ProtocolRole:         "network/node",
 			UseContextEncryption: cfg.UseContextEncryption,
 		})
 		if err != nil {

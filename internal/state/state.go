@@ -63,12 +63,12 @@ type NetworkState struct {
 	// MeshIP is this node's allocated IP within the mesh.
 	MeshIP string `json:"meshIp,omitempty"`
 
-	// NodeInfoRecordID is the record ID of this node's nodeInfo record.
-	NodeInfoRecordID string `json:"nodeInfoRecordId,omitempty"`
+	// NodeRecordID is the record ID of this node's node record on the anchor DWN.
+	NodeRecordID string `json:"nodeRecordId,omitempty"`
 
-	// NodeInfoDateCreated is the dateCreated timestamp from the initial
-	// nodeInfo write. Required for updates because dateCreated is immutable.
-	NodeInfoDateCreated string `json:"nodeInfoDateCreated,omitempty"`
+	// NodeDateCreated is the dateCreated timestamp from the initial
+	// node record write. Required for updates because dateCreated is immutable.
+	NodeDateCreated string `json:"nodeDateCreated,omitempty"`
 }
 
 const networkFile = "network.json"

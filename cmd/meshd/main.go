@@ -333,18 +333,13 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 		fmt.Printf("  Created admin member record (encrypted).\n")
 	}
 
-	// 5. Derive WireGuard keys from identity and allocate mesh IP.
-	wgKeys, err := mesh.WireGuardKeyFromIdentity(identity.EncryptionPrivateKey)
-	if err != nil {
-		return fmt.Errorf("deriving WireGuard keys: %w", err)
-	}
-
+	// 5. Allocate mesh IP.
 	meshIP, err := mesh.AllocateMeshIP(meshCIDR, identity.URI)
 	if err != nil {
 		return fmt.Errorf("allocating mesh IP: %w", err)
 	}
 
-	// 6. Register nodeInfo on DWN (encrypted).
+	// 6. Register node on DWN (encrypted).
 	reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            identity.URI,
@@ -352,11 +347,10 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 		SelfDID:              identity.URI,
 		Signer:               signer,
 		EncryptionKeyManager: encMgr,
-		WireGuardPubKey:      wgKeys.PublicKeyBase64(),
 		MeshIP:               meshIP.String(),
 	})
 	if err != nil {
-		fmt.Printf("  Warning: nodeInfo registration failed: %v\n", err)
+		fmt.Printf("  Warning: node registration failed: %v\n", err)
 	} else {
 		fmt.Printf("  Registered node (encrypted): IP=%s\n", meshIP)
 	}
@@ -371,8 +365,8 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 		MeshIP:          meshIP.String(),
 	}
 	if reg != nil {
-		ns.NodeInfoRecordID = reg.NodeInfoRecordID
-		ns.NodeInfoDateCreated = reg.DateCreated
+		ns.NodeRecordID = reg.NodeRecordID
+		ns.NodeDateCreated = reg.DateCreated
 	}
 	if err := state.SaveNetworkState(stateDir, ns); err != nil {
 		return fmt.Errorf("saving network state: %w", err)
@@ -462,12 +456,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		networkData.MeshCIDR = "10.200.0.0/16"
 	}
 
-	// Derive WireGuard keys from identity and allocate mesh IP.
-	wgKeys, err := mesh.WireGuardKeyFromIdentity(identity.EncryptionPrivateKey)
-	if err != nil {
-		return fmt.Errorf("deriving WireGuard keys: %w", err)
-	}
-
+	// Allocate mesh IP.
 	meshIP, err := mesh.AllocateMeshIP(networkData.MeshCIDR, identity.URI)
 	if err != nil {
 		return fmt.Errorf("allocating mesh IP: %w", err)
@@ -481,25 +470,11 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 	// multi-party encryption). This is sufficient for single-owner networks.
 	encMgr := newEncryptionKeyManager(identity)
 
-	// Create member record (encrypted).
-	err = mesh.CreateMember(ctx, mesh.CreateMemberParams{
-		AnchorEndpoint:       endpoint,
-		AnchorDID:            anchorDID,
-		NetworkRecordID:      networkID,
-		MemberDID:            identity.URI,
-		Label:                "member",
-		Signer:               signer,
-		EncryptionKeyManager: encMgr,
-	})
-	if err != nil {
-		fmt.Printf("  Warning: member record creation failed: %v\n", err)
-	} else {
-		fmt.Printf("  Created member record (encrypted).\n")
-	}
-
-	// Register nodeInfo (encrypted), invoking the network/member role for authorization.
-	var nodeInfoRecordID string
-	var nodeInfoDateCreated string
+	// Register node (encrypted). The node record replaces the old separate
+	// member + nodeInfo records. The recipient field (SelfDID) assigns the
+	// network/node role for authorization.
+	var nodeRecordID string
+	var nodeDateCreated string
 	reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            anchorDID,
@@ -507,28 +482,27 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		SelfDID:              identity.URI,
 		Signer:               signer,
 		EncryptionKeyManager: encMgr,
-		WireGuardPubKey:      wgKeys.PublicKeyBase64(),
 		MeshIP:               meshIP.String(),
-		ProtocolRole:         "network/member",
+		ProtocolRole:         "network/node",
 	})
 	if err != nil {
-		fmt.Printf("  Warning: nodeInfo registration failed: %v\n", err)
+		fmt.Printf("  Warning: node registration failed: %v\n", err)
 	} else {
-		nodeInfoRecordID = reg.NodeInfoRecordID
-		nodeInfoDateCreated = reg.DateCreated
+		nodeRecordID = reg.NodeRecordID
+		nodeDateCreated = reg.DateCreated
 		fmt.Printf("  Registered node (encrypted): IP=%s\n", meshIP)
 	}
 
 	// Save network state locally.
 	ns := &state.NetworkState{
-		NetworkRecordID:     networkID,
-		AnchorDID:           anchorDID,
-		AnchorEndpoint:      endpoint,
-		NetworkName:         networkData.Name,
-		MeshCIDR:            networkData.MeshCIDR,
-		MeshIP:              meshIP.String(),
-		NodeInfoRecordID:    nodeInfoRecordID,
-		NodeInfoDateCreated: nodeInfoDateCreated,
+		NetworkRecordID: networkID,
+		AnchorDID:       anchorDID,
+		AnchorEndpoint:  endpoint,
+		NetworkName:     networkData.Name,
+		MeshCIDR:        networkData.MeshCIDR,
+		MeshIP:          meshIP.String(),
+		NodeRecordID:    nodeRecordID,
+		NodeDateCreated: nodeDateCreated,
 	}
 	if err := state.SaveNetworkState(stateDir, ns); err != nil {
 		return fmt.Errorf("saving network state: %w", err)
@@ -695,21 +669,27 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 	}
 	encMgr := newEncryptionKeyManager(identity)
 
-	// 1. Create a member record for the peer.
+	// 1. Create a node record for the peer (assigns the network/node role).
+	// The peer's mesh IP is derived deterministically from their DID.
 	fmt.Printf("Adding peer %s...\n", peerDID)
-	err = mesh.CreateMember(ctx, mesh.CreateMemberParams{
+	peerMeshIP, err := mesh.AllocateMeshIP(ns.MeshCIDR, peerDID)
+	if err != nil {
+		return fmt.Errorf("allocating mesh IP for peer: %w", err)
+	}
+	_, err = mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       ns.AnchorEndpoint,
 		AnchorDID:            ns.AnchorDID,
 		NetworkRecordID:      ns.NetworkRecordID,
-		MemberDID:            peerDID,
-		Label:                label,
+		SelfDID:              peerDID,
 		Signer:               signer,
 		EncryptionKeyManager: encMgr,
+		MeshIP:               peerMeshIP.String(),
+		Label:                label,
 	})
 	if err != nil {
-		return fmt.Errorf("creating member record: %w", err)
+		return fmt.Errorf("creating node record: %w", err)
 	}
-	fmt.Printf("  Member record created.\n")
+	fmt.Printf("  Node record created (IP=%s).\n", peerMeshIP)
 
 	// 2. Deliver the context encryption key so the peer can decrypt records.
 	kdm := &mesh.KeyDeliveryManager{
@@ -851,8 +831,8 @@ func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 			fmt.Printf("  WireGuard Key: %s\n", wgPubKey)
 		}
 	}
-	if ns.NodeInfoRecordID != "" {
-		fmt.Printf("  NodeInfo Record: %s\n", ns.NodeInfoRecordID)
+	if ns.NodeRecordID != "" {
+		fmt.Printf("  Node Record: %s\n", ns.NodeRecordID)
 	}
 
 	// Query live daemon status if running.
@@ -1057,7 +1037,6 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	if err != nil {
 		return fmt.Errorf("deriving WireGuard keys from identity: %w", err)
 	}
-	wgPubKey := wgKeys.PublicKeyBase64()
 
 	fmt.Printf("Starting meshd...\n")
 	fmt.Printf("  Network: %s\n", ns.NetworkName)
@@ -1065,50 +1044,49 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
 	fmt.Printf("  Anchor: %s\n", ns.AnchorEndpoint)
 
-	// If we have a context key, re-register nodeInfo with Protocol Context
+	// If we have a context key, re-register node with Protocol Context
 	// encryption. The initial registration during "network join" used Protocol
 	// Path encryption (our own key) which the anchor can't decrypt. Re-writing
-	// with Protocol Context encryption allows the anchor to read our nodeInfo.
+	// with Protocol Context encryption allows the anchor to read our node record.
 	// This is a RecordsWrite update (same recordId, preserved dateCreated).
-	if useContextEncryption && ns.NodeInfoRecordID != "" {
+	if useContextEncryption && ns.NodeRecordID != "" {
 		reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
-			AnchorEndpoint:          ns.AnchorEndpoint,
-			AnchorDID:               ns.AnchorDID,
-			NetworkRecordID:         ns.NetworkRecordID,
-			SelfDID:                 identity.URI,
-			Signer:                  signer,
-			EncryptionKeyManager:    encMgr,
-			WireGuardPubKey:         wgPubKey,
-			MeshIP:                  ns.MeshIP,
-			ProtocolRole:            "network/member",
-			UseContextEncryption:    true,
-			ExistingNodeInfoRecordID: ns.NodeInfoRecordID,
-			ExistingDateCreated:     ns.NodeInfoDateCreated,
+			AnchorEndpoint:       ns.AnchorEndpoint,
+			AnchorDID:            ns.AnchorDID,
+			NetworkRecordID:      ns.NetworkRecordID,
+			SelfDID:              identity.URI,
+			Signer:               signer,
+			EncryptionKeyManager: encMgr,
+			MeshIP:               ns.MeshIP,
+			ProtocolRole:         "network/node",
+			UseContextEncryption: true,
+			ExistingNodeRecordID: ns.NodeRecordID,
+			ExistingDateCreated:  ns.NodeDateCreated,
 		})
 		if err != nil {
-			logger.Warn("nodeInfo re-registration with context encryption failed",
+			logger.Warn("node re-registration with context encryption failed",
 				slog.Any("error", err),
 			)
 		} else {
 			// Update state — recordId stays the same for updates, but store dateCreated.
-			if reg.NodeInfoRecordID != "" {
-				ns.NodeInfoRecordID = reg.NodeInfoRecordID
+			if reg.NodeRecordID != "" {
+				ns.NodeRecordID = reg.NodeRecordID
 			}
 			if reg.DateCreated != "" {
-				ns.NodeInfoDateCreated = reg.DateCreated
+				ns.NodeDateCreated = reg.DateCreated
 			}
-			fmt.Printf("  NodeInfo re-encrypted with context key.\n")
+			fmt.Printf("  Node re-encrypted with context key.\n")
 		}
 	}
 
 	// Write/update endpoint record (encrypted) before starting the engine.
-	if ns.NodeInfoRecordID != "" {
+	if ns.NodeRecordID != "" {
 		localEndpoints := mesh.DiscoverLocalEndpoints(f.listenPort)
 		wpParams := mesh.WriteEndpointParams{
 			AnchorEndpoint:       ns.AnchorEndpoint,
 			AnchorDID:            ns.AnchorDID,
 			NetworkRecordID:      ns.NetworkRecordID,
-			NodeInfoRecordID:     ns.NodeInfoRecordID,
+			NodeRecordID:         ns.NodeRecordID,
 			Signer:               signer,
 			EncryptionKeyManager: encMgr,
 			LocalEndpoints:       localEndpoints,
@@ -1117,7 +1095,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		}
 		// Non-anchor nodes must invoke their role for authorization.
 		if ns.AnchorDID != identity.URI {
-			wpParams.ProtocolRole = "network/member"
+			wpParams.ProtocolRole = "network/node"
 		}
 		err = mesh.WriteEndpoint(ctx, wpParams)
 		if err != nil {
@@ -1152,7 +1130,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		Signer:               signer,
 		Resolver:             universalResolver{},
 		EncryptionKeyManager: encMgr,
-		NodeInfoRecordID:     ns.NodeInfoRecordID,
+		NodeInfoRecordID:     ns.NodeRecordID,
 		AutoKeyDelivery:      autoKeyDelivery,
 		UseContextEncryption: useContextEncryption,
 		WireGuardPrivateKey:  wgKeys.PrivateKey,

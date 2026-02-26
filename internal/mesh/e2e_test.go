@@ -158,43 +158,8 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		t.Logf("  Network record ID (from query): %s", networkRecordID)
 	}
 
-	// ---- Step 4: Node A creates itself as admin member (encrypted) ----
-	t.Log("Step 4: Node A creates admin member record (encrypted)")
-	memberData, _ := json.Marshal(map[string]any{
-		"joinedAt": time.Now().UTC().Format(time.RFC3339),
-		"label":    "admin",
-	})
-	memberRecipients, err := nodeA.EncMgr.DeriveWriteEncryption("network/member")
-	if err != nil {
-		t.Fatalf("deriving member encryption: %v", err)
-	}
-
-	_, memberStatus, err := nodeA.API.Write(ctx, nodeA.DID.URI, dwn.WriteParams{
-		Protocol:             "https://enbox.org/protocols/wireguard-mesh",
-		ProtocolPath:         "network/member",
-		Schema:               "https://enbox.org/schemas/wireguard-mesh/member",
-		DataFormat:           "application/json",
-		Recipient:            nodeA.DID.URI,
-		ParentContextID:     networkRecordID,
-		Data:                 memberData,
-		Tags:                 map[string]any{"status": "active"},
-		EncryptionRecipients: memberRecipients,
-	})
-	if err != nil {
-		t.Fatalf("creating admin member: %v", err)
-	}
-	if memberStatus.Code >= 300 {
-		t.Logf("  Warning: admin member creation: %d %s", memberStatus.Code, memberStatus.Detail)
-	} else {
-		t.Logf("  Admin member created: %d %s", memberStatus.Code, memberStatus.Detail)
-	}
-
-	// ---- Step 5: Node A derives WireGuard keys and registers nodeInfo (encrypted) ----
-	t.Log("Step 5: Node A derives WG keys from identity and registers nodeInfo")
-	wgKeysA, err := mesh.WireGuardKeyFromIdentity(nodeA.DID.EncryptionPrivateKey)
-	if err != nil {
-		t.Fatalf("deriving WG keys for node A: %v", err)
-	}
+	// ---- Step 4: Node A registers itself as a node (encrypted) ----
+	t.Log("Step 4: Node A registers itself as a node (encrypted)")
 	meshIPA, err := mesh.AllocateMeshIP(meshCIDR, nodeA.DID.URI)
 	if err != nil {
 		t.Fatalf("allocating mesh IP for node A: %v", err)
@@ -207,18 +172,41 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		SelfDID:              nodeA.DID.URI,
 		Signer:               nodeA.Signer,
 		EncryptionKeyManager: nodeA.EncMgr,
-		WireGuardPubKey:      wgKeysA.PublicKeyBase64(),
 		MeshIP:               meshIPA.String(),
 		Hostname:             "node-a",
 	})
 	if err != nil {
 		t.Fatalf("registering node A: %v", err)
 	}
-	t.Logf("  Node A registered: IP=%s, nodeInfo=%s", meshIPA, regA.NodeInfoRecordID)
+	t.Logf("  Node A registered: IP=%s, node=%s", meshIPA, regA.NodeRecordID)
 
-	// ---- Step 6: Node B joins the network ----
-	// Node B needs to install the protocol on its own DWN as well.
-	t.Log("Step 6: Node B installs protocol and joins the network")
+	// ---- Step 5: Node A creates Node B's node record (assigns network/node role) ----
+	t.Log("Step 5: Node A creates Node B's node record")
+	meshIPB, err := mesh.AllocateMeshIP(meshCIDR, nodeB.DID.URI)
+	if err != nil {
+		t.Fatalf("allocating mesh IP for node B: %v", err)
+	}
+
+	// Node A (network author) creates Node B's node record on the anchor DWN.
+	// The node record's recipient is Node B, assigning the "network/node" role.
+	_, err = mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
+		AnchorEndpoint:       endpoint,
+		AnchorDID:            nodeA.DID.URI,
+		NetworkRecordID:      networkRecordID,
+		SelfDID:              nodeB.DID.URI,
+		Signer:               nodeA.Signer,
+		EncryptionKeyManager: nodeA.EncMgr,
+		MeshIP:               meshIPB.String(),
+		Hostname:             "node-b",
+		Label:                "node-b",
+	})
+	if err != nil {
+		t.Fatalf("Node B node creation (by Node A) failed: %v", err)
+	}
+	t.Log("  Node B node record created by Node A (encrypted)")
+
+	// ---- Step 6: Node B installs protocol on its own DWN ----
+	t.Log("Step 6: Node B installs protocol")
 	protocolDefB, err := dwncrypto.InjectEncryptionDirectives(
 		protocols.MeshProtocolJSON,
 		nodeB.DID.EncryptionPrivateKey,
@@ -235,82 +223,6 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		t.Fatalf("ConfigureProtocol for node B: %d %s", statusB.Code, statusB.Detail)
 	}
 
-	// Node A (network author) creates Node B's member record on the anchor DWN.
-	// Per the protocol's $actions: only the network author or admins can create members.
-	// The member record's recipient is Node B — this assigns Node B the "network/member" role.
-	err = mesh.CreateMember(ctx, mesh.CreateMemberParams{
-		AnchorEndpoint:       endpoint,
-		AnchorDID:            nodeA.DID.URI,
-		NetworkRecordID:      networkRecordID,
-		MemberDID:            nodeB.DID.URI,
-		Label:                "member",
-		Signer:               nodeA.Signer,
-		EncryptionKeyManager: nodeA.EncMgr,
-	})
-	if err != nil {
-		t.Fatalf("Node B member creation (by Node A) failed: %v", err)
-	}
-	t.Log("  Node B member record created by Node A (encrypted)")
-
-	// Debug: query member records to verify they exist with correct recipients.
-	memberRecords, mqs, err := nodeA.API.Query(ctx, nodeA.DID.URI, dwn.QueryParams{
-		Filter: dwn.RecordsFilter{
-			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
-			ProtocolPath: "network/member",
-			ParentID:     networkRecordID,
-		},
-	}, "")
-	if err == nil && mqs.Code == 200 {
-		for i, m := range memberRecords {
-			t.Logf("  Member[%d]: id=%s, recipient=%s, contextId=%s, author=%s", i, m.ID, m.Recipient, m.ContextID, m.Author)
-		}
-	}
-
-	// Debug: Node B queries for its own member role record on Node A's DWN.
-	// This uses the same filter the server would use internally.
-	nodeBMembers, nbqs, _ := nodeB.API.Query(ctx, nodeA.DID.URI, dwn.QueryParams{
-		Filter: dwn.RecordsFilter{
-			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
-			ProtocolPath: "network/member",
-			Recipient:    nodeB.DID.URI,
-		},
-	}, "")
-	if nbqs != nil {
-		t.Logf("  Node B member query (on A's DWN): status=%d, count=%d", nbqs.Code, len(nodeBMembers))
-		for i, m := range nodeBMembers {
-			t.Logf("    [%d]: id=%s, recipient=%s, contextId=%s", i, m.ID, m.Recipient, m.ContextID)
-		}
-	}
-
-	// Node B registers its nodeInfo (encrypted) using its own member role.
-	// Note: Node B can write its own nodeInfo because the protocol allows
-	// "role": "network/member" to ["create", "update", "read"] on nodeInfo.
-	wgKeysB, err := mesh.WireGuardKeyFromIdentity(nodeB.DID.EncryptionPrivateKey)
-	if err != nil {
-		t.Fatalf("deriving WG keys for node B: %v", err)
-	}
-	meshIPB, err := mesh.AllocateMeshIP(meshCIDR, nodeB.DID.URI)
-	if err != nil {
-		t.Fatalf("allocating mesh IP for node B: %v", err)
-	}
-
-	regB, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
-		AnchorEndpoint:       endpoint,
-		AnchorDID:            nodeA.DID.URI,
-		NetworkRecordID:      networkRecordID,
-		SelfDID:              nodeB.DID.URI,
-		Signer:               nodeB.Signer,
-		EncryptionKeyManager: nodeB.EncMgr,
-		WireGuardPubKey:      wgKeysB.PublicKeyBase64(),
-		MeshIP:               meshIPB.String(),
-		Hostname:             "node-b",
-		ProtocolRole:         "network/member",
-	})
-	if err != nil {
-		t.Fatalf("Node B nodeInfo registration failed: %v", err)
-	}
-	t.Logf("  Node B registered: IP=%s, nodeInfo=%s", meshIPB, regB.NodeInfoRecordID)
-
 	// ---- Step 7: Verify mesh IPs are different ----
 	t.Log("Step 7: Verifying mesh IP uniqueness")
 	if meshIPA.String() == meshIPB.String() {
@@ -318,55 +230,35 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 	}
 	t.Logf("  Node A: %s, Node B: %s — unique", meshIPA, meshIPB)
 
-	// ---- Step 8: Query member records from the anchor DWN ----
-	t.Log("Step 8: Querying member records from anchor DWN")
-	members, queryStatus, err := nodeA.API.Query(ctx, nodeA.DID.URI, dwn.QueryParams{
+	// ---- Step 8: Query node records from the anchor DWN ----
+	t.Log("Step 8: Querying node records from anchor DWN")
+	nodes, queryStatus, err := nodeA.API.Query(ctx, nodeA.DID.URI, dwn.QueryParams{
 		Filter: dwn.RecordsFilter{
 			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
-			ProtocolPath: "network/member",
+			ProtocolPath: "network/node",
 			ParentID:     networkRecordID,
 		},
 		DateSort: "createdAscending",
 	}, "")
 	if err != nil {
-		t.Fatalf("querying members: %v", err)
+		t.Fatalf("querying nodes: %v", err)
 	}
 	if queryStatus.Code != 200 {
-		t.Fatalf("member query: %d %s", queryStatus.Code, queryStatus.Detail)
+		t.Fatalf("node query: %d %s", queryStatus.Code, queryStatus.Detail)
 	}
-	t.Logf("  Found %d member records", len(members))
-	if len(members) < 2 {
-		t.Fatalf("expected at least 2 member records (node A admin + node B member), got %d", len(members))
-	}
-
-	// ---- Step 9: Query nodeInfo records from the anchor DWN ----
-	t.Log("Step 9: Querying nodeInfo records from anchor DWN")
-	nodeInfos, niStatus, err := nodeA.API.Query(ctx, nodeA.DID.URI, dwn.QueryParams{
-		Filter: dwn.RecordsFilter{
-			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
-			ProtocolPath: "network/nodeInfo",
-			ParentID:     networkRecordID,
-		},
-	}, "")
-	if err != nil {
-		t.Fatalf("querying nodeInfos: %v", err)
-	}
-	if niStatus.Code != 200 {
-		t.Fatalf("nodeInfo query: %d %s", niStatus.Code, niStatus.Detail)
-	}
-	t.Logf("  Found %d nodeInfo records", len(nodeInfos))
-	if len(nodeInfos) < 2 {
-		t.Fatalf("expected at least 2 nodeInfo records (node A + node B), got %d", len(nodeInfos))
+	t.Logf("  Found %d node records", len(nodes))
+	if len(nodes) < 2 {
+		t.Fatalf("expected at least 2 node records (node A + node B), got %d", len(nodes))
 	}
 
-	// ---- Step 10: Node A writes an encrypted endpoint record ----
-	t.Log("Step 10: Node A writes encrypted endpoint record")
-	if regA != nil && regA.NodeInfoRecordID != "" {
+	// ---- Step 9: Node A writes an encrypted endpoint record ----
+	t.Log("Step 9: Node A writes encrypted endpoint record")
+	if regA != nil && regA.NodeRecordID != "" {
 		err = mesh.WriteEndpoint(ctx, mesh.WriteEndpointParams{
 			AnchorEndpoint:       endpoint,
 			AnchorDID:            nodeA.DID.URI,
 			NetworkRecordID:      networkRecordID,
-			NodeInfoRecordID:     regA.NodeInfoRecordID,
+			NodeRecordID:         regA.NodeRecordID,
 			Signer:               nodeA.Signer,
 			EncryptionKeyManager: nodeA.EncMgr,
 			PublicEndpoints: []mesh.PublicEndpoint{
@@ -382,13 +274,12 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		}
 	}
 
-	// ---- Step 11: Verify local encryption round-trip ----
-	// Build a message locally and verify we can encrypt/decrypt it.
-	t.Log("Step 11: Verifying local encryption round-trip")
+	// ---- Step 10: Verify local encryption round-trip ----
+	t.Log("Step 10: Verifying local encryption round-trip")
 	testPlaintext := []byte(`{"test":"e2e encryption verification","timestamp":"2026-02-24T00:00:00Z"}`)
-	recipients, err := nodeA.EncMgr.DeriveWriteEncryption("network/nodeInfo")
+	recipients, err := nodeA.EncMgr.DeriveWriteEncryption("network/node")
 	if err != nil {
-		t.Fatalf("deriving nodeInfo encryption: %v", err)
+		t.Fatalf("deriving node encryption: %v", err)
 	}
 
 	ciphertext, enc, err := dwncrypto.EncryptData(testPlaintext, recipients)
@@ -396,14 +287,12 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		t.Fatalf("EncryptData: %v", err)
 	}
 
-	// Ciphertext should be different from plaintext.
 	if string(ciphertext) == string(testPlaintext) {
 		t.Fatal("SECURITY: ciphertext matches plaintext!")
 	}
 	t.Logf("  Encrypted %d bytes → %d bytes ciphertext", len(testPlaintext), len(ciphertext))
 
-	// Node A can decrypt using the same key path.
-	decryptKey, err := nodeA.EncMgr.DeriveDecryptionKey("network/nodeInfo")
+	decryptKey, err := nodeA.EncMgr.DeriveDecryptionKey("network/node")
 	if err != nil {
 		t.Fatalf("DeriveDecryptionKey: %v", err)
 	}
@@ -418,44 +307,42 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 	}
 	t.Logf("  Decryption verified: %q", string(decrypted))
 
-	// ---- Step 12: Verify hierarchical key property ----
+	// ---- Step 11: Verify hierarchical key property ----
 	// A key derived at "network" should be able to decrypt records at
-	// "network/member" (parent can decrypt children).
-	t.Log("Step 12: Verifying hierarchical key property")
-	memberPlaintext := []byte(`{"joinedAt":"2026-02-24","label":"test-member"}`)
-	memberRecipients2, err := nodeA.EncMgr.DeriveWriteEncryption("network/member")
+	// "network/node" (parent can decrypt children).
+	t.Log("Step 11: Verifying hierarchical key property")
+	nodePlaintext := []byte(`{"meshIP":"10.200.0.5","addedAt":"2026-02-24","hostname":"test-node"}`)
+	nodeRecipients, err := nodeA.EncMgr.DeriveWriteEncryption("network/node")
 	if err != nil {
-		t.Fatalf("deriving member encryption: %v", err)
+		t.Fatalf("deriving node encryption: %v", err)
 	}
 
-	memberCT, memberEnc, err := dwncrypto.EncryptData(memberPlaintext, memberRecipients2)
+	nodeCT, nodeEnc, err := dwncrypto.EncryptData(nodePlaintext, nodeRecipients)
 	if err != nil {
-		t.Fatalf("encrypting member data: %v", err)
+		t.Fatalf("encrypting node data: %v", err)
 	}
 
-	// Decrypt using the "network/member" path (direct match).
-	memberDecryptKey, err := nodeA.EncMgr.DeriveDecryptionKey("network/member")
+	nodeDecryptKey, err := nodeA.EncMgr.DeriveDecryptionKey("network/node")
 	if err != nil {
-		t.Fatalf("DeriveDecryptionKey for member: %v", err)
+		t.Fatalf("DeriveDecryptionKey for node: %v", err)
 	}
 
-	memberDecrypted, err := dwncrypto.DecryptData(memberCT, memberEnc, memberDecryptKey, nodeA.EncMgr.RootKeyID)
+	nodeDecrypted, err := dwncrypto.DecryptData(nodeCT, nodeEnc, nodeDecryptKey, nodeA.EncMgr.RootKeyID)
 	if err != nil {
-		t.Fatalf("DecryptData for member: %v", err)
+		t.Fatalf("DecryptData for node: %v", err)
 	}
 
-	if string(memberDecrypted) != string(memberPlaintext) {
-		t.Fatalf("member decrypted mismatch: got %q, want %q", memberDecrypted, memberPlaintext)
+	if string(nodeDecrypted) != string(nodePlaintext) {
+		t.Fatalf("node decrypted mismatch: got %q, want %q", nodeDecrypted, nodePlaintext)
 	}
-	t.Logf("  Member decryption verified: %q", string(memberDecrypted))
+	t.Logf("  Node decryption verified: %q", string(nodeDecrypted))
 
 	// ---- Summary ----
 	t.Log("=== E2E Test Summary ===")
 	t.Logf("  Network: e2e-test-network (%s)", networkRecordID)
 	t.Logf("  Node A: %s → %s", nodeA.DID.URI[:30]+"...", meshIPA)
 	t.Logf("  Node B: %s → %s", nodeB.DID.URI[:30]+"...", meshIPB)
-	t.Logf("  Members found: %d", len(members))
-	t.Logf("  NodeInfos found: %d", len(nodeInfos))
+	t.Logf("  Nodes found: %d", len(nodes))
 	t.Log("  Encryption: verified (HKDF → ECDH-ES+A256KW → A256GCM)")
 	t.Log("  Hierarchical keys: verified")
 }
