@@ -43,6 +43,7 @@ func InjectEncryptionDirectives(definition json.RawMessage, rootPrivateKey []byt
 	if err != nil {
 		return nil, fmt.Errorf("deriving protocol-level key: %w", err)
 	}
+	defer clear(protocolLevelKey) // Zero intermediate derivation key.
 
 	// Recursively walk the structure and inject $encryption at each level.
 	if err := injectEncryptionRecursive(structure, protocolLevelKey, rootKeyID); err != nil {
@@ -90,8 +91,10 @@ func injectEncryptionRecursive(ruleSet map[string]any, parentKey []byte, rootKey
 			"publicKeyJwk": publicKeyJwk,
 		}
 
-		// Recurse into children.
-		if err := injectEncryptionRecursive(childRuleSet, childPrivateKey, rootKeyID); err != nil {
+		// Recurse into children, then zero the child private key.
+		err = injectEncryptionRecursive(childRuleSet, childPrivateKey, rootKeyID)
+		clear(childPrivateKey) // Zero intermediate derivation key.
+		if err != nil {
 			return err
 		}
 	}
@@ -121,6 +124,16 @@ type EncryptionKeyManager struct {
 	// contextKeys caches delivered context keys (contextID → private key bytes).
 	// These are keys received via the Key Delivery Protocol from the DWN owner.
 	contextKeys map[string][]byte
+}
+
+// Close zeros all key material held by the manager. Call this during
+// graceful shutdown to minimize the window where keys remain in memory.
+func (m *EncryptionKeyManager) Close() {
+	clear(m.RootPrivateKey)
+	for id, key := range m.contextKeys {
+		clear(key)
+		delete(m.contextKeys, id)
+	}
 }
 
 // StoreContextKey stores a delivered context key for a given context ID.

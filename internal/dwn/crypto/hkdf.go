@@ -43,8 +43,10 @@ func DeriveKeyBytes(ancestorKey []byte, derivationPath []string) ([]byte, error)
 	for _, segment := range derivationPath {
 		derived, err := hkdfDerive(currentKey, []byte(segment))
 		if err != nil {
+			clear(currentKey) // Zero intermediate before returning on error.
 			return nil, fmt.Errorf("deriving key for segment %q: %w", segment, err)
 		}
+		clear(currentKey) // Zero previous intermediate key.
 		currentKey = derived
 	}
 

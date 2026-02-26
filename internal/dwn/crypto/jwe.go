@@ -116,6 +116,7 @@ func EncryptData(plaintext []byte, recipients []KeyEncryptionInput) (ciphertext 
 	if err != nil {
 		return nil, nil, err
 	}
+	defer clear(cek) // Zero CEK after wrapping for recipients.
 
 	iv, err := GenerateIV(EncA256GCM)
 	if err != nil {
@@ -170,6 +171,7 @@ func DecryptData(ciphertext []byte, enc *Encryption, recipientPrivateKey []byte,
 	if err != nil {
 		return nil, err
 	}
+	defer clear(cek) // Zero CEK after decryption.
 
 	// Decrypt the data.
 	plaintext, err := AEADDecrypt(header.Enc, cek, iv, ciphertext, tag, nil)
@@ -285,6 +287,7 @@ func DecryptDataWithScheme(ciphertext []byte, enc *Encryption, privateKey []byte
 	if err != nil {
 		return nil, err
 	}
+	defer clear(cek) // Zero CEK after decryption.
 
 	plaintext, err := AEADDecrypt(header.Enc, cek, iv, ciphertext, tag, nil)
 	if err != nil {
