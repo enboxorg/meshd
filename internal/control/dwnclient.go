@@ -25,7 +25,6 @@ const DefaultPeerStaleThreshold = 5 * time.Minute
 // Protocol URIs used by meshd.
 const (
 	ProtocolMesh = "https://enbox.org/protocols/wireguard-mesh"
-	ProtocolNode = "https://enbox.org/protocols/wireguard-node"
 )
 
 // Sentinel errors.
