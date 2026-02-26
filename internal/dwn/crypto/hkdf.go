@@ -70,8 +70,8 @@ func DerivePrivateKey(ancestorPrivateKey []byte, derivationPath []string) (priva
 // BuildProtocolPathDerivation builds the derivation path for the
 // "protocolPath" scheme given a protocol URI and type path segments.
 //
-// Example: BuildProtocolPathDerivation("https://example.com/proto", "network", "member")
-// returns ["protocolPath", "https://example.com/proto", "network", "member"]
+// Example: BuildProtocolPathDerivation("https://example.com/proto", "network", "node")
+// returns ["protocolPath", "https://example.com/proto", "network", "node"]
 func BuildProtocolPathDerivation(protocolURI string, typeSegments ...string) []string {
 	path := make([]string, 0, 2+len(typeSegments))
 	path = append(path, DerivationSchemeProtocolPath)

@@ -1,9 +1,9 @@
 // Package control defines the interface between the DWN coordination layer
-// and the networking engine (dexnet).
+// and the networking engine (meshnet).
 //
 // The key abstraction is MapResponse — a snapshot of the mesh network state
-// that the WireGuard engine consumes. When dexnet is integrated, these types
-// will be replaced by or mapped to tailcfg.MapResponse and related types.
+// that the WireGuard engine consumes. These types are mapped to meshnet's
+// tailcfg.MapResponse and related types by the engine/Converter.
 //
 // The control client watches DWN records (via subscriptions) and produces
 // updated MapResponse snapshots whenever the mesh state changes.
@@ -15,7 +15,7 @@ import (
 )
 
 // Node represents a peer in the mesh network.
-// Maps to tailcfg.Node when dexnet is integrated.
+// Maps to tailcfg.Node in meshnet.
 type Node struct {
 	// ID is a unique identifier for this node (derived from record ID).
 	ID int64
@@ -64,7 +64,7 @@ type Node struct {
 }
 
 // DERPRegion represents a DERP relay region.
-// Maps to tailcfg.DERPRegion when dexnet is integrated.
+// Maps to tailcfg.DERPRegion in meshnet.
 type DERPRegion struct {
 	// RegionID is a unique numeric identifier.
 	RegionID int
@@ -80,7 +80,7 @@ type DERPRegion struct {
 }
 
 // DERPNode represents a single DERP relay server.
-// Maps to tailcfg.DERPNode when dexnet is integrated.
+// Maps to tailcfg.DERPNode in meshnet.
 type DERPNode struct {
 	// Name is a unique identifier for this DERP node.
 	Name string
@@ -108,13 +108,13 @@ type DERPNode struct {
 }
 
 // DERPMap is the full set of DERP regions.
-// Maps to tailcfg.DERPMap when dexnet is integrated.
+// Maps to tailcfg.DERPMap in meshnet.
 type DERPMap struct {
 	Regions map[int]*DERPRegion
 }
 
 // FilterRule represents a packet filter rule.
-// Maps to tailcfg.FilterRule when dexnet is integrated.
+// Maps to tailcfg.FilterRule in meshnet.
 type FilterRule struct {
 	// SrcIPs are source IP ranges that this rule matches.
 	SrcIPs []string
@@ -136,13 +136,10 @@ type PortRange struct {
 }
 
 // DNSConfig holds mesh DNS configuration.
-// Maps to tailcfg.DNSConfig when dexnet is integrated.
+// Maps to tailcfg.DNSConfig in meshnet.
 type DNSConfig struct {
 	// Resolvers are DNS server addresses.
 	Resolvers []string
-
-	// Domains are search domains.
-	Domains []string
 
 	// MagicDNSSuffix is the suffix for mesh-local name resolution.
 	MagicDNSSuffix string
@@ -150,7 +147,7 @@ type DNSConfig struct {
 
 // MapResponse is a complete snapshot of the mesh network state.
 // This is the primary data structure passed to the networking engine.
-// Maps to tailcfg.MapResponse when dexnet is integrated.
+// Maps to tailcfg.MapResponse in meshnet.
 type MapResponse struct {
 	// Node is this node's own configuration.
 	Node *Node

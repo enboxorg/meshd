@@ -99,7 +99,6 @@ func TestConvertFullMapResponse(t *testing.T) {
 		},
 		DNSConfig: &control.DNSConfig{
 			Resolvers:      []string{"1.1.1.1"},
-			Domains:        []string{"example.com"},
 			MagicDNSSuffix: "mesh.local",
 		},
 	}

@@ -4,13 +4,11 @@ package control
 type NetworkConfig struct {
 	Name           string   `json:"name"`
 	MeshCIDR       string   `json:"meshCIDR"`
-	DefaultRelays  []string `json:"defaultRelays,omitempty"`
 	DNSServers     []string `json:"dnsServers,omitempty"`
 	MagicDNSSuffix string   `json:"magicDNSSuffix,omitempty"`
-	ListenPort     int      `json:"listenPort,omitempty"`
 }
 
-// NodeRecord is the parsed node record data (merged member + nodeInfo).
+// NodeRecord is the parsed node record data.
 // The WireGuard public key is NOT stored here — it is derived from
 // the DID (did:jwk → X25519 birational map) at conversion time.
 type NodeRecord struct {
@@ -49,7 +47,6 @@ type RelayData struct {
 	URL      string `json:"url"`
 	Region   string `json:"region"`
 	STUNPort int    `json:"stunPort,omitempty"`
-	RecordID string `json:"-"`
 }
 
 // ACLPolicyData is the parsed ACL policy record data.

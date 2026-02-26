@@ -15,6 +15,7 @@ import (
 	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 	"github.com/enboxorg/meshd/pkg/dids/didjwk"
+	"github.com/enboxorg/meshd/protocols"
 )
 
 // DefaultPeerStaleThreshold is the duration after which a peer is considered
@@ -23,24 +24,15 @@ import (
 // endpoint refreshes to arrive even with network jitter.
 const DefaultPeerStaleThreshold = 5 * time.Minute
 
-// Protocol URIs used by meshd.
-const (
-	ProtocolMesh = "https://enbox.org/protocols/wireguard-mesh"
-)
-
 // Sentinel errors.
 var (
 	ErrNoNetwork = errors.New("network record not found")
 	ErrNoEntry   = errors.New("no data found in entry")
 )
 
-// UpdateFunc is called whenever the mesh state changes.
-type UpdateFunc func(*MapResponse)
-
 // dwnClientOptions holds configuration for the DWN control client.
 type dwnClientOptions struct {
 	logger     *slog.Logger
-	onUpdate   UpdateFunc
 	resolver   Resolver
 	encManager *dwncrypto.EncryptionKeyManager
 }
@@ -52,13 +44,6 @@ type Option func(*dwnClientOptions)
 func WithLogger(l *slog.Logger) Option {
 	return func(o *dwnClientOptions) {
 		o.logger = l
-	}
-}
-
-// WithUpdateHandler sets the callback invoked on mesh state changes.
-func WithUpdateHandler(fn UpdateFunc) Option {
-	return func(o *dwnClientOptions) {
-		o.onUpdate = fn
 	}
 }
 
@@ -87,7 +72,6 @@ type DWNClient struct {
 	selfDID         string
 	signer          *dwn.Signer
 	logger          *slog.Logger
-	onUpdate        UpdateFunc
 	resolver        Resolver
 	encManager      *dwncrypto.EncryptionKeyManager
 
@@ -124,7 +108,6 @@ func NewDWNClient(
 		selfDID:         selfDID,
 		signer:          signer,
 		logger:          options.logger,
-		onUpdate:        options.onUpdate,
 		resolver:        options.resolver,
 		encManager:      options.encManager,
 		nodes:           make(map[string]*NodeRecord),
@@ -165,11 +148,11 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	c.network = &network
 	c.mu.Unlock()
 
-	// 2. Query node records (replaces separate member + nodeInfo queries).
+	// 2. Query node records.
 	c.logger.DebugContext(ctx, "querying nodes")
 
 	nodesResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
-		Protocol:     ProtocolMesh,
+		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/node",
 		ContextID:    c.networkRecordID,
 	}, "createdAscending", nil, "network/node")
@@ -186,7 +169,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	c.mu.Lock()
 	clear(c.nodes) // Clear stale nodes before repopulating.
 	for _, entry := range nodeEntries {
-		// DID comes from the recipient descriptor field (not tags — tags removed).
+		// DID comes from the recipient descriptor field.
 		meta := extractEntryMetadata(entry)
 		nodeDID := meta.Recipient
 
@@ -218,7 +201,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 
 	// 3. Query relay records.
 	relayResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
-		Protocol:     ProtocolMesh,
+		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/relay",
 		ContextID:    c.networkRecordID,
 	}, "createdAscending", nil, "network/node")
@@ -246,7 +229,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 
 	// 4. Query ACL policy record.
 	aclResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
-		Protocol:     ProtocolMesh,
+		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/aclPolicy",
 		ContextID:    c.networkRecordID,
 	}, "createdDescending", nil, "network/node")
@@ -280,7 +263,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	// endpoint records in the network context and attach them to their
 	// parent node via the parentId descriptor field.
 	endpointResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
-		Protocol:     ProtocolMesh,
+		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/node/endpoint",
 		ContextID:    c.networkRecordID,
 	}, "createdDescending", nil, "network/node")
@@ -665,7 +648,7 @@ func (c *DWNClient) buildFilterRules() []FilterRule {
 // resolveMatchers expands ACL source/destination matchers into IP strings
 // that the packet filter engine understands. Supported matchers:
 //   - "*"          → "*" (wildcard)
-//   - "group:name" → expanded to member DIDs, then resolved to mesh IPs
+//   - "group:name" → expanded to node DIDs, then resolved to mesh IPs
 //   - "did:..."    → resolved to mesh IP
 //   - "10.x.y.z"  → passed through as-is (direct IP)
 //   - "10.x.y.z/n"→ passed through as-is (CIDR)
@@ -763,10 +746,9 @@ func defaultFilterRules() []FilterRule {
 // entryMetadata holds descriptor-level fields extracted from a DWN record
 // entry. These fields are NOT encrypted and are always accessible.
 type entryMetadata struct {
-	RecordID  string         `json:"recordId"`
-	ParentID  string         `json:"parentId"`
-	Recipient string         `json:"recipient"`
-	Tags      map[string]any `json:"tags"`
+	RecordID  string `json:"recordId"`
+	ParentID  string `json:"parentId"`
+	Recipient string `json:"recipient"`
 }
 
 // extractEntryMetadata extracts non-encrypted descriptor metadata from
@@ -783,9 +765,8 @@ func extractEntryMetadata(entry json.RawMessage) entryMetadata {
 		RecordsWrite struct {
 			RecordID   string `json:"recordId"`
 			Descriptor struct {
-				ParentID  string         `json:"parentId"`
-				Recipient string         `json:"recipient"`
-				Tags      map[string]any `json:"tags"`
+				ParentID  string `json:"parentId"`
+				Recipient string `json:"recipient"`
 			} `json:"descriptor"`
 		} `json:"recordsWrite"`
 	}
@@ -793,7 +774,6 @@ func extractEntryMetadata(entry json.RawMessage) entryMetadata {
 		meta.RecordID = wrapped.RecordsWrite.RecordID
 		meta.ParentID = wrapped.RecordsWrite.Descriptor.ParentID
 		meta.Recipient = wrapped.RecordsWrite.Descriptor.Recipient
-		meta.Tags = wrapped.RecordsWrite.Descriptor.Tags
 		if meta.RecordID != "" || meta.Recipient != "" {
 			return meta
 		}
@@ -803,16 +783,14 @@ func extractEntryMetadata(entry json.RawMessage) entryMetadata {
 	var flat struct {
 		RecordID   string `json:"recordId"`
 		Descriptor struct {
-			ParentID  string         `json:"parentId"`
-			Recipient string         `json:"recipient"`
-			Tags      map[string]any `json:"tags"`
+			ParentID  string `json:"parentId"`
+			Recipient string `json:"recipient"`
 		} `json:"descriptor"`
 	}
 	if err := json.Unmarshal(entry, &flat); err == nil {
 		meta.RecordID = flat.RecordID
 		meta.ParentID = flat.Descriptor.ParentID
 		meta.Recipient = flat.Descriptor.Recipient
-		meta.Tags = flat.Descriptor.Tags
 	}
 
 	return meta

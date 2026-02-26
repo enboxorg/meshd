@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/enboxorg/meshd/internal/control"
 	"github.com/enboxorg/meshd/internal/did"
 	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
@@ -926,4 +925,3 @@ func parseTestWireGuardKey(b64Key string) (key.NodePublic, error) {
 
 // Ensure testNode fields are used to satisfy the compiler.
 var _ net.Conn
-var _ = control.ProtocolMesh

@@ -13,7 +13,7 @@ import (
 // KeyDeliveryManager handles writing and fetching contextKey records
 // for the DWN Key Delivery Protocol.
 //
-// When a network owner creates a network or adds a member, they derive a
+// When a network owner creates a network or adds a node, they derive a
 // Protocol Context key for the network context and deliver it (encrypted)
 // to each participant. Participants can then decrypt records in that context.
 type KeyDeliveryManager struct {
@@ -73,44 +73,10 @@ func (m *KeyDeliveryManager) DeliverContextKey(ctx context.Context, params Deliv
 		return fmt.Errorf("marshaling context key payload: %w", err)
 	}
 
-	// 2. Derive encryption recipients for the key-delivery protocol's
-	//    "contextKey" path. We encrypt to the owner's Protocol Path key
-	//    (self-delivery for now — the recipient reads from the owner's DWN).
-	//
-	//    In a full implementation, if we had the recipient's key-delivery
-	//    public key (authorKeyDeliveryPublicKey), we would encrypt to
-	//    their key instead. For now, all participants read from the anchor
-	//    DWN, and the anchor encrypts to its own key — which the recipient
-	//    can access because contextKey has $actions allowing recipient reads.
-	//
-	//    The recipient accesses the *cleartext* through the DWN server's
-	//    authorization layer (the server checks $actions), not through
-	//    client-side JWE decryption. Alternatively, if the server returns
-	//    ciphertext, the recipient needs the anchor's Protocol Path key
-	//    for key-delivery, which would need a separate key exchange.
-	//
-	//    The pragmatic approach for meshd: encrypt to the anchor's own
-	//    key. The recipient queries the anchor's DWN, the server returns
-	//    ciphertext, the recipient either:
-	//    a) Has been given the anchor's key-delivery decryption key out-of-band
-	//    b) The contextKey is stored unencrypted (if key-delivery protocol
-	//       doesn't require encryption)
-	//
-	//    Looking at the spec more carefully: the key-delivery protocol
-	//    types don't have `encryptionRequired: true`. This means the
-	//    contextKey record CAN be written unencrypted. The recipient reads
-	//    it via $actions authorization. The DWN server enforces access.
-	//
-	//    For maximum compatibility with the spec, we write the contextKey
-	//    record ENCRYPTED to the anchor's own Protocol Path key. The anchor
-	//    can always decrypt. For cross-DWN delivery to non-owners, the spec
-	//    says to encrypt to the recipient's Protocol Path key for key-delivery,
-	//    which requires knowing their public key.
-	//
-	//    The key-delivery protocol does NOT have $encryption or encryptionRequired,
-	//    so contextKey records can be written unencrypted. Access is controlled by
-	//    $actions authorization (recipient can read). This is the simplest approach
-	//    and avoids the circular key exchange problem.
+	// 2. Write the contextKey record unencrypted. The key-delivery protocol
+	//    does not require encryption ($encryption is not set). Access is
+	//    controlled by $actions authorization — only the recipient can read.
+	//    This avoids the circular key exchange problem.
 
 	agent := dwn.NewSimpleAgent(m.Endpoint, m.Signer)
 	api := dwn.NewDwnAPI(agent)
@@ -157,19 +123,6 @@ type FetchContextKeyParams struct {
 	// Signer signs query/read messages.
 	Signer *dwn.Signer
 
-	// SourceProtocol is the protocol URI to filter by.
-	SourceProtocol string
-
-	// ContextID is the context ID to filter by.
-	ContextID string
-
-	// DecryptionPrivateKey is reserved for future use (when key-delivery
-	// protocol uses $encryption). Currently unused since contextKey records
-	// are written unencrypted with access controlled by $actions.
-	DecryptionPrivateKey []byte
-
-	// DecryptionKeyID is reserved for future use. Currently unused.
-	DecryptionKeyID string
 }
 
 // FetchContextKey queries the anchor DWN for a contextKey record addressed

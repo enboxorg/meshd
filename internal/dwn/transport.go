@@ -23,10 +23,8 @@ import (
 
 // Sentinel errors for the transport layer.
 var (
-	ErrTransport       = errors.New("transport error")
-	ErrJSONRPC         = errors.New("json-rpc error")
-	ErrRateLimited     = errors.New("rate limited")
-	ErrRecordsWriteWS  = errors.New("RecordsWrite is not supported via WebSocket")
+	ErrTransport   = errors.New("transport error")
+	ErrRateLimited = errors.New("rate limited")
 )
 
 //
@@ -99,17 +97,7 @@ func (e *JsonRpcError) Error() string {
 
 // JSON-RPC error codes matching the DWN server.
 const (
-	JsonRpcInvalidRequest  = -32600
-	JsonRpcMethodNotFound  = -32601
-	JsonRpcInvalidParams   = -32602
-	JsonRpcInternalError   = -32603
-	JsonRpcParseError      = -32700
-	JsonRpcTransportError  = -32300
-	JsonRpcBadRequest      = -50400
-	JsonRpcUnauthorized    = -50401
-	JsonRpcForbidden       = -50403
-	JsonRpcConflict        = -50409
-	JsonRpcTooManyRequests = -50429
+	JsonRpcInvalidParams = -32602
 )
 
 // JSON-RPC method names.

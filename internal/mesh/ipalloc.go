@@ -7,12 +7,6 @@ import (
 	"net/netip"
 )
 
-// ServiceIP is the meshnet/Tailscale service IP (10.200.0.1 in the enbox fork).
-// This IP must never be assigned to a mesh node because netstack's
-// shouldSendToHost() intercepts traffic to/from this address, causing
-// WireGuard packets to be misrouted.
-var ServiceIP = netip.MustParseAddr("10.200.0.1")
-
 // AllocateMeshIP deterministically allocates a mesh IP address from a CIDR
 // based on the node's DID URI.
 //

@@ -55,9 +55,6 @@ func TestEngineRealLifecycle(t *testing.T) {
 	if eng.netMon == nil {
 		t.Fatal("network monitor is nil")
 	}
-	if eng.dialer == nil {
-		t.Fatal("dialer is nil")
-	}
 
 	// Stop without starting should be safe.
 	if err := eng.Stop(); err != nil {

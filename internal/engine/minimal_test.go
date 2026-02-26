@@ -289,8 +289,6 @@ type minimalStack struct {
 	ns      *netstack.Impl
 	eng     wgengine.Engine
 	nm      *netmon.Monitor
-	sys     *tsd.System
-	dialer  *tsdial.Dialer
 }
 
 func (s *minimalStack) start(ctx context.Context) error {
@@ -420,8 +418,6 @@ func newMinimalStack(
 		ns:      ns,
 		eng:     eng,
 		nm:      nm,
-		sys:     sys,
-		dialer:  dial,
 	}, nil
 }
 
