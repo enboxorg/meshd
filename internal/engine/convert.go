@@ -182,7 +182,7 @@ func (c *Converter) convertNode(n *control.Node) (*tailcfg.Node, error) {
 
 	// Parse disco public key. The disco key enables DERP relay and direct
 	// connection upgrades between peers. It is exchanged via DWN
-	// nodeInfo/endpoint records as base64.
+	// node/endpoint records as base64.
 	if n.DiscoKey != "" {
 		dk, err := parseDiscoKey(n.DiscoKey)
 		if err != nil {
@@ -358,7 +358,7 @@ func (c *Converter) convertFilterRules(rules []control.FilterRule) []tailcfg.Fil
 // meshnet's DWNControl polling loop. It is passed to DWNControlConfig.MapResponseFunc.
 //
 // If autoDelivery is non-nil, it is triggered after each successful state
-// load to deliver context keys to any new members.
+// load to deliver context keys to any new nodes.
 func MapResponseFunc(client *control.DWNClient, converter *Converter, autoDelivery *AutoKeyDelivery) func(context.Context) (*netmap.NetworkMap, error) {
 	return func(ctx context.Context) (*netmap.NetworkMap, error) {
 		resp, err := client.LoadState(ctx)
@@ -366,17 +366,17 @@ func MapResponseFunc(client *control.DWNClient, converter *Converter, autoDelive
 			return nil, fmt.Errorf("loading DWN state: %w", err)
 		}
 
-		// If auto key delivery is active, extract member DIDs from
-		// the response and deliver context keys to any new members.
+		// If auto key delivery is active, extract node DIDs from
+		// the response and deliver context keys to any new nodes.
 		if autoDelivery != nil && resp != nil {
-			var memberDIDs []string
+			var nodeDIDs []string
 			if resp.Node != nil {
-				memberDIDs = append(memberDIDs, resp.Node.DID)
+				nodeDIDs = append(nodeDIDs, resp.Node.DID)
 			}
 			for _, p := range resp.Peers {
-				memberDIDs = append(memberDIDs, p.DID)
+				nodeDIDs = append(nodeDIDs, p.DID)
 			}
-			autoDelivery.OnMembersUpdated(ctx, memberDIDs)
+			autoDelivery.OnNodesUpdated(ctx, nodeDIDs)
 		}
 
 		return converter.Convert(resp)

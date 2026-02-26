@@ -1130,7 +1130,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		Signer:               signer,
 		Resolver:             universalResolver{},
 		EncryptionKeyManager: encMgr,
-		NodeInfoRecordID:     ns.NodeRecordID,
+		NodeRecordID:         ns.NodeRecordID,
 		AutoKeyDelivery:      autoKeyDelivery,
 		UseContextEncryption: useContextEncryption,
 		WireGuardPrivateKey:  wgKeys.PrivateKey,

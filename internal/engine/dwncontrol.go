@@ -395,7 +395,7 @@ func (cc *DWNControl) SetHostinfo(hi *tailcfg.Hostinfo) {
 	cc.mu.Lock()
 	cc.hostinfo = hi
 	cc.mu.Unlock()
-	// TODO: publish hostinfo to DWN as a nodeInfo record update.
+	// TODO: publish hostinfo to DWN as a node record update.
 }
 
 func (cc *DWNControl) SetNetInfo(ni *tailcfg.NetInfo) {

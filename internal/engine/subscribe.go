@@ -2,7 +2,7 @@
 //
 // Instead of polling every 30 seconds, the SubscriptionWatcher opens a
 // WebSocket subscription to the anchor DWN and triggers an immediate
-// re-poll whenever mesh records change (nodeInfo, endpoints, members).
+// re-poll whenever mesh records change (nodes, endpoints).
 //
 // The watcher subscribes to all records under the wireguard-mesh protocol
 // within the network's contextId. When an event arrives, it calls
@@ -118,7 +118,7 @@ func (w *SubscriptionWatcher) Start(ctx context.Context) error {
 	w.manager = dwn.NewSubscriptionManager(w.endpoint, w.logger)
 
 	// Subscribe to all records under the wireguard-mesh protocol for
-	// this network. This catches nodeInfo, endpoint, member, and relay
+	// this network. This catches node, endpoint, and relay
 	// record changes in a single subscription.
 	filter := dwn.RecordsFilter{
 		Protocol:  "https://enbox.org/protocols/wireguard-mesh",

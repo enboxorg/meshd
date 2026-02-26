@@ -13,13 +13,13 @@ import (
 	"github.com/enboxorg/meshd/protocols"
 )
 
-// AutoKeyDelivery monitors the mesh member list and automatically delivers
-// context keys to new members. This is only active on the anchor node
+// AutoKeyDelivery monitors the mesh node list and automatically delivers
+// context keys to new nodes. This is only active on the anchor node
 // (the network owner who holds the root private key).
 //
-// When the engine polls DWN state and discovers members who don't yet have
+// When the engine polls DWN state and discovers nodes that don't yet have
 // a context key, it delivers one to each of them. This removes the need for
-// the anchor operator to manually run "peer approve" for every new member.
+// the anchor operator to manually run "peer approve" for every new node.
 type AutoKeyDelivery struct {
 	// Endpoint is the DWN server URL for the anchor.
 	Endpoint string
@@ -76,20 +76,20 @@ type AutoKeyDeliveryConfig struct {
 	Logger               *slog.Logger
 }
 
-// OnMembersUpdated should be called after each poll that discovers member DIDs.
-// It checks for members who haven't received a context key yet and delivers
+// OnNodesUpdated should be called after each poll that discovers node DIDs.
+// It checks for nodes that haven't received a context key yet and delivers
 // one to each of them.
 //
-// memberDIDs is the full set of member DIDs from the current mesh state.
+// nodeDIDs is the full set of node DIDs from the current mesh state.
 // It is safe to call concurrently.
-func (a *AutoKeyDelivery) OnMembersUpdated(ctx context.Context, memberDIDs []string) {
+func (a *AutoKeyDelivery) OnNodesUpdated(ctx context.Context, nodeDIDs []string) {
 	if a == nil {
 		return
 	}
 
 	a.mu.Lock()
 	var pending []string
-	for _, did := range memberDIDs {
+	for _, did := range nodeDIDs {
 		if !a.delivered[did] {
 			pending = append(pending, did)
 		}
@@ -132,7 +132,7 @@ func (a *AutoKeyDelivery) OnMembersUpdated(ctx context.Context, memberDIDs []str
 	}
 }
 
-// MarkDelivered marks a member DID as already having received a context key.
+// MarkDelivered marks a node DID as already having received a context key.
 // Use this to seed the delivered set from existing contextKey records.
 func (a *AutoKeyDelivery) MarkDelivered(did string) {
 	if a == nil {
@@ -143,7 +143,7 @@ func (a *AutoKeyDelivery) MarkDelivered(did string) {
 	a.mu.Unlock()
 }
 
-// DeliveredCount returns the number of members with delivered context keys.
+// DeliveredCount returns the number of nodes with delivered context keys.
 func (a *AutoKeyDelivery) DeliveredCount() int {
 	if a == nil {
 		return 0
@@ -153,9 +153,9 @@ func (a *AutoKeyDelivery) DeliveredCount() int {
 	return len(a.delivered)
 }
 
-// PendingDelivery returns the list of member DIDs from the given set that
+// PendingDelivery returns the list of node DIDs from the given set that
 // haven't received a context key yet.
-func (a *AutoKeyDelivery) PendingDelivery(memberDIDs []string) []string {
+func (a *AutoKeyDelivery) PendingDelivery(nodeDIDs []string) []string {
 	if a == nil {
 		return nil
 	}
@@ -163,7 +163,7 @@ func (a *AutoKeyDelivery) PendingDelivery(memberDIDs []string) []string {
 	defer a.mu.Unlock()
 
 	var pending []string
-	for _, did := range memberDIDs {
+	for _, did := range nodeDIDs {
 		if !a.delivered[did] {
 			pending = append(pending, did)
 		}
