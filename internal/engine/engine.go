@@ -102,11 +102,11 @@ type Config struct {
 	// protocol records. If nil, encrypted records cannot be read.
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 
-	// NodeInfoRecordID is this node's nodeInfo record ID on the anchor DWN.
+	// NodeRecordID is this node's node record ID on the anchor DWN.
 	// Required for writing endpoint updates back to DWN.
-	NodeInfoRecordID string
+	NodeRecordID string
 
-	// AutoKeyDelivery enables automatic context key delivery to new members.
+	// AutoKeyDelivery enables automatic context key delivery to new nodes.
 	// Only active when this node is the anchor and has the root private key.
 	// If nil, auto delivery is disabled.
 	AutoKeyDelivery *AutoKeyDelivery
@@ -368,7 +368,7 @@ func New(cfg Config) (*Engine, error) {
 	// Wire the DWN control client into the LocalBackend.
 	// MapResponseFunc closes over our DWNClient and Converter to produce
 	// NetworkMaps from DWN records. If auto key delivery is configured,
-	// it also triggers key delivery to new members after each poll.
+	// it also triggers key delivery to new nodes after each poll.
 	mapFn := MapResponseFunc(dwnClient, converter, cfg.AutoKeyDelivery)
 	dwnControlConfig := &DWNControlConfig{
 		MapResponseFunc: mapFn,
@@ -396,7 +396,7 @@ func New(cfg Config) (*Engine, error) {
 
 	// Wire endpoint writeback: when magicsock discovers STUN endpoints,
 	// publish them to the anchor DWN so peers can find us.
-	if cfg.NodeInfoRecordID != "" && cfg.EncryptionKeyManager != nil {
+	if cfg.NodeRecordID != "" && cfg.EncryptionKeyManager != nil {
 		dwnControlConfig.EndpointUpdateFunc = makeEndpointUpdateFunc(cfg, l)
 	}
 	lb.SetControlClientGetterForTesting(
@@ -608,7 +608,7 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 			AnchorEndpoint:       cfg.AnchorEndpoint,
 			AnchorDID:            cfg.AnchorTenant,
 			NetworkRecordID:      cfg.NetworkRecordID,
-			NodeRecordID:         cfg.NodeInfoRecordID,
+			NodeRecordID:         cfg.NodeRecordID,
 			Signer:               cfg.Signer,
 			EncryptionKeyManager: cfg.EncryptionKeyManager,
 			PublicEndpoints:      publicEPs,
