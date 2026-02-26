@@ -5,16 +5,23 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+
+	"github.com/enboxorg/meshd/pkg/dids/didjwk"
 )
 
 // =============================================================================
 // WireGuard key tests
 // =============================================================================
 
-func TestGenerateWireGuardKeyPair(t *testing.T) {
-	kp, err := GenerateWireGuardKeyPair()
+func TestWireGuardKeyFromIdentity(t *testing.T) {
+	id, err := didjwk.Create()
 	if err != nil {
-		t.Fatalf("GenerateWireGuardKeyPair: %v", err)
+		t.Fatalf("Create: %v", err)
+	}
+
+	kp, err := WireGuardKeyFromIdentity(id.X25519PrivateKey)
+	if err != nil {
+		t.Fatalf("WireGuardKeyFromIdentity: %v", err)
 	}
 
 	// Verify key sizes.
@@ -25,7 +32,7 @@ func TestGenerateWireGuardKeyPair(t *testing.T) {
 		t.Fatalf("public key size = %d, want %d", len(kp.PublicKey), WireGuardKeySize)
 	}
 
-	// Verify clamping.
+	// X25519 keys from identity are already clamped.
 	if kp.PrivateKey[0]&7 != 0 {
 		t.Fatal("private key bits 0-2 not cleared")
 	}
@@ -36,39 +43,51 @@ func TestGenerateWireGuardKeyPair(t *testing.T) {
 		t.Fatal("private key bit 254 not set")
 	}
 
-	// Public key should not be all zeros.
-	allZero := true
-	for _, b := range kp.PublicKey {
-		if b != 0 {
-			allZero = false
-			break
-		}
-	}
-	if allZero {
-		t.Fatal("public key is all zeros")
+	// Public key should match the identity's X25519 public key.
+	if string(kp.PublicKey[:]) != string(id.X25519PublicKey) {
+		t.Fatal("public key does not match identity's X25519 public key")
 	}
 }
 
-func TestWireGuardKeyPairFromPrivate(t *testing.T) {
-	original, err := GenerateWireGuardKeyPair()
+func TestWireGuardKeyFromIdentity_InvalidLength(t *testing.T) {
+	_, err := WireGuardKeyFromIdentity([]byte("too short"))
+	if err == nil {
+		t.Fatal("expected error for invalid key length")
+	}
+}
+
+func TestWireGuardPubKeyFromDID(t *testing.T) {
+	id, err := didjwk.Create()
 	if err != nil {
-		t.Fatalf("generating: %v", err)
+		t.Fatalf("Create: %v", err)
 	}
 
-	restored, err := WireGuardKeyPairFromPrivate(original.PrivateKey[:])
+	kp, err := WireGuardKeyFromIdentity(id.X25519PrivateKey)
 	if err != nil {
-		t.Fatalf("WireGuardKeyPairFromPrivate: %v", err)
+		t.Fatalf("WireGuardKeyFromIdentity: %v", err)
 	}
 
-	if original.PublicKey != restored.PublicKey {
-		t.Fatal("public keys don't match")
+	// Peer derives public key from the DID URI only.
+	peerDerived, err := WireGuardPubKeyFromDID(id.URI)
+	if err != nil {
+		t.Fatalf("WireGuardPubKeyFromDID: %v", err)
+	}
+
+	// Should match the key pair's public key.
+	if peerDerived != kp.PublicKeyBase64() {
+		t.Fatalf("peer-derived pubkey %q != identity pubkey %q", peerDerived, kp.PublicKeyBase64())
 	}
 }
 
 func TestWireGuardKeyPairBase64(t *testing.T) {
-	kp, err := GenerateWireGuardKeyPair()
+	id, err := didjwk.Create()
 	if err != nil {
-		t.Fatalf("generating: %v", err)
+		t.Fatalf("Create: %v", err)
+	}
+
+	kp, err := WireGuardKeyFromIdentity(id.X25519PrivateKey)
+	if err != nil {
+		t.Fatalf("WireGuardKeyFromIdentity: %v", err)
 	}
 
 	pubB64 := kp.PublicKeyBase64()
@@ -90,12 +109,29 @@ func TestWireGuardKeyPairBase64(t *testing.T) {
 	}
 }
 
-func TestGenerateWireGuardKeyPair_Unique(t *testing.T) {
-	kp1, _ := GenerateWireGuardKeyPair()
-	kp2, _ := GenerateWireGuardKeyPair()
+func TestWireGuardKeyFromIdentity_Deterministic(t *testing.T) {
+	id, err := didjwk.Create()
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	kp1, _ := WireGuardKeyFromIdentity(id.X25519PrivateKey)
+	kp2, _ := WireGuardKeyFromIdentity(id.X25519PrivateKey)
+
+	if kp1.PublicKey != kp2.PublicKey {
+		t.Fatal("same identity should produce same WG key pair")
+	}
+}
+
+func TestWireGuardKeyFromIdentity_DifferentIdentities(t *testing.T) {
+	id1, _ := didjwk.Create()
+	id2, _ := didjwk.Create()
+
+	kp1, _ := WireGuardKeyFromIdentity(id1.X25519PrivateKey)
+	kp2, _ := WireGuardKeyFromIdentity(id2.X25519PrivateKey)
 
 	if kp1.PublicKey == kp2.PublicKey {
-		t.Fatal("two generated key pairs should differ")
+		t.Fatal("different identities should produce different WG keys")
 	}
 }
 

@@ -63,13 +63,6 @@ type NetworkState struct {
 	// MeshIP is this node's allocated IP within the mesh.
 	MeshIP string `json:"meshIp,omitempty"`
 
-	// WireGuardPublicKey is this node's WG public key (base64).
-	WireGuardPublicKey string `json:"wireguardPublicKey,omitempty"`
-
-	// WireGuardPrivateKey is this node's WG private key (base64).
-	// Stored locally only — never sent over the network.
-	WireGuardPrivateKey string `json:"wireguardPrivateKey,omitempty"`
-
 	// NodeInfoRecordID is the record ID of this node's nodeInfo record.
 	NodeInfoRecordID string `json:"nodeInfoRecordId,omitempty"`
 

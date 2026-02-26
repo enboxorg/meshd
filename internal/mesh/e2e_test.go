@@ -189,11 +189,11 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		t.Logf("  Admin member created: %d %s", memberStatus.Code, memberStatus.Detail)
 	}
 
-	// ---- Step 5: Node A generates WireGuard keys and registers nodeInfo (encrypted) ----
-	t.Log("Step 5: Node A generates WG keys and registers nodeInfo")
-	wgKeysA, err := mesh.GenerateWireGuardKeyPair()
+	// ---- Step 5: Node A derives WireGuard keys and registers nodeInfo (encrypted) ----
+	t.Log("Step 5: Node A derives WG keys from identity and registers nodeInfo")
+	wgKeysA, err := mesh.WireGuardKeyFromIdentity(nodeA.DID.EncryptionPrivateKey)
 	if err != nil {
-		t.Fatalf("generating WG keys for node A: %v", err)
+		t.Fatalf("deriving WG keys for node A: %v", err)
 	}
 	meshIPA, err := mesh.AllocateMeshIP(meshCIDR, nodeA.DID.URI)
 	if err != nil {
@@ -285,9 +285,9 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 	// Node B registers its nodeInfo (encrypted) using its own member role.
 	// Note: Node B can write its own nodeInfo because the protocol allows
 	// "role": "network/member" to ["create", "update", "read"] on nodeInfo.
-	wgKeysB, err := mesh.GenerateWireGuardKeyPair()
+	wgKeysB, err := mesh.WireGuardKeyFromIdentity(nodeB.DID.EncryptionPrivateKey)
 	if err != nil {
-		t.Fatalf("generating WG keys for node B: %v", err)
+		t.Fatalf("deriving WG keys for node B: %v", err)
 	}
 	meshIPB, err := mesh.AllocateMeshIP(meshCIDR, nodeB.DID.URI)
 	if err != nil {
