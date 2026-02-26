@@ -323,10 +323,6 @@ func (c *Converter) convertDNSConfig(dns *control.DNSConfig) tailcfg.DNSConfig {
 		})
 	}
 
-	for _, domain := range dns.Domains {
-		cfg.Domains = append(cfg.Domains, domain)
-	}
-
 	return cfg
 }
 

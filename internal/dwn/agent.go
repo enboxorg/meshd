@@ -39,13 +39,12 @@ type Agent interface {
 type DwnInterface string
 
 const (
-	InterfaceRecordsWrite      DwnInterface = "RecordsWrite"
-	InterfaceRecordsRead       DwnInterface = "RecordsRead"
-	InterfaceRecordsQuery      DwnInterface = "RecordsQuery"
-	InterfaceRecordsDelete     DwnInterface = "RecordsDelete"
-	InterfaceRecordsSubscribe  DwnInterface = "RecordsSubscribe"
+	InterfaceRecordsWrite       DwnInterface = "RecordsWrite"
+	InterfaceRecordsRead        DwnInterface = "RecordsRead"
+	InterfaceRecordsQuery       DwnInterface = "RecordsQuery"
+	InterfaceRecordsDelete      DwnInterface = "RecordsDelete"
 	InterfaceProtocolsConfigure DwnInterface = "ProtocolsConfigure"
-	InterfaceProtocolsQuery    DwnInterface = "ProtocolsQuery"
+	InterfaceProtocolsQuery     DwnInterface = "ProtocolsQuery"
 )
 
 // DwnRequest describes what operation to perform.

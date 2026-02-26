@@ -93,7 +93,7 @@ func main() {
 		combined := os.Args[1] + " " + os.Args[2]
 		switch combined {
 		case "network create", "network join", "network leave",
-			"peer list", "peer add", "peer remove", "peer approve",
+			"peer list", "peer add", "peer approve",
 			"acl set", "acl show",
 			"auth login", "auth list", "auth use", "auth logout":
 			cmd = combined
@@ -265,7 +265,7 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	encMgr := &dwncrypto.EncryptionKeyManager{
 		RootPrivateKey: identity.EncryptionPrivateKey,
 		RootKeyID:      identity.EncryptionKeyID(),
-		ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+		ProtocolURI:    protocols.MeshProtocolURI,
 	}
 
 	// 2. Create the network record.
@@ -278,7 +278,7 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	})
 
 	record, writeStatus, err := api.Write(ctx, identity.URI, dwn.WriteParams{
-		Protocol:     "https://enbox.org/protocols/wireguard-mesh",
+		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network",
 		Schema:       "https://enbox.org/schemas/wireguard-mesh/network",
 		DataFormat:   "application/json",
@@ -300,7 +300,7 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	if err := kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
 		AnchorDID:      identity.URI,
 		RecipientDID:   identity.URI,
-		SourceProtocol: "https://enbox.org/protocols/wireguard-mesh",
+		SourceProtocol: protocols.MeshProtocolURI,
 		ContextID:      record.ID,
 	}); err != nil {
 		fmt.Printf("  Warning: context key self-delivery failed: %v\n", err)
@@ -551,7 +551,7 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 	// Query node records.
 	records, status, err := api.Query(ctx, ns.AnchorDID, dwn.QueryParams{
 		Filter: dwn.RecordsFilter{
-			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
+			Protocol:     protocols.MeshProtocolURI,
 			ProtocolPath: "network/node",
 			ContextID:    ns.NetworkRecordID,
 		},
@@ -681,7 +681,7 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 	err = kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
 		AnchorDID:      identity.URI,
 		RecipientDID:   peerDID,
-		SourceProtocol: "https://enbox.org/protocols/wireguard-mesh",
+		SourceProtocol: protocols.MeshProtocolURI,
 		ContextID:      ns.NetworkRecordID,
 	})
 	if err != nil {
@@ -750,7 +750,7 @@ func cmdPeerApprove(ctx context.Context, args []string, flagProfile string) erro
 	err = kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
 		AnchorDID:      identity.URI,
 		RecipientDID:   peerDID,
-		SourceProtocol: "https://enbox.org/protocols/wireguard-mesh",
+		SourceProtocol: protocols.MeshProtocolURI,
 		ContextID:      ns.NetworkRecordID,
 	})
 	if err != nil {
@@ -1416,7 +1416,7 @@ func newEncryptionKeyManager(identity *did.DID) *dwncrypto.EncryptionKeyManager 
 	return &dwncrypto.EncryptionKeyManager{
 		RootPrivateKey: identity.EncryptionPrivateKey,
 		RootKeyID:      identity.EncryptionKeyID(),
-		ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+		ProtocolURI:    protocols.MeshProtocolURI,
 	}
 }
 

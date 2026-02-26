@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/enboxorg/meshd/internal/dwn"
+	"github.com/enboxorg/meshd/protocols"
 )
 
 // SubscriptionWatcher subscribes to DWN record changes and triggers
@@ -121,7 +122,7 @@ func (w *SubscriptionWatcher) Start(ctx context.Context) error {
 	// this network. This catches node, endpoint, and relay
 	// record changes in a single subscription.
 	filter := dwn.RecordsFilter{
-		Protocol:  "https://enbox.org/protocols/wireguard-mesh",
+		Protocol:  protocols.MeshProtocolURI,
 		ContextID: w.networkRecordID,
 	}
 

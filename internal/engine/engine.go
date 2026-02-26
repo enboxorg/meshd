@@ -44,14 +44,9 @@ import (
 //
 // Engine is the core of `meshd up`.
 type Engine struct {
-	dwnClient       *control.DWNClient
-	converter       *Converter
 	backend         *ipnlocal.LocalBackend
-	sys             *tsd.System
 	netMon          *netmon.Monitor
-	dialer          *tsdial.Dialer
 	ns              *netstack.Impl
-	autoKeyDelivery *AutoKeyDelivery
 	subWatcher      *SubscriptionWatcher
 	logger          *slog.Logger
 
@@ -404,18 +399,13 @@ func New(cfg Config) (*Engine, error) {
 	)
 
 	return &Engine{
-		dwnClient:       dwnClient,
-		converter:       converter,
-		backend:         lb,
-		sys:             sys,
-		netMon:          nm,
-		dialer:          dial,
-		ns:              ns,
-		autoKeyDelivery: cfg.AutoKeyDelivery,
-		subWatcher:      subWatcher,
-		tunDev:          tunDev,
-		tunName:         tunName,
-		logger:          l,
+		backend:    lb,
+		netMon:     nm,
+		ns:         ns,
+		subWatcher: subWatcher,
+		tunDev:     tunDev,
+		tunName:    tunName,
+		logger:     l,
 	}, nil
 }
 
@@ -560,7 +550,7 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 	}
 
 	return func(ctx context.Context, endpoints []tailcfg.Endpoint) {
-		var publicEPs []mesh.PublicEndpoint
+		var publicEPs []control.PublicEndpoint
 		var localEPs []string
 
 		for _, ep := range endpoints {
@@ -574,7 +564,7 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 			if addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() {
 				localEPs = append(localEPs, ap.String())
 			} else {
-				publicEPs = append(publicEPs, mesh.PublicEndpoint{
+				publicEPs = append(publicEPs, control.PublicEndpoint{
 					Address:  addr.String(),
 					Port:     int(ap.Port()),
 					Source:   "stun",

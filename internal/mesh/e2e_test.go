@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/enboxorg/meshd/internal/control"
 	"github.com/enboxorg/meshd/internal/did"
 	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
@@ -261,7 +262,7 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 			NodeRecordID:         regA.NodeRecordID,
 			Signer:               nodeA.Signer,
 			EncryptionKeyManager: nodeA.EncMgr,
-			PublicEndpoints: []mesh.PublicEndpoint{
+			PublicEndpoints: []control.PublicEndpoint{
 				{Address: "203.0.113.1", Port: 51820, Source: "test"},
 			},
 			LocalEndpoints: []string{"192.168.1.100:51820"},

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 )
@@ -220,45 +219,4 @@ func ReadEntry(reply *DwnReply) (json.RawMessage, error) {
 	return reply.Entry, nil
 }
 
-// ReadData is a convenience that extracts both the entry metadata and binary data
-// from a RecordsRead result. Returns (entry, data, error).
-func ReadData(result *RecordsReadResult) (json.RawMessage, io.Reader, error) {
-	if result.Reply == nil {
-		return nil, nil, fmt.Errorf("nil reply")
-	}
-	if result.Reply.Status.Code != 200 {
-		return nil, nil, fmt.Errorf("read failed: %d %s",
-			result.Reply.Status.Code, result.Reply.Status.Detail)
-	}
 
-	entry := result.Reply.Entry
-	if entry == nil {
-		entry = result.Reply.Record
-	}
-
-	var reader io.Reader
-	if len(result.Data) > 0 {
-		reader = io.NopCloser(newByteReader(result.Data))
-	}
-
-	return entry, reader, nil
-}
-
-// byteReader wraps []byte to satisfy io.Reader.
-type byteReader struct {
-	data []byte
-	pos  int
-}
-
-func newByteReader(data []byte) *byteReader {
-	return &byteReader{data: data}
-}
-
-func (r *byteReader) Read(p []byte) (int, error) {
-	if r.pos >= len(r.data) {
-		return 0, io.EOF
-	}
-	n := copy(p, r.data[r.pos:])
-	r.pos += n
-	return n, nil
-}

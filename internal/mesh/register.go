@@ -10,13 +10,13 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/enboxorg/meshd/internal/control"
 	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/protocols"
 )
 
 const (
-	protocolMesh = "https://enbox.org/protocols/wireguard-mesh"
-
 	schemaNode      = "https://enbox.org/schemas/wireguard-mesh/node"
 	schemaEndpoint  = "https://enbox.org/schemas/wireguard-mesh/endpoint"
 	schemaACLPolicy = "https://enbox.org/schemas/wireguard-mesh/acl-policy"
@@ -25,7 +25,6 @@ const (
 // NodeRegistration holds the result of registering a node on DWN.
 type NodeRegistration struct {
 	NodeRecordID string
-	MeshIP       string
 
 	// DateCreated is the dateCreated timestamp from the initial write.
 	// Store this and pass it back for subsequent updates so the immutable
@@ -52,11 +51,6 @@ type RegisterNodeParams struct {
 
 	// EncryptionKeyManager derives encryption keys for protocol paths.
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
-
-	// DiscoKey is this node's disco public key (base64). The disco key
-	// enables DERP relay and direct connection upgrades between peers.
-	// Optional: if empty, the disco key is omitted from the node record.
-	DiscoKey string
 
 	// MeshIP is this node's allocated mesh IP.
 	MeshIP string
@@ -146,7 +140,7 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 	api := dwn.NewDwnAPI(agent)
 
 	writeParams := dwn.WriteParams{
-		Protocol:             protocolMesh,
+		Protocol:             protocols.MeshProtocolURI,
 		ProtocolPath:         "network/node",
 		Schema:               schemaNode,
 		DataFormat:           "application/json",
@@ -180,7 +174,6 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 
 	return &NodeRegistration{
 		NodeRecordID: record.ID,
-		MeshIP:       params.MeshIP,
 		DateCreated:  dateCreated,
 	}, nil
 }
@@ -228,7 +221,7 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 	// The endpoint's parent is the node record, whose contextId is networkRecordID/nodeRecordID.
 	nodeContextID := params.NetworkRecordID + "/" + params.NodeRecordID
 	_, status, err := api.Write(ctx, params.AnchorDID, dwn.WriteParams{
-		Protocol:             protocolMesh,
+		Protocol:             protocols.MeshProtocolURI,
 		ProtocolPath:         "network/node/endpoint",
 		Schema:               schemaEndpoint,
 		DataFormat:           "application/json",
@@ -257,7 +250,7 @@ type WriteEndpointParams struct {
 	NodeRecordID         string
 	Signer               *dwn.Signer
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
-	PublicEndpoints      []PublicEndpoint
+	PublicEndpoints      []control.PublicEndpoint
 	LocalEndpoints       []string
 	NATType              string
 	ProtocolRole         string
@@ -274,14 +267,6 @@ type WriteEndpointParams struct {
 	// Squash indicates this is a squash (snapshot) write. See
 	// RegisterNodeParams.Squash.
 	Squash bool
-}
-
-// PublicEndpoint describes a publicly reachable endpoint.
-type PublicEndpoint struct {
-	Address  string `json:"address"`
-	Port     int    `json:"port"`
-	Priority int    `json:"priority,omitempty"`
-	Source   string `json:"source,omitempty"`
 }
 
 // WriteACLPolicyParams configures an ACL policy write.
@@ -314,7 +299,7 @@ func WriteACLPolicy(ctx context.Context, params WriteACLPolicyParams) error {
 	api := dwn.NewDwnAPI(agent)
 
 	_, status, err := api.Write(ctx, params.AnchorDID, dwn.WriteParams{
-		Protocol:             protocolMesh,
+		Protocol:             protocols.MeshProtocolURI,
 		ProtocolPath:         "network/aclPolicy",
 		Schema:               schemaACLPolicy,
 		DataFormat:           "application/json",

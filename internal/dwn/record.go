@@ -51,8 +51,7 @@ type Record struct {
 	encodedData string // base64url-encoded data (for small payloads)
 	rawData     []byte // raw binary data (from RecordsRead response body)
 
-	mu           sync.Mutex
-	dataConsumed bool
+	mu sync.Mutex
 }
 
 // RecordFromWrite constructs a Record from a RecordsWrite response.
@@ -247,7 +246,6 @@ func (d *RecordData) Reader(ctx context.Context) (io.ReadCloser, error) {
 			return nil, fmt.Errorf("decoding inline data: %w", err)
 		}
 		r.encodedData = ""
-		r.dataConsumed = true
 		return io.NopCloser(bytes.NewReader(data)), nil
 	}
 
@@ -255,7 +253,6 @@ func (d *RecordData) Reader(ctx context.Context) (io.ReadCloser, error) {
 	if len(r.rawData) > 0 {
 		data := r.rawData
 		r.rawData = nil
-		r.dataConsumed = true
 		return io.NopCloser(bytes.NewReader(data)), nil
 	}
 
@@ -282,7 +279,6 @@ func (d *RecordData) Reader(ctx context.Context) (io.ReadCloser, error) {
 	}
 
 	if len(resp.Data) > 0 {
-		r.dataConsumed = true
 		return io.NopCloser(bytes.NewReader(resp.Data)), nil
 	}
 

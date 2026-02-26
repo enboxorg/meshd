@@ -112,12 +112,9 @@ type DWNControl struct {
 	logf     logger.Logf
 	clientID int64
 
-	mu           sync.Mutex
-	hostinfo     *tailcfg.Hostinfo
-	netinfo      *tailcfg.NetInfo
-	disco        key.DiscoPublic
-	endpoints    []tailcfg.Endpoint
-	paused       atomic.Bool
+	mu     sync.Mutex
+	disco  key.DiscoPublic
+	paused atomic.Bool
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
 	cancel       context.CancelFunc
@@ -180,9 +177,6 @@ func NewDWNControl(config *DWNControlConfig, opts controlclient.Options) (*DWNCo
 		notify:   make(chan struct{}, 1),
 	}
 
-	if opts.Hostinfo != nil {
-		cc.hostinfo = opts.Hostinfo
-	}
 	cc.disco = opts.DiscoPublicKey
 
 	// Publish the initial disco key to the registry so peers can discover
@@ -221,7 +215,7 @@ func (cc *DWNControl) pollLoop(ctx context.Context) {
 	}
 
 	// Initial login: load state and report logged-in.
-	cc.loadAndPush(ctx, true)
+	cc.loadAndPush(ctx)
 
 	// Allow the event bus to propagate the initial NodeViewsUpdate to
 	// magicsock before any subsequent Reconfig from the notify feedback
@@ -239,7 +233,7 @@ func (cc *DWNControl) pollLoop(ctx context.Context) {
 	default:
 	}
 	// Re-push now that magicsock knows about our peers.
-	cc.loadAndPush(ctx, false)
+	cc.loadAndPush(ctx)
 
 	ticker := time.NewTicker(cc.config.PollInterval)
 	defer ticker.Stop()
@@ -260,7 +254,7 @@ func (cc *DWNControl) pollLoop(ctx context.Context) {
 			if cc.paused.Load() {
 				continue
 			}
-			cc.loadAndPush(ctx, false)
+			cc.loadAndPush(ctx)
 			lastPoll = time.Now()
 		case <-cc.notify:
 			if cc.paused.Load() {
@@ -275,14 +269,14 @@ func (cc *DWNControl) pollLoop(ctx context.Context) {
 			case <-cc.notify:
 			default:
 			}
-			cc.loadAndPush(ctx, false)
+			cc.loadAndPush(ctx)
 			lastPoll = time.Now()
 		}
 	}
 }
 
 // loadAndPush reads DWN state and pushes a Status to the observer.
-func (cc *DWNControl) loadAndPush(ctx context.Context, loginFinished bool) {
+func (cc *DWNControl) loadAndPush(ctx context.Context) {
 	if cc.config.MapResponseFunc == nil {
 		cc.logf("dwn-control: no MapResponseFunc configured")
 		return
@@ -395,17 +389,11 @@ func (cc *DWNControl) AuthCantContinue() bool {
 }
 
 func (cc *DWNControl) SetHostinfo(hi *tailcfg.Hostinfo) {
-	cc.mu.Lock()
-	cc.hostinfo = hi
-	cc.mu.Unlock()
-	// TODO: publish hostinfo to DWN as a node record update.
+	// Not used in DWN-based control. Hostinfo is derived from the node record.
 }
 
 func (cc *DWNControl) SetNetInfo(ni *tailcfg.NetInfo) {
-	cc.mu.Lock()
-	cc.netinfo = ni
-	cc.mu.Unlock()
-	// TODO: publish netinfo to DWN.
+	// Not used in DWN-based control. NetInfo is part of local state.
 }
 
 func (cc *DWNControl) SetTKAHead(headHash string) {
@@ -413,10 +401,6 @@ func (cc *DWNControl) SetTKAHead(headHash string) {
 }
 
 func (cc *DWNControl) UpdateEndpoints(endpoints []tailcfg.Endpoint) {
-	cc.mu.Lock()
-	cc.endpoints = endpoints
-	cc.mu.Unlock()
-
 	if cc.config.EndpointUpdateFunc != nil {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
