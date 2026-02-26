@@ -35,7 +35,7 @@ Identity:
   auth list         List all profiles
   auth use <name>   Set the default profile
   auth logout       Remove a profile from config
-  init              Generate DID identity and publish to DHT
+  init              Generate DID identity and store locally
 
 Network:
   network create    Create a new mesh network on a DWN
@@ -301,45 +301,13 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 		fmt.Printf("  Context key delivered to self.\n")
 	}
 
-	// 4. Create self as admin member (encrypted).
-	memberRecipients, err := encMgr.DeriveWriteEncryption("network/member")
-	if err != nil {
-		return fmt.Errorf("deriving member encryption: %w", err)
-	}
-
-	memberData, _ := json.Marshal(map[string]any{
-		"joinedAt": time.Now().UTC().Format(time.RFC3339),
-		"label":    "admin",
-	})
-
-	_, memberStatus, err := api.Write(ctx, identity.URI, dwn.WriteParams{
-		Protocol:             "https://enbox.org/protocols/wireguard-mesh",
-		ProtocolPath:         "network/member",
-		Schema:               "https://enbox.org/schemas/wireguard-mesh/member",
-		DataFormat:           "application/json",
-		Recipient:            identity.URI,
-		ParentContextID:     record.ID,
-		Data:                 memberData,
-		Tags:                 map[string]any{"status": "active"},
-		EncryptionRecipients: memberRecipients,
-	})
-	if err != nil {
-		return fmt.Errorf("creating member record: %w", err)
-	}
-	if memberStatus.Code >= 300 {
-		fmt.Printf("  Warning: member record creation failed: %d %s\n",
-			memberStatus.Code, memberStatus.Detail)
-	} else {
-		fmt.Printf("  Created admin member record (encrypted).\n")
-	}
-
-	// 5. Allocate mesh IP.
+	// 4. Allocate mesh IP.
 	meshIP, err := mesh.AllocateMeshIP(meshCIDR, identity.URI)
 	if err != nil {
 		return fmt.Errorf("allocating mesh IP: %w", err)
 	}
 
-	// 6. Register node on DWN (encrypted).
+	// 5. Register node on DWN (encrypted).
 	reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            identity.URI,
@@ -355,7 +323,7 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 		fmt.Printf("  Registered node (encrypted): IP=%s\n", meshIP)
 	}
 
-	// 7. Persist network state.
+	// 6. Persist network state.
 	ns := &state.NetworkState{
 		NetworkRecordID: record.ID,
 		AnchorDID:       identity.URI,
@@ -437,7 +405,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 	// Read the network record to verify it exists.
 	record, readStatus, err := api.Read(ctx, anchorDID, dwn.RecordsFilter{
 		RecordID: networkID,
-	}, "network/member")
+	}, "network/node")
 	if err != nil {
 		return fmt.Errorf("reading network: %w", err)
 	}
@@ -573,15 +541,15 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 	agent := dwn.NewSimpleAgent(ns.AnchorEndpoint, signer)
 	api := dwn.NewDwnAPI(agent)
 
-	// Query member records.
+	// Query node records.
 	records, status, err := api.Query(ctx, ns.AnchorDID, dwn.QueryParams{
 		Filter: dwn.RecordsFilter{
 			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
-			ProtocolPath: "network/member",
+			ProtocolPath: "network/node",
 			ContextID:    ns.NetworkRecordID,
 		},
 		DateSort: "createdAscending",
-	}, "network/member")
+	}, "network/node")
 	if err != nil {
 		return fmt.Errorf("querying peers: %w", err)
 	}
@@ -596,34 +564,40 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 	}
 
 	fmt.Printf("Peers in %q:\n", ns.NetworkName)
-	fmt.Printf("%-50s %-16s %s\n", "DID", "MESH IP", "STATUS")
-	fmt.Println(strings.Repeat("-", 80))
+	fmt.Printf("%-50s %-16s %-12s %s\n", "DID", "MESH IP", "HOSTNAME", "LABEL")
+	fmt.Println(strings.Repeat("-", 90))
 
 	for _, r := range records {
-		var member struct {
-			DID    string `json:"did"`
-			MeshIP string `json:"meshIp"`
-			Role   string `json:"role"`
+		var node struct {
+			MeshIP   string `json:"meshIP"`
+			Hostname string `json:"hostname"`
+			Label    string `json:"label"`
+			OS       string `json:"os"`
 		}
-		if err := r.Data().JSON(ctx, &member); err != nil {
-			// Data may not be inline.
-			fmt.Printf("%-50s %-16s %s\n", truncate(r.Recipient, 50), "?", "no data")
+		if err := r.Data().JSON(ctx, &node); err != nil {
+			// Data may not be inline (encrypted records need context key).
+			fmt.Printf("%-50s %-16s %-12s %s\n", truncate(r.Recipient, 50), "?", "?", "(encrypted)")
 			continue
 		}
-		fmt.Printf("%-50s %-16s %s\n",
-			truncate(member.DID, 50),
-			member.MeshIP,
-			member.Role)
+		did := r.Recipient
+		if did == "" {
+			did = "(unknown)"
+		}
+		fmt.Printf("%-50s %-16s %-12s %s\n",
+			truncate(did, 50),
+			node.MeshIP,
+			node.Hostname,
+			node.Label)
 	}
 
 	return nil
 }
 
-// cmdPeerAdd adds a peer to the mesh network. This creates a member record
+// cmdPeerAdd adds a peer to the mesh network. This creates a node record
 // for the given DID on the anchor DWN and delivers the context encryption
 // key so the peer can immediately decrypt mesh records.
 //
-// This must be run by the network anchor (owner). It combines the member
+// This must be run by the network anchor (owner). It combines the node
 // record creation and key delivery into a single command.
 //
 // Usage: meshd peer add <did> [--label <label>]
@@ -633,7 +607,7 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 	}
 
 	peerDID := args[0]
-	label := "member"
+	label := "peer"
 	for i := 1; i < len(args); i++ {
 		if args[i] == "--label" && i+1 < len(args) {
 			label = args[i+1]
@@ -704,10 +678,10 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 		ContextID:      ns.NetworkRecordID,
 	})
 	if err != nil {
-		// Non-fatal: the member was created, key delivery can be retried
+		// Non-fatal: the node was created, key delivery can be retried
 		// with `peer approve`.
 		fmt.Printf("  Warning: context key delivery failed: %v\n", err)
-		fmt.Printf("  The member was added but cannot decrypt records yet.\n")
+		fmt.Printf("  The node was added but cannot decrypt records yet.\n")
 		fmt.Printf("  Retry with: meshd peer approve %s\n", peerDID)
 		return nil
 	}
