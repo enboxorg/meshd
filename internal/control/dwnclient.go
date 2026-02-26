@@ -581,6 +581,18 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 		node := nodeRecordToNode(nodeID, did, rec)
 		nodeID++
 
+		// Skip peers whose node records could not be decrypted. Without
+		// a mesh IP the peer has no addresses and WireGuard cannot route
+		// traffic to it. These "ghost" nodes are still tracked in c.nodes
+		// for auto key delivery purposes, but should not be injected
+		// into the network map.
+		if did != c.selfDID && !node.MeshIP.IsValid() {
+			c.logger.Debug("skipping undecryptable peer in network map",
+				slog.String("did", did),
+			)
+			continue
+		}
+
 		if did == c.selfDID {
 			resp.Node = node
 		} else {
