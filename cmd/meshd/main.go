@@ -314,7 +314,10 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 		return fmt.Errorf("allocating mesh IP: %w", err)
 	}
 
-	// 5. Register node on DWN (encrypted).
+	// 5. Register node on DWN (encrypted with Protocol Context).
+	// Use context encryption so that peers with the shared context key can
+	// decrypt the anchor's node record. The anchor already self-delivered the
+	// context key above, and as the DWN owner it can derive the key from root.
 	reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            identity.URI,
@@ -323,6 +326,7 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 		Signer:               signer,
 		EncryptionKeyManager: encMgr,
 		MeshIP:               meshIP.String(),
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		fmt.Printf("  Warning: node registration failed: %v\n", err)
@@ -337,6 +341,7 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 			NodeRecordID:         reg.NodeRecordID,
 			Signer:               signer,
 			EncryptionKeyManager: encMgr,
+			UseContextEncryption: true,
 		}); err != nil {
 			fmt.Printf("  Warning: nodeInfo write failed: %v\n", err)
 		} else {
@@ -778,6 +783,8 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 
 	// 1. Create a node record for the peer (assigns the network/node role).
 	// The peer's mesh IP is derived deterministically from their DID.
+	// Use Protocol Context encryption so all peers with the shared context
+	// key can decrypt each other's node records.
 	fmt.Printf("Adding peer %s...\n", peerDID)
 	peerMeshIP, err := mesh.AllocateMeshIP(ns.MeshCIDR, peerDID)
 	if err != nil {
@@ -792,6 +799,7 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 		EncryptionKeyManager: encMgr,
 		MeshIP:               peerMeshIP.String(),
 		Label:                label,
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		return fmt.Errorf("creating node record: %w", err)
@@ -1115,11 +1123,16 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 
 	encMgr := newEncryptionKeyManager(identity)
 
-	// For non-anchor nodes: fetch the context key from the anchor so we
-	// can encrypt records with Protocol Context scheme (which the anchor
-	// can decrypt using the shared context key).
+	// Enable Protocol Context encryption so all nodes (including the anchor)
+	// write records that any peer with the shared context key can decrypt.
+	// The anchor derives the context key from its root key (HKDF).
+	// Non-anchor nodes fetch it from the anchor's key-delivery protocol.
 	useContextEncryption := false
-	if ns.AnchorDID != identity.URI {
+	if ns.AnchorDID == identity.URI {
+		// Anchor: always use context encryption. The EncryptionKeyManager
+		// derives the context key from the root key automatically.
+		useContextEncryption = true
+	} else {
 		contextKey, err := fetchContextKey(ctx, identity, ns)
 		if err != nil {
 			slog.Warn("context key fetch failed (will retry on next up)",
