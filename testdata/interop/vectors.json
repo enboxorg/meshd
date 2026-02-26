@@ -132,7 +132,7 @@
       "description": "full JWE A256GCM with deterministic keys",
       "recipientPrivateKey": "dOT30gYEUHrwV1fEUwqLCgEicWtDZp8g3H4hEeADg9A",
       "recipientPublicKey": "JI6Q3ZLIqNo2s1QrcUBsmsTyKN4F9CypnVdLYVtLax4",
-      "recipientKid": "did:dht:interoptest123#enc",
+      "recipientKid": "did:jwk:interoptest123#0",
       "derivationScheme": "protocolPath",
       "plaintext": "eyJuZXR3b3JrSWQiOiJuZXQtMDAxIiwicm9sZSI6ImFkbWluIn0",
       "cek": "t0klMC50Gzj51Ha5-ST0simRQZoQfs_U8DZMmWIVY3k",
@@ -145,7 +145,7 @@
         "recipients": [
           {
             "header": {
-              "kid": "did:dht:interoptest123#enc",
+              "kid": "did:jwk:interoptest123#0",
               "epk": {
                 "kty": "OKP",
                 "crv": "X25519",
@@ -163,7 +163,7 @@
     {
       "description": "protocol path: network",
       "rootKey": "8DBENkiUrNwT4rI1gyrIVvDYuRzzub--aWe0DhynvpU",
-      "rootKeyId": "did:dht:interoptest123#enc",
+      "rootKeyId": "did:jwk:interoptest123#0",
       "protocolUri": "https://example.com/protocol/wireguard-mesh",
       "protocolPath": "network",
       "fullPath": [
@@ -175,35 +175,35 @@
       "publicKey": "Ov44LzYHQaWmJb8MJWiyoxRJvqhrC3r6BcA9xJKBYkM"
     },
     {
-      "description": "protocol path: network/member",
+      "description": "protocol path: network/node",
       "rootKey": "8DBENkiUrNwT4rI1gyrIVvDYuRzzub--aWe0DhynvpU",
-      "rootKeyId": "did:dht:interoptest123#enc",
+      "rootKeyId": "did:jwk:interoptest123#0",
       "protocolUri": "https://example.com/protocol/wireguard-mesh",
-      "protocolPath": "network/member",
+      "protocolPath": "network/node",
       "fullPath": [
         "protocolPath",
         "https://example.com/protocol/wireguard-mesh",
         "network",
-        "member"
+        "node"
       ],
-      "derivedKey": "Z_MT1MrEmBh-DZpFGwzCFroSImix1h5Brd_r4syj1Vg",
-      "publicKey": "85-guodABi1QaMtFTygILjdjC7h79f3jZxRYIOGRVRE"
+      "derivedKey": "kXStZHQety0H3W9mCA8C18dGr2qP3f7ilC-ZfZmFWTg",
+      "publicKey": "qTaxeI98fDQhur0zw194bjm5sy91zURGcRWXbFkTczY"
     },
     {
-      "description": "protocol path: network/member/nodeInfo",
+      "description": "protocol path: network/node/endpoint",
       "rootKey": "8DBENkiUrNwT4rI1gyrIVvDYuRzzub--aWe0DhynvpU",
-      "rootKeyId": "did:dht:interoptest123#enc",
+      "rootKeyId": "did:jwk:interoptest123#0",
       "protocolUri": "https://example.com/protocol/wireguard-mesh",
-      "protocolPath": "network/member/nodeInfo",
+      "protocolPath": "network/node/endpoint",
       "fullPath": [
         "protocolPath",
         "https://example.com/protocol/wireguard-mesh",
         "network",
-        "member",
-        "nodeInfo"
+        "node",
+        "endpoint"
       ],
-      "derivedKey": "GFE2AKFQw--mZ5hvGlwxc8ylmph5Nk4WJCSqGFZWBxE",
-      "publicKey": "t9Wn-LH3fd7ARGvOgtmAbrzWev1JbDbHVn3BaPrMll4"
+      "derivedKey": "pM7VZvPn5DwwOC57cHCqpMDlKALDqVITODC98r6S4xI",
+      "publicKey": "1U6eplHmSQhRJ9krT0T6a5HanDD7hK6kDL9EnEu5kjQ"
     }
   ]
 }

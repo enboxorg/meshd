@@ -162,8 +162,8 @@ func (m *EncryptionKeyManager) IsOwner() bool {
 // DeriveWriteEncryption derives the encryption inputs needed for a RecordsWrite
 // at the given protocol path.
 //
-// The protocolPath is slash-delimited (e.g., "network/member"). This method:
-//  1. Builds the full derivation path: ["protocolPath", protocolURI, "network", "member"]
+// The protocolPath is slash-delimited (e.g., "network/node"). This method:
+//  1. Builds the full derivation path: ["protocolPath", protocolURI, "network", "node"]
 //  2. Derives the private key and public key at that path level
 //  3. Returns a KeyEncryptionInput suitable for passing to BuildRecordsWrite
 //
@@ -271,7 +271,7 @@ func (m *EncryptionKeyManager) DeriveContextKeyJwk(contextID string) (*DerivedPr
 }
 
 // splitProtocolPath splits a slash-delimited protocol path into segments.
-// e.g., "network/member" -> ["network", "member"]
+// e.g., "network/node" -> ["network", "node"]
 func splitProtocolPath(path string) []string {
 	if path == "" {
 		return nil

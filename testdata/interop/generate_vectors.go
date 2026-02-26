@@ -98,7 +98,7 @@ type ProtocolKeyVector struct {
 	RootKey      string   `json:"rootKey"`      // base64url
 	RootKeyID    string   `json:"rootKeyId"`
 	ProtocolURI  string   `json:"protocolUri"`
-	ProtocolPath string   `json:"protocolPath"` // e.g., "network/member"
+	ProtocolPath string   `json:"protocolPath"` // e.g., "network/node"
 	FullPath     []string `json:"fullPath"`     // The complete derivation path
 	DerivedKey   string   `json:"derivedKey"`   // base64url private key
 	PublicKey    string   `json:"publicKey"`     // base64url X25519 public key
@@ -477,7 +477,7 @@ func generateFullJWEVectors() []FullJWEVector {
 		protectedJSON, _ := json.Marshal(protectedHeader)
 		protectedB64 := b64(protectedJSON)
 
-		kid := "did:dht:interoptest123#enc"
+		kid := "did:jwk:interoptest123#0"
 
 		jwe := crypto.Encryption{
 			Protected: protectedB64,
@@ -520,7 +520,7 @@ func generateProtocolKeyVectors() []ProtocolKeyVector {
 	var vectors []ProtocolKeyVector
 
 	rootKey := deterministicKey("protocol-root-key")
-	rootKeyID := "did:dht:interoptest123#enc"
+	rootKeyID := "did:jwk:interoptest123#0"
 	protocolURI := "https://example.com/protocol/wireguard-mesh"
 
 	// Top-level type "network".
@@ -540,34 +540,34 @@ func generateProtocolKeyVectors() []ProtocolKeyVector {
 		})
 	}
 
-	// Nested type "network/member".
+	// Nested type "network/node".
 	{
-		fullPath := crypto.BuildProtocolPathDerivation(protocolURI, "network", "member")
+		fullPath := crypto.BuildProtocolPathDerivation(protocolURI, "network", "node")
 		derived, pub, err := crypto.DerivePrivateKey(rootKey, fullPath)
 		must(err)
 		vectors = append(vectors, ProtocolKeyVector{
-			Description:  "protocol path: network/member",
+			Description:  "protocol path: network/node",
 			RootKey:      b64(rootKey),
 			RootKeyID:    rootKeyID,
 			ProtocolURI:  protocolURI,
-			ProtocolPath: "network/member",
+			ProtocolPath: "network/node",
 			FullPath:     fullPath,
 			DerivedKey:   b64(derived),
 			PublicKey:    b64(pub),
 		})
 	}
 
-	// Deeply nested "network/member/nodeInfo".
+	// Deeply nested "network/node/endpoint".
 	{
-		fullPath := crypto.BuildProtocolPathDerivation(protocolURI, "network", "member", "nodeInfo")
+		fullPath := crypto.BuildProtocolPathDerivation(protocolURI, "network", "node", "endpoint")
 		derived, pub, err := crypto.DerivePrivateKey(rootKey, fullPath)
 		must(err)
 		vectors = append(vectors, ProtocolKeyVector{
-			Description:  "protocol path: network/member/nodeInfo",
+			Description:  "protocol path: network/node/endpoint",
 			RootKey:      b64(rootKey),
 			RootKeyID:    rootKeyID,
 			ProtocolURI:  protocolURI,
-			ProtocolPath: "network/member/nodeInfo",
+			ProtocolPath: "network/node/endpoint",
 			FullPath:     fullPath,
 			DerivedKey:   b64(derived),
 			PublicKey:    b64(pub),

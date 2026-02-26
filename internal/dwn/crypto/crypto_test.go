@@ -1496,21 +1496,17 @@ func TestInjectEncryptionDirectives(t *testing.T) {
 		"published": true,
 		"types": {
 			"network": {"schema": "https://example.com/schemas/network", "dataFormats": ["application/json"]},
-			"member": {"schema": "https://example.com/schemas/member", "dataFormats": ["application/json"], "encryptionRequired": true},
-			"nodeInfo": {"schema": "https://example.com/schemas/node-info", "dataFormats": ["application/json"], "encryptionRequired": true},
+			"node": {"schema": "https://example.com/schemas/node", "dataFormats": ["application/json"], "encryptionRequired": true},
 			"endpoint": {"schema": "https://example.com/schemas/endpoint", "dataFormats": ["application/json"], "encryptionRequired": true}
 		},
 		"structure": {
 			"network": {
 				"$actions": [{"who": "anyone", "can": ["read"]}],
-				"member": {
+				"node": {
 					"$role": true,
-					"$actions": [{"role": "network/member", "can": ["read"]}]
-				},
-				"nodeInfo": {
-					"$actions": [{"role": "network/member", "can": ["create", "read"]}],
+					"$actions": [{"role": "network/node", "can": ["read"]}],
 					"endpoint": {
-						"$actions": [{"role": "network/member", "can": ["read"]}]
+						"$actions": [{"role": "network/node", "can": ["read"]}]
 					}
 				}
 			}
@@ -1548,46 +1544,35 @@ func TestInjectEncryptionDirectives(t *testing.T) {
 		t.Fatal("network publicKeyJwk.x is empty")
 	}
 
-	// member should have $encryption.
-	member := network["member"].(map[string]any)
-	memberEnc, ok := member["$encryption"].(map[string]any)
+	// node should have $encryption.
+	node := network["node"].(map[string]any)
+	nodeEnc, ok := node["$encryption"].(map[string]any)
 	if !ok {
-		t.Fatal("member missing $encryption")
+		t.Fatal("node missing $encryption")
 	}
-	memberPubJwk := memberEnc["publicKeyJwk"].(map[string]any)
-	memberPubX := memberPubJwk["x"].(string)
-	if memberPubX == "" || memberPubX == networkPubX {
-		t.Fatalf("member publicKeyJwk.x should differ from network: member=%s, network=%s", memberPubX, networkPubX)
+	nodePubJwk := nodeEnc["publicKeyJwk"].(map[string]any)
+	nodePubX := nodePubJwk["x"].(string)
+	if nodePubX == "" || nodePubX == networkPubX {
+		t.Fatalf("node publicKeyJwk.x should differ from network: node=%s, network=%s", nodePubX, networkPubX)
 	}
 
-	// nodeInfo should have $encryption.
-	nodeInfo := network["nodeInfo"].(map[string]any)
-	nodeInfoEnc, ok := nodeInfo["$encryption"].(map[string]any)
-	if !ok {
-		t.Fatal("nodeInfo missing $encryption")
-	}
-	nodeInfoPubX := nodeInfoEnc["publicKeyJwk"].(map[string]any)["x"].(string)
-	if nodeInfoPubX == "" || nodeInfoPubX == networkPubX || nodeInfoPubX == memberPubX {
-		t.Fatal("nodeInfo publicKeyJwk.x should be unique")
-	}
-
-	// endpoint (child of nodeInfo) should have $encryption.
-	endpoint := nodeInfo["endpoint"].(map[string]any)
+	// endpoint (child of node) should have $encryption.
+	endpoint := node["endpoint"].(map[string]any)
 	endpointEnc, ok := endpoint["$encryption"].(map[string]any)
 	if !ok {
 		t.Fatal("endpoint missing $encryption")
 	}
 	endpointPubX := endpointEnc["publicKeyJwk"].(map[string]any)["x"].(string)
-	if endpointPubX == "" || endpointPubX == nodeInfoPubX {
-		t.Fatal("endpoint publicKeyJwk.x should differ from nodeInfo")
+	if endpointPubX == "" || endpointPubX == nodePubX {
+		t.Fatal("endpoint publicKeyJwk.x should differ from node")
 	}
 
 	// $actions should be preserved.
 	if _, ok := network["$actions"]; !ok {
 		t.Fatal("network.$actions was lost")
 	}
-	if _, ok := member["$role"]; !ok {
-		t.Fatal("member.$role was lost")
+	if _, ok := node["$role"]; !ok {
+		t.Fatal("node.$role was lost")
 	}
 }
 
@@ -1674,8 +1659,8 @@ func TestEncryptionKeyManager_DeriveWriteEncryption(t *testing.T) {
 		path string
 	}{
 		"root level": {path: "network"},
-		"child level": {path: "network/member"},
-		"deep level": {path: "network/nodeInfo/endpoint"},
+		"child level": {path: "network/node"},
+		"deep level": {path: "network/node/endpoint"},
 	}
 
 	for name, tc := range tests {
@@ -1719,12 +1704,11 @@ func TestEncryptionKeyManager_RoundTrip(t *testing.T) {
 
 	paths := []string{
 		"network",
-		"network/member",
-		"network/nodeInfo",
-		"network/nodeInfo/endpoint",
-		"network/admin",
+		"network/node",
+		"network/node/endpoint",
 		"network/aclPolicy",
 		"network/relay",
+		"network/preAuthKey",
 	}
 
 	for _, path := range paths {
@@ -1841,8 +1825,8 @@ func TestSplitProtocolPath(t *testing.T) {
 		expected []string
 	}{
 		"single segment": {input: "network", expected: []string{"network"}},
-		"two segments": {input: "network/member", expected: []string{"network", "member"}},
-		"three segments": {input: "network/nodeInfo/endpoint", expected: []string{"network", "nodeInfo", "endpoint"}},
+		"two segments": {input: "network/node", expected: []string{"network", "node"}},
+		"three segments": {input: "network/node/endpoint", expected: []string{"network", "node", "endpoint"}},
 		"empty": {input: "", expected: nil},
 	}
 

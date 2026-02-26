@@ -126,7 +126,7 @@ type WriteParams struct {
 	ParentContextID string
 
 	// ProtocolRole is the Protocol Path of a role to invoke for
-	// role-based authorization (e.g., "network/member"). Leave empty
+	// role-based authorization (e.g., "network/node"). Leave empty
 	// for owner or actor-based writes.
 	ProtocolRole string
 
