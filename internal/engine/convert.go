@@ -331,7 +331,8 @@ func (c *Converter) convertFilterRules(rules []control.FilterRule) []tailcfg.Fil
 	result := make([]tailcfg.FilterRule, 0, len(rules))
 	for _, r := range rules {
 		tr := tailcfg.FilterRule{
-			SrcIPs: r.SrcIPs,
+			SrcIPs:  r.SrcIPs,
+			IPProto: r.IPProto,
 		}
 		for _, dp := range r.DstPorts {
 			tr.DstPorts = append(tr.DstPorts, tailcfg.NetPortRange{

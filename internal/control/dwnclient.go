@@ -834,8 +834,14 @@ func (c *DWNClient) buildFilterRules() []FilterRule {
 			dstPorts = []PortRange{{First: 0, Last: 65535}}
 		}
 
+		// Map protocol string to IP protocol numbers.
+		ipProto := protoToIPProto(r.Proto)
+
 		// Build filter rule: each dst IP × each port range.
-		rule := FilterRule{SrcIPs: srcIPs}
+		rule := FilterRule{
+			SrcIPs:  srcIPs,
+			IPProto: ipProto,
+		}
 		for _, ip := range dstIPs {
 			for _, pr := range dstPorts {
 				rule.DstPorts = append(rule.DstPorts, NetPortRange{
@@ -854,6 +860,24 @@ func (c *DWNClient) buildFilterRules() []FilterRule {
 	}
 
 	return rules
+}
+
+// protoToIPProto maps an ACL rule's proto string to IP protocol numbers.
+// Returns nil for empty or "*" (meaning all protocols — TCP, UDP, ICMP).
+//
+// IANA protocol numbers: ICMPv4=1, TCP=6, UDP=17, ICMPv6=58.
+func protoToIPProto(proto string) []int {
+	switch proto {
+	case "tcp":
+		return []int{6} // TCP
+	case "udp":
+		return []int{17} // UDP
+	case "icmp":
+		return []int{1, 58} // ICMPv4 + ICMPv6
+	default:
+		// Empty or "*": nil means all protocols (meshnet default).
+		return nil
+	}
 }
 
 // resolveMatchers expands ACL source/destination matchers into IP strings

@@ -121,6 +121,11 @@ type FilterRule struct {
 
 	// DstPorts are destination ip:port ranges.
 	DstPorts []NetPortRange
+
+	// IPProto are the IP protocol numbers to match (e.g. 6 for TCP,
+	// 17 for UDP, 1 for ICMPv4). nil or empty means all protocols
+	// (TCP, UDP, ICMP) — same semantics as tailcfg.FilterRule.IPProto.
+	IPProto []int
 }
 
 // NetPortRange is an IP + port range for filter rules.
