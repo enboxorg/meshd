@@ -1005,3 +1005,98 @@ func TestACLPolicyDataSerialization(t *testing.T) {
 		t.Errorf("dstPorts = %v", decoded.Rules[0].DstPorts)
 	}
 }
+
+func TestProtoToIPProto(t *testing.T) {
+	tests := []struct {
+		proto string
+		want  []int
+	}{
+		{"tcp", []int{6}},
+		{"udp", []int{17}},
+		{"icmp", []int{1, 58}},
+		{"*", nil},
+		{"", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.proto, func(t *testing.T) {
+			got := protoToIPProto(tt.proto)
+			if len(got) != len(tt.want) {
+				t.Fatalf("protoToIPProto(%q) = %v, want %v", tt.proto, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("protoToIPProto(%q)[%d] = %d, want %d", tt.proto, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestBuildFilterRules_Proto(t *testing.T) {
+	did1, _ := testDIDJWK(t)
+	did2, _ := testDIDJWK(t)
+
+	c := &DWNClient{
+		nodes: map[string]*NodeRecord{
+			did1: {DID: did1, MeshIP: "10.200.0.2"},
+			did2: {DID: did2, MeshIP: "10.200.0.3"},
+		},
+		acl: &ACLPolicyData{
+			Version:       1,
+			DefaultAction: "drop",
+			Rules: []ACLRule{
+				{
+					Action:   "accept",
+					Src:      []string{"*"},
+					Dst:      []string{"*"},
+					Proto:    "tcp",
+					DstPorts: []string{"22", "443"},
+				},
+				{
+					Action: "accept",
+					Src:    []string{did1},
+					Dst:    []string{did2},
+					Proto:  "udp",
+				},
+				{
+					Action: "accept",
+					Src:    []string{"*"},
+					Dst:    []string{"*"},
+					Proto:  "icmp",
+				},
+				{
+					// No proto → all protocols (nil IPProto).
+					Action:   "accept",
+					Src:      []string{did1},
+					Dst:      []string{did2},
+					DstPorts: []string{"80"},
+				},
+			},
+		},
+	}
+
+	rules := c.buildFilterRules()
+	if len(rules) != 4 {
+		t.Fatalf("want 4 rules, got %d", len(rules))
+	}
+
+	// Rule 0: TCP only (proto 6).
+	if len(rules[0].IPProto) != 1 || rules[0].IPProto[0] != 6 {
+		t.Errorf("rule[0].IPProto = %v, want [6]", rules[0].IPProto)
+	}
+
+	// Rule 1: UDP only (proto 17).
+	if len(rules[1].IPProto) != 1 || rules[1].IPProto[0] != 17 {
+		t.Errorf("rule[1].IPProto = %v, want [17]", rules[1].IPProto)
+	}
+
+	// Rule 2: ICMP (protos 1, 58).
+	if len(rules[2].IPProto) != 2 || rules[2].IPProto[0] != 1 || rules[2].IPProto[1] != 58 {
+		t.Errorf("rule[2].IPProto = %v, want [1 58]", rules[2].IPProto)
+	}
+
+	// Rule 3: No proto → nil (all protocols).
+	if rules[3].IPProto != nil {
+		t.Errorf("rule[3].IPProto = %v, want nil", rules[3].IPProto)
+	}
+}

@@ -629,3 +629,51 @@ func TestParseDiscoKey(t *testing.T) {
 		})
 	}
 }
+
+func TestConvertFilterRulesIPProto(t *testing.T) {
+	conv := NewConverter("test-mesh")
+
+	rules := []control.FilterRule{
+		{
+			SrcIPs:  []string{"*"},
+			IPProto: []int{6}, // TCP
+			DstPorts: []control.NetPortRange{
+				{IP: "*", Ports: control.PortRange{First: 22, Last: 22}},
+			},
+		},
+		{
+			SrcIPs:  []string{"10.200.0.2"},
+			IPProto: []int{17}, // UDP
+			DstPorts: []control.NetPortRange{
+				{IP: "10.200.0.3", Ports: control.PortRange{First: 0, Last: 65535}},
+			},
+		},
+		{
+			SrcIPs:  []string{"*"},
+			IPProto: nil, // all protocols
+			DstPorts: []control.NetPortRange{
+				{IP: "*", Ports: control.PortRange{First: 0, Last: 65535}},
+			},
+		},
+	}
+
+	result := conv.convertFilterRules(rules)
+	if len(result) != 3 {
+		t.Fatalf("want 3 rules, got %d", len(result))
+	}
+
+	// Rule 0: TCP only.
+	if len(result[0].IPProto) != 1 || result[0].IPProto[0] != 6 {
+		t.Errorf("rule[0].IPProto = %v, want [6]", result[0].IPProto)
+	}
+
+	// Rule 1: UDP only.
+	if len(result[1].IPProto) != 1 || result[1].IPProto[0] != 17 {
+		t.Errorf("rule[1].IPProto = %v, want [17]", result[1].IPProto)
+	}
+
+	// Rule 2: nil → all protocols (meshnet default behavior).
+	if result[2].IPProto != nil {
+		t.Errorf("rule[2].IPProto = %v, want nil", result[2].IPProto)
+	}
+}
