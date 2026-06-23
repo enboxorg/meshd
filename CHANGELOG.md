@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.5](https://github.com/enboxorg/meshd/compare/v0.3.4...v0.3.5) (2026-06-23)
+
+
+### Bug Fixes
+
+* reconcile TUN routes from netmap ([#124](https://github.com/enboxorg/meshd/issues/124)) ([46f3a33](https://github.com/enboxorg/meshd/commit/46f3a337714d4e595cdd99bde1fe599626a4d320))
+
 ## [0.3.3](https://github.com/enboxorg/meshd/compare/v0.3.2...v0.3.3) (2026-06-23)
 
 
