@@ -74,7 +74,7 @@ func newNode(t *testing.T, endpoint string) *nodeIdentity {
 	encMgr := &dwncrypto.EncryptionKeyManager{
 		RootPrivateKey: identity.EncryptionPrivateKey,
 		RootKeyID:      identity.EncryptionKeyID(),
-		ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+		ProtocolURI:    "https://enbox.id/protocols/wireguard-mesh",
 	}
 
 	return &nodeIdentity{
@@ -129,9 +129,9 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 	})
 
 	networkRecord, writeStatus, err := nodeA.API.Write(ctx, nodeA.DID.URI, dwn.WriteParams{
-		Protocol:     "https://enbox.org/protocols/wireguard-mesh",
+		Protocol:     "https://enbox.id/protocols/wireguard-mesh",
 		ProtocolPath: "network",
-		Schema:       "https://enbox.org/schemas/wireguard-mesh/network",
+		Schema:       "https://enbox.id/schemas/wireguard-mesh/network",
 		DataFormat:   "application/json",
 		Data:         networkData,
 	})
@@ -148,7 +148,7 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		// Try to get the ID from a query.
 		records, qs, err := nodeA.API.Query(ctx, nodeA.DID.URI, dwn.QueryParams{
 			Filter: dwn.RecordsFilter{
-				Protocol:     "https://enbox.org/protocols/wireguard-mesh",
+				Protocol:     "https://enbox.id/protocols/wireguard-mesh",
 				ProtocolPath: "network",
 			},
 		}, "")
@@ -234,7 +234,7 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 	t.Log("Step 8: Querying node records from anchor DWN")
 	nodes, queryStatus, err := nodeA.API.Query(ctx, nodeA.DID.URI, dwn.QueryParams{
 		Filter: dwn.RecordsFilter{
-			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
+			Protocol:     "https://enbox.id/protocols/wireguard-mesh",
 			ProtocolPath: "network/node",
 			ContextID:    networkRecordID,
 		},

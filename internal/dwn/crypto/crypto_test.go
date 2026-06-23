@@ -1171,9 +1171,9 @@ func TestBuildJWEDefaultAlgorithm(t *testing.T) {
 func TestDecryptDataMissingEPK(t *testing.T) {
 	// Build a malformed encryption with missing EPK.
 	enc := &Encryption{
-		Protected:  base64URLEncode([]byte(`{"alg":"ECDH-ES+A256KW","enc":"A256GCM"}`)),
-		IV:         base64URLEncode(make([]byte, 12)),
-		Tag:        base64URLEncode(make([]byte, 16)),
+		Protected: base64URLEncode([]byte(`{"alg":"ECDH-ES+A256KW","enc":"A256GCM"}`)),
+		IV:        base64URLEncode(make([]byte, 12)),
+		Tag:       base64URLEncode(make([]byte, 16)),
 		Recipients: []Recipient{{
 			Header: RecipientHeader{
 				KID:              "did:test:alice#enc",
@@ -1658,9 +1658,9 @@ func TestEncryptionKeyManager_DeriveWriteEncryption(t *testing.T) {
 	tests := map[string]struct {
 		path string
 	}{
-		"root level": {path: "network"},
+		"root level":  {path: "network"},
 		"child level": {path: "network/node"},
-		"deep level": {path: "network/node/endpoint"},
+		"deep level":  {path: "network/node/endpoint"},
 	}
 
 	for name, tc := range tests {
@@ -1699,7 +1699,7 @@ func TestEncryptionKeyManager_RoundTrip(t *testing.T) {
 	mgr := &EncryptionKeyManager{
 		RootPrivateKey: rootPriv,
 		RootKeyID:      "did:dht:test#enc",
-		ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+		ProtocolURI:    "https://enbox.id/protocols/wireguard-mesh",
 	}
 
 	paths := []string{
@@ -1825,9 +1825,9 @@ func TestSplitProtocolPath(t *testing.T) {
 		expected []string
 	}{
 		"single segment": {input: "network", expected: []string{"network"}},
-		"two segments": {input: "network/node", expected: []string{"network", "node"}},
+		"two segments":   {input: "network/node", expected: []string{"network", "node"}},
 		"three segments": {input: "network/node/endpoint", expected: []string{"network", "node", "endpoint"}},
-		"empty": {input: "", expected: nil},
+		"empty":          {input: "", expected: nil},
 	}
 
 	for name, tc := range tests {
@@ -1864,7 +1864,7 @@ func TestContextEncryptionMultiParty(t *testing.T) {
 	anchorMgr := &EncryptionKeyManager{
 		RootPrivateKey: anchorPriv,
 		RootKeyID:      "did:dht:anchor#enc",
-		ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+		ProtocolURI:    "https://enbox.id/protocols/wireguard-mesh",
 	}
 
 	contextID := "bafyreiabc123networkrecordid"
@@ -1906,7 +1906,7 @@ func TestContextEncryptionMultiParty(t *testing.T) {
 		nonOwnerMgr := &EncryptionKeyManager{
 			RootPrivateKey: nonOwnerPriv,
 			RootKeyID:      "did:dht:joiner#enc",
-			ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+			ProtocolURI:    "https://enbox.id/protocols/wireguard-mesh",
 		}
 
 		// Simulate key delivery: anchor derives context key and delivers it.
@@ -1944,7 +1944,7 @@ func TestContextEncryptionMultiParty(t *testing.T) {
 		nonOwnerMgr := &EncryptionKeyManager{
 			RootPrivateKey: nonOwnerPriv,
 			RootKeyID:      "did:dht:joiner#enc",
-			ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+			ProtocolURI:    "https://enbox.id/protocols/wireguard-mesh",
 		}
 
 		// Deliver context key to non-owner.
@@ -1994,7 +1994,7 @@ func TestContextEncryptionMultiParty(t *testing.T) {
 		outsiderMgr := &EncryptionKeyManager{
 			RootPrivateKey: outsiderPriv,
 			RootKeyID:      "did:dht:outsider#enc",
-			ProtocolURI:    "https://enbox.org/protocols/wireguard-mesh",
+			ProtocolURI:    "https://enbox.id/protocols/wireguard-mesh",
 		}
 
 		// Outsider derives a context key from their own (wrong) root key.

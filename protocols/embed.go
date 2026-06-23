@@ -10,7 +10,7 @@ var MeshProtocolJSON []byte
 var KeyDeliveryProtocolJSON []byte
 
 // MeshProtocolURI is the canonical URI of the wireguard-mesh protocol.
-const MeshProtocolURI = "https://enbox.org/protocols/wireguard-mesh"
+const MeshProtocolURI = "https://enbox.id/protocols/wireguard-mesh"
 
 // KeyDeliveryProtocolURI is the canonical URI of the key delivery protocol.
-const KeyDeliveryProtocolURI = "https://enbox.org/protocols/key-delivery"
+const KeyDeliveryProtocolURI = "https://enbox.id/protocols/key-delivery"

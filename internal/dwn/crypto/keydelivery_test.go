@@ -470,7 +470,7 @@ func TestKeyDeliveryProtocolEncryptionInjection(t *testing.T) {
 		}
 
 		protoJSON := []byte(`{
-			"protocol": "https://enbox.org/protocols/key-delivery",
+			"protocol": "https://enbox.id/protocols/key-delivery",
 			"published": false,
 			"types": {
 				"contextKey": {

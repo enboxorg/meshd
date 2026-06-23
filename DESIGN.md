@@ -328,7 +328,7 @@ Root Key (#dwn-enc from DID document)
   |
   +-- HKDF("protocolPath")
        |
-       +-- HKDF("https://enbox.org/protocols/wireguard-mesh")
+       +-- HKDF("https://enbox.id/protocols/wireguard-mesh")
             |
             +-- HKDF("network")           -> encrypts network records
                  |
@@ -351,7 +351,7 @@ decrypt everything.
 
 Since all members need to read each other's encrypted data, the DWN owner
 distributes **context keys** to members using the key-delivery protocol
-(`https://enbox.org/protocols/key-delivery`):
+(`https://enbox.id/protocols/key-delivery`):
 
 1. When a new member is added, the anchor DWN owner derives the context
    private key using the Protocol Context scheme for that network's context.

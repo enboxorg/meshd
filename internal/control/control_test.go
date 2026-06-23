@@ -425,7 +425,7 @@ func TestExtractEntryMetadata(t *testing.T) {
 				"descriptor": {
 					"interface": "Records",
 					"method": "Write",
-					"protocol": "https://enbox.org/protocols/wireguard-mesh",
+					"protocol": "https://enbox.id/protocols/wireguard-mesh",
 					"protocolPath": "network/node",
 					"recipient": "did:jwk:node456"
 				},

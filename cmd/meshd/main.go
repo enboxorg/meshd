@@ -410,7 +410,7 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	record, writeStatus, err := api.Write(ctx, identity.URI, dwn.WriteParams{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network",
-		Schema:       "https://enbox.org/schemas/wireguard-mesh/network",
+		Schema:       "https://enbox.id/schemas/wireguard-mesh/network",
 		DataFormat:   "application/json",
 		Data:         networkData,
 	})

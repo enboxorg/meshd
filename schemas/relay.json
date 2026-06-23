@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://enbox.org/schemas/wireguard-mesh/relay",
+  "$id": "https://enbox.id/schemas/wireguard-mesh/relay",
   "type": "object",
   "required": ["url", "region"],
   "additionalProperties": false,

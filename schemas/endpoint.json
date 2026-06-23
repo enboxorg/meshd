@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://enbox.org/schemas/wireguard-mesh/endpoint",
+  "$id": "https://enbox.id/schemas/wireguard-mesh/endpoint",
   "type": "object",
   "required": ["updatedAt"],
   "additionalProperties": false,
