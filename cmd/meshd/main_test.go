@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -25,6 +26,23 @@ func TestParseUpFlagsInviteURL(t *testing.T) {
 	}
 	if !flags.noTun {
 		t.Fatal("expected --no-tun to be parsed")
+	}
+}
+
+func TestDefaultTUNName(t *testing.T) {
+	if got := defaultTUNName("darwin"); got != "utun" {
+		t.Fatalf("defaultTUNName(darwin) = %q, want utun", got)
+	}
+	if got := defaultTUNName("linux"); got != "meshd0" {
+		t.Fatalf("defaultTUNName(linux) = %q, want meshd0", got)
+	}
+}
+
+func TestParseUpFlagsTunUsesPlatformDefault(t *testing.T) {
+	flags := parseUpFlags([]string{"--tun"})
+	want := defaultTUNName(runtime.GOOS)
+	if flags.tunName != want {
+		t.Fatalf("tunName = %q, want %q", flags.tunName, want)
 	}
 }
 
