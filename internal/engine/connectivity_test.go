@@ -7,11 +7,16 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
+	"github.com/enboxorg/meshd/internal/control"
 	"github.com/enboxorg/meshd/internal/did"
 	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
@@ -19,6 +24,7 @@ import (
 	"github.com/enboxorg/meshd/internal/mesh"
 	"github.com/enboxorg/meshd/protocols"
 
+	"github.com/enboxorg/meshnet/derp/derpserver"
 	"github.com/enboxorg/meshnet/types/key"
 	go4mem "go4.org/mem"
 )
@@ -270,6 +276,22 @@ func TestTwoNodeConnectivity(t *testing.T) {
 	}
 	t.Logf("  Node A re-registered with context encryption: %s", regA2.NodeRecordID)
 
+	err = mesh.WriteEndpoint(ctx, mesh.WriteEndpointParams{
+		AnchorEndpoint:       endpoint,
+		AnchorDID:            nodeA.identity.URI,
+		NetworkRecordID:      networkRecordID,
+		NodeRecordID:         regA2.NodeRecordID,
+		Signer:               nodeA.signer,
+		EncryptionKeyManager: nodeA.encMgr,
+		LocalEndpoints:       mesh.DiscoverLocalEndpoints(0),
+		NATType:              "unknown",
+		UseContextEncryption: true,
+	})
+	if err != nil {
+		t.Fatalf("rewriting Node A endpoint with context encryption: %v", err)
+	}
+	t.Log("  Node A endpoint re-written with context encryption")
+
 	// ================================================================
 	// Step 6b: Node B fetches and stores context key, re-registers with context encryption
 	// ================================================================
@@ -373,6 +395,8 @@ func TestTwoNodeConnectivity(t *testing.T) {
 	// Shared disco key registry: both engines publish and look up disco keys
 	// through this registry, replacing Tailscale's control server role.
 	discoReg := engine.NewInMemoryDiscoRegistry()
+	derpMap, derpCleanup := startLocalTestDERP(t)
+	defer derpCleanup()
 
 	engA, err := engine.New(engine.Config{
 		AnchorEndpoint:       endpoint,
@@ -381,12 +405,14 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		SelfDID:              nodeA.identity.URI,
 		Signer:               nodeA.signer,
 		EncryptionKeyManager: nodeA.encMgr,
+		NodeRecordID:         regA2.NodeRecordID,
 		Domain:               "e2e-test",
 		PollInterval:         5 * time.Second,
 		ListenPort:           0,
 		UseContextEncryption: true,
 		WireGuardPrivateKey:  wgKeysA.PrivateKey,
 		DiscoKeyRegistry:     discoReg,
+		DERPMap:              derpMap,
 	})
 	if err != nil {
 		t.Fatalf("creating engine A: %v", err)
@@ -401,12 +427,14 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		SelfDID:              nodeB.identity.URI,
 		Signer:               nodeB.signer,
 		EncryptionKeyManager: nodeB.encMgr,
+		NodeRecordID:         regB2.NodeRecordID,
 		Domain:               "e2e-test",
 		PollInterval:         5 * time.Second,
 		ListenPort:           0,
 		UseContextEncryption: true,
 		WireGuardPrivateKey:  wgKeysB.PrivateKey,
 		DiscoKeyRegistry:     discoReg,
+		DERPMap:              derpMap,
 	})
 	if err != nil {
 		t.Fatalf("creating engine B: %v", err)
@@ -921,6 +949,61 @@ func parseTestWireGuardKey(b64Key string) (key.NodePublic, error) {
 		return key.NodePublic{}, fmt.Errorf("key must be 32 bytes, got %d", len(raw))
 	}
 	return key.NodePublicFromRaw32(go4mem.B(raw)), nil
+}
+
+func startLocalTestDERP(t *testing.T) (*control.DERPMap, func()) {
+	t.Helper()
+
+	derpKey := key.NewNode()
+	logf := func(format string, args ...any) {
+		t.Logf("[derp] "+format, args...)
+	}
+	ds := derpserver.New(derpKey, logf)
+
+	mux := http.NewServeMux()
+	mux.Handle("/derp", derpserver.Handler(ds))
+	mux.HandleFunc("/derp/probe", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	})
+	mux.HandleFunc("/derp/latency-check", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	})
+	mux.HandleFunc("/generate_204", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	ts := httptest.NewTLSServer(mux)
+	u, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatalf("parsing local DERP URL: %v", err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("parsing local DERP port: %v", err)
+	}
+
+	t.Logf("  Local DERP server: %s", ts.URL)
+	dm := &control.DERPMap{
+		Regions: map[int]*control.DERPRegion{
+			1: {
+				RegionID:   1,
+				RegionCode: "test",
+				RegionName: "Local Test",
+				Nodes: []control.DERPNode{{
+					Name:             "1a",
+					RegionID:         1,
+					HostName:         u.Hostname(),
+					DERPPort:         port,
+					InsecureForTests: true,
+				}},
+			},
+		},
+	}
+
+	return dm, func() {
+		ds.Close()
+		ts.Close()
+	}
 }
 
 // Ensure testNode fields are used to satisfy the compiler.
