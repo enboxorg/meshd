@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/enboxorg/meshd/compare/v0.3.1...v0.3.2) (2026-06-23)
+
+
+### Bug Fixes
+
+* make TUN startup sudo-aware ([e4340ee](https://github.com/enboxorg/meshd/commit/e4340eeda2f94c40aac3e1f8c46f8e84c9dcd42e))
+
 ## [0.3.1](https://github.com/enboxorg/meshd/compare/v0.3.0...v0.3.1) (2026-06-23)
 
 
