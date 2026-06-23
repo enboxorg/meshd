@@ -337,7 +337,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		if err != nil {
 			c.logger.DebugContext(ctx, "parsing ACL policy results", slog.Any("error", err))
 		} else if len(aclEntries) > 0 {
-			// $recordLimit: max 1 — take the first (most recent) entry.
+			// ACL policies are squashed snapshots; take the newest visible entry.
 			aclDecryptor := c.makeDecryptor("network/aclPolicy")
 			var policy ACLPolicyData
 			if err := ParseEntryData(aclEntries[0], &policy, aclDecryptor); err != nil {
