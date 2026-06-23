@@ -146,8 +146,9 @@ mesh. They never need a public IP. They never appear in your DID document.
 
 **Identity:** Each device gets a `did:jwk` identity -- an Ed25519 key pair
 encoded as a DID. The private key is stored in a password-encrypted local
-vault. The WireGuard key is derived from the same identity (Ed25519 to
-X25519 birational map), so there is exactly one key to manage.
+vault, and delivered network context keys are stored in encrypted local
+secrets. The WireGuard key is derived from the same identity (Ed25519 to
+X25519 birational map), so there is exactly one identity key to manage.
 
 **Networking:** meshd uses [meshnet](https://github.com/enboxorg/meshnet),
 a fork of Tailscale's open-source networking engine. This gives us

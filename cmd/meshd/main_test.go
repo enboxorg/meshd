@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 
 	"github.com/enboxorg/meshd/internal/did"
 	"github.com/enboxorg/meshd/internal/invite"
 	"github.com/enboxorg/meshd/internal/profile"
+	"github.com/enboxorg/meshd/internal/state"
 )
 
 func TestParseUpFlagsInviteURL(t *testing.T) {
@@ -25,7 +28,18 @@ func TestParseUpFlagsInviteURL(t *testing.T) {
 	}
 }
 
+func resetVaultPasswordCache(t *testing.T) {
+	t.Helper()
+	previous := cachedVaultPassword
+	cachedVaultPassword = ""
+	t.Cleanup(func() {
+		cachedVaultPassword = previous
+	})
+}
+
 func TestEnsureIdentityForCommandCreatesDefaultProfile(t *testing.T) {
+	resetVaultPasswordCache(t)
+
 	home := t.TempDir()
 	t.Setenv("ENBOX_HOME", home)
 	t.Setenv("ENBOX_PROFILE", "")
@@ -62,6 +76,8 @@ func TestEnsureIdentityForCommandCreatesDefaultProfile(t *testing.T) {
 }
 
 func TestEnsureIdentityForCommandUsesResolvedDefaultProfile(t *testing.T) {
+	resetVaultPasswordCache(t)
+
 	home := t.TempDir()
 	t.Setenv("ENBOX_HOME", home)
 	t.Setenv("ENBOX_PROFILE", "")
@@ -95,5 +111,55 @@ func TestEnsureIdentityForCommandUsesResolvedDefaultProfile(t *testing.T) {
 	}
 	if cfg.Profiles["work"].DID != identity.URI {
 		t.Fatalf("profile DID = %q, want %q", cfg.Profiles["work"].DID, identity.URI)
+	}
+}
+
+func TestLoadLocalContextKeyMigratesLegacyContextKey(t *testing.T) {
+	resetVaultPasswordCache(t)
+
+	dir := t.TempDir()
+	t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
+
+	identity, err := did.Generate()
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if err := identity.StoreEncrypted(dir, "test-password"); err != nil {
+		t.Fatalf("StoreEncrypted: %v", err)
+	}
+
+	key := bytes.Repeat([]byte{0x42}, 32)
+	ns := &state.NetworkState{
+		NetworkRecordID: "network-1",
+		ContextKey:      base64.StdEncoding.EncodeToString(key),
+	}
+	if err := state.SaveNetworkState(dir, ns); err != nil {
+		t.Fatalf("SaveNetworkState: %v", err)
+	}
+
+	source, ok, err := loadLocalContextKeyForCLI(dir, ns, newEncryptionKeyManager(identity))
+	if err != nil {
+		t.Fatalf("loadLocalContextKeyForCLI: %v", err)
+	}
+	if !ok {
+		t.Fatal("context key was not loaded")
+	}
+	if source != "legacy cache (migrated)" {
+		t.Fatalf("source = %q, want migrated legacy cache", source)
+	}
+
+	stored, ok, err := state.LoadContextKey(dir, "test-password", "network-1")
+	if err != nil {
+		t.Fatalf("LoadContextKey: %v", err)
+	}
+	if !ok || !bytes.Equal(stored, key) {
+		t.Fatalf("encrypted context key mismatch")
+	}
+	reloaded, err := state.LoadNetworkState(dir)
+	if err != nil {
+		t.Fatalf("LoadNetworkState: %v", err)
+	}
+	if reloaded.ContextKey != "" {
+		t.Fatalf("legacy ContextKey = %q, want empty", reloaded.ContextKey)
 	}
 }

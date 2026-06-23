@@ -14,6 +14,7 @@
 //	        identity.vault.json     # password-encrypted DID private key
 //	        identity.json           # legacy plaintext DID state
 //	        network.json            # network membership state
+//	        secrets.vault.json      # encrypted network context keys
 //
 // Override base path with ENBOX_HOME env var.
 //

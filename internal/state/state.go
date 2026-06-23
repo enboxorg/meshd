@@ -6,6 +6,7 @@
 //	  identity.vault.json  # encrypted DID private key (from the did package)
 //	  identity.json        # legacy plaintext DID private key
 //	  network.json         # current network membership info
+//	  secrets.vault.json   # encrypted network context keys and local secrets
 //
 // The state directory is resolved by the profile package. The functions in
 // this package accept a stateDir parameter and are agnostic to profiles.
@@ -80,10 +81,9 @@ type NetworkState struct {
 	// record write. Required for updates because dateCreated is immutable.
 	MemberDateCreated string `json:"memberDateCreated,omitempty"`
 
-	// ContextKey is the Protocol Context encryption key (base64-encoded
-	// X25519 private key). Persisted so the mesh survives DWN outages
-	// at startup — if the anchor's DWN is unreachable, the node can
-	// still encrypt/decrypt records using the cached key.
+	// ContextKey is a legacy plaintext cache of the Protocol Context
+	// encryption key (base64-encoded X25519 private key). New encrypted
+	// identity profiles store context keys in secrets.vault.json instead.
 	//
 	// For the anchor, this is empty — the anchor derives the context key
 	// from its root key via HKDF on every startup.
