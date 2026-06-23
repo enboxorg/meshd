@@ -3,8 +3,9 @@
 // State is stored in a profile-specific directory:
 //
 //	~/.enbox/profiles/<name>/meshd/
-//	  identity.json   # DID private key (from the did package)
-//	  network.json    # current network membership info
+//	  identity.vault.json  # encrypted DID private key (from the did package)
+//	  identity.json        # legacy plaintext DID private key
+//	  network.json         # current network membership info
 //
 // The state directory is resolved by the profile package. The functions in
 // this package accept a stateDir parameter and are agnostic to profiles.

@@ -11,7 +11,8 @@
 //	  profiles/
 //	    <name>/
 //	      meshd/                    # meshd-specific state
-//	        identity.json           # Ed25519 private key + DID URI
+//	        identity.vault.json     # password-encrypted DID private key
+//	        identity.json           # legacy plaintext DID state
 //	        network.json            # network membership state
 //
 // Override base path with ENBOX_HOME env var.
@@ -48,9 +49,9 @@ var validName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // Config is the top-level ~/.enbox/config.json structure.
 type Config struct {
-	Version        int                 `json:"version"`
-	DefaultProfile string              `json:"defaultProfile"`
-	Profiles       map[string]*Entry   `json:"profiles"`
+	Version        int               `json:"version"`
+	DefaultProfile string            `json:"defaultProfile"`
+	Profiles       map[string]*Entry `json:"profiles"`
 }
 
 // Entry is a single profile entry in config.json.

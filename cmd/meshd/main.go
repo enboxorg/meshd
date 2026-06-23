@@ -26,6 +26,7 @@ import (
 	"github.com/enboxorg/meshd/pkg/dids"
 	"github.com/enboxorg/meshd/pkg/dids/didcore"
 	"github.com/enboxorg/meshd/protocols"
+	"golang.org/x/term"
 )
 
 const usage = `meshd - Decentralized WireGuard mesh networking via DWN
@@ -39,6 +40,9 @@ Identity:
   auth use <name>   Set the default profile
   auth logout       Remove a profile from config
   init              Generate DID identity and store locally
+  vault status      Show local vault state
+  vault init        Encrypt a legacy plaintext identity
+  vault unlock      Verify the vault password and show identity
 
 Network:
   network create    Create a new mesh network on a DWN
@@ -80,6 +84,8 @@ Environment:
   ENBOX_HOME         Override ~/.enbox base directory
   ENBOX_PROFILE      Override active profile
   MESHD_STATE_DIR    Override state directory (bypasses profiles)
+  MESHD_VAULT_PASSWORD
+                     Unlock/create vault non-interactively
   DWN_ENDPOINT       Default DWN endpoint URL
 `
 
@@ -101,7 +107,8 @@ func main() {
 			"invite create",
 			"peer list", "peer add", "peer approve",
 			"acl set", "acl show",
-			"auth login", "auth list", "auth use", "auth logout":
+			"auth login", "auth list", "auth use", "auth logout",
+			"vault status", "vault init", "vault unlock":
 			cmd = combined
 			args = os.Args[3:]
 		}
@@ -130,6 +137,12 @@ func main() {
 		err = cmdAuthLogout(args)
 	case "init":
 		err = cmdInit(ctx, args, flagProfile)
+	case "vault status":
+		err = cmdVaultStatus(args, flagProfile)
+	case "vault init":
+		err = cmdVaultInit(args, flagProfile)
+	case "vault unlock":
+		err = cmdVaultUnlock(args, flagProfile)
 	case "network create":
 		err = cmdNetworkCreate(ctx, args, flagProfile)
 	case "network join":
@@ -170,13 +183,22 @@ func main() {
 
 // cmdInit generates a did:jwk identity and stores it locally.
 func cmdInit(ctx context.Context, args []string, flagProfile string) error {
+	profileName := ""
+	if os.Getenv("MESHD_STATE_DIR") == "" {
+		profileName = profileNameForWrite(flagProfile)
+	}
+
 	stateDir, err := resolveStateDir(flagProfile)
+	if err == profile.ErrNoProfiles {
+		stateDir = profile.DataPath(profileName)
+		err = nil
+	}
 	if err != nil {
 		return err
 	}
 
-	if did.Exists(stateDir) {
-		identity, err := did.Load(stateDir)
+	if identityExists(stateDir) {
+		identity, err := loadIdentity(stateDir)
 		if err != nil {
 			return fmt.Errorf("loading existing identity: %w", err)
 		}
@@ -191,13 +213,112 @@ func cmdInit(ctx context.Context, args []string, flagProfile string) error {
 		return fmt.Errorf("generating DID: %w", err)
 	}
 
-	if err := identity.Store(stateDir); err != nil {
+	if err := storeIdentityForCLI(identity, stateDir); err != nil {
 		return fmt.Errorf("storing identity: %w", err)
+	}
+	if profileName != "" {
+		if err := profile.UpsertProfile(profileName, identity.URI); err != nil {
+			return fmt.Errorf("saving profile: %w", err)
+		}
 	}
 
 	fmt.Printf("Initialized new identity.\n")
 	fmt.Printf("  DID: %s\n", identity.URI)
 	fmt.Printf("  State: %s\n", stateDir)
+	fmt.Printf("  Vault: encrypted\n")
+	return nil
+}
+
+func cmdVaultStatus(args []string, flagProfile string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("usage: meshd vault status")
+	}
+
+	stateDir, err := resolveStateDir(flagProfile)
+	if err == profile.ErrNoProfiles {
+		fmt.Println("Vault: uninitialized")
+		fmt.Println("Identity: none")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case did.EncryptedExists(stateDir):
+		fmt.Println("Vault: encrypted")
+		if did.Exists(stateDir) {
+			fmt.Println("Legacy plaintext identity: present")
+			fmt.Println("Run 'meshd vault init' to remove the plaintext identity after unlock.")
+		}
+	case did.Exists(stateDir):
+		fmt.Println("Vault: plaintext legacy")
+		fmt.Println("Run 'meshd vault init' to encrypt it.")
+	default:
+		fmt.Println("Vault: uninitialized")
+		fmt.Println("Identity: none")
+	}
+	fmt.Printf("State: %s\n", stateDir)
+	return nil
+}
+
+func cmdVaultInit(args []string, flagProfile string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("usage: meshd vault init")
+	}
+
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
+	if did.EncryptedExists(stateDir) {
+		if did.Exists(stateDir) {
+			if _, err := loadIdentity(stateDir); err != nil {
+				return err
+			}
+			if err := did.RemovePlaintext(stateDir); err != nil {
+				return err
+			}
+			fmt.Println("Removed legacy plaintext identity.")
+		}
+		fmt.Println("Vault already initialized.")
+		fmt.Printf("State: %s\n", stateDir)
+		return nil
+	}
+	if !did.Exists(stateDir) {
+		return fmt.Errorf("no plaintext identity found to encrypt")
+	}
+
+	password, err := vaultPasswordForCreate()
+	if err != nil {
+		return err
+	}
+	if err := did.MigrateToEncrypted(stateDir, password); err != nil {
+		return err
+	}
+
+	fmt.Println("Vault initialized.")
+	fmt.Printf("State: %s\n", stateDir)
+	return nil
+}
+
+func cmdVaultUnlock(args []string, flagProfile string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("usage: meshd vault unlock")
+	}
+
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
+	identity, err := loadIdentity(stateDir)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("Vault unlocked.")
+	fmt.Printf("DID: %s\n", identity.URI)
+	fmt.Printf("State: %s\n", stateDir)
 	return nil
 }
 
@@ -1092,12 +1213,12 @@ func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 	}
 
 	// Identity.
-	if !did.Exists(stateDir) {
+	if !identityExists(stateDir) {
 		fmt.Println("Not initialized. Run 'meshd auth login' to create a profile.")
 		return nil
 	}
 
-	identity, err := did.Load(stateDir)
+	identity, err := loadIdentity(stateDir)
 	if err != nil {
 		return fmt.Errorf("loading identity: %w", err)
 	}
@@ -1105,6 +1226,11 @@ func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 	fmt.Printf("Identity:\n")
 	fmt.Printf("  DID: %s\n", identity.URI)
 	fmt.Printf("  State: %s\n", stateDir)
+	if did.EncryptedExists(stateDir) {
+		fmt.Printf("  Vault: encrypted\n")
+	} else {
+		fmt.Printf("  Vault: plaintext legacy\n")
+	}
 
 	// Network.
 	ns, err := state.LoadNetworkState(stateDir)
@@ -1517,10 +1643,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 // ensureIdentity creates a new identity profile when none exists.
 // It's called by cmdUp when no identity is found.
 func ensureIdentity(ctx context.Context, flagProfile, endpoint string) (*did.DID, error) {
-	profileName := flagProfile
-	if profileName == "" {
-		profileName = "default"
-	}
+	profileName := profileNameForWrite(flagProfile)
 
 	identity, err := did.Generate()
 	if err != nil {
@@ -1528,15 +1651,24 @@ func ensureIdentity(ctx context.Context, flagProfile, endpoint string) (*did.DID
 	}
 
 	dataPath := profile.DataPath(profileName)
-	if err := identity.Store(dataPath); err != nil {
+	useProfiles := os.Getenv("MESHD_STATE_DIR") == ""
+	if !useProfiles {
+		dataPath = os.Getenv("MESHD_STATE_DIR")
+	}
+	if err := storeIdentityForCLI(identity, dataPath); err != nil {
 		return nil, fmt.Errorf("storing identity: %w", err)
 	}
-	if err := profile.UpsertProfile(profileName, identity.URI); err != nil {
-		return nil, fmt.Errorf("saving profile: %w", err)
+	if useProfiles {
+		if err := profile.UpsertProfile(profileName, identity.URI); err != nil {
+			return nil, fmt.Errorf("saving profile: %w", err)
+		}
 	}
 
-	fmt.Printf("  Profile: %s\n", profileName)
+	if useProfiles {
+		fmt.Printf("  Profile: %s\n", profileName)
+	}
 	fmt.Printf("  DID:     %s\n", identity.URI)
+	fmt.Printf("  Vault:   encrypted\n")
 	fmt.Println()
 
 	return identity, nil
@@ -1555,8 +1687,8 @@ func ensureIdentityForCommand(ctx context.Context, flagProfile, endpoint string)
 		return "", nil, err
 	}
 
-	if did.Exists(stateDir) {
-		identity, err := did.Load(stateDir)
+	if identityExists(stateDir) {
+		identity, err := loadIdentity(stateDir)
 		if err != nil {
 			return "", nil, fmt.Errorf("loading identity: %w", err)
 		}
@@ -1820,8 +1952,109 @@ func cmdDown(ctx context.Context, args []string) error {
 	return nil
 }
 
+const vaultPasswordEnv = "MESHD_VAULT_PASSWORD"
+
+func defaultProfileName(flagProfile string) string {
+	if flagProfile != "" {
+		return flagProfile
+	}
+	if env := os.Getenv("ENBOX_PROFILE"); env != "" {
+		return env
+	}
+	return "default"
+}
+
+func profileNameForWrite(flagProfile string) string {
+	if os.Getenv("MESHD_STATE_DIR") != "" {
+		return defaultProfileName(flagProfile)
+	}
+	if name, err := profile.Resolve(flagProfile); err == nil {
+		return name
+	}
+	return defaultProfileName(flagProfile)
+}
+
+func identityExists(stateDir string) bool {
+	return did.EncryptedExists(stateDir) || did.Exists(stateDir)
+}
+
+func storeIdentityForCLI(identity *did.DID, stateDir string) error {
+	password, err := vaultPasswordForCreate()
+	if err != nil {
+		return err
+	}
+	return identity.StoreEncrypted(stateDir, password)
+}
+
+func vaultPasswordForUnlock() (string, error) {
+	if password := os.Getenv(vaultPasswordEnv); password != "" {
+		return password, nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", fmt.Errorf("vault password required; run in a terminal or set %s", vaultPasswordEnv)
+	}
+
+	fmt.Print("Vault password: ")
+	passwordBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		return "", fmt.Errorf("reading vault password: %w", err)
+	}
+	password := string(passwordBytes)
+	if password == "" {
+		return "", fmt.Errorf("vault password is required")
+	}
+	return password, nil
+}
+
+func vaultPasswordForCreate() (string, error) {
+	if password := os.Getenv(vaultPasswordEnv); password != "" {
+		return password, nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", fmt.Errorf("vault password required; run in a terminal or set %s", vaultPasswordEnv)
+	}
+
+	fmt.Print("Create vault password: ")
+	firstBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		return "", fmt.Errorf("reading vault password: %w", err)
+	}
+	password := string(firstBytes)
+	if password == "" {
+		return "", fmt.Errorf("vault password is required")
+	}
+
+	fmt.Print("Confirm vault password: ")
+	confirmBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		return "", fmt.Errorf("reading vault password confirmation: %w", err)
+	}
+	if password != string(confirmBytes) {
+		return "", fmt.Errorf("vault passwords do not match")
+	}
+	return password, nil
+}
+
 // loadIdentity loads the DID identity, or returns an error if not initialized.
 func loadIdentity(stateDir string) (*did.DID, error) {
+	if did.EncryptedExists(stateDir) {
+		password, err := vaultPasswordForUnlock()
+		if err != nil {
+			return nil, err
+		}
+		identity, err := did.LoadEncrypted(stateDir, password)
+		if err != nil {
+			return nil, fmt.Errorf("unlocking vault: %w", err)
+		}
+		if identity == nil {
+			return nil, fmt.Errorf("encrypted identity is missing")
+		}
+		return identity, nil
+	}
+
 	if !did.Exists(stateDir) {
 		return nil, fmt.Errorf("not initialized. Run 'meshd auth login' to create a profile")
 	}
@@ -1969,7 +2202,7 @@ func cmdAuthLogin(ctx context.Context, args []string) error {
 
 	// Store identity in profile directory.
 	dataPath := profile.DataPath(profileName)
-	if err := identity.Store(dataPath); err != nil {
+	if err := storeIdentityForCLI(identity, dataPath); err != nil {
 		return fmt.Errorf("storing identity: %w", err)
 	}
 
@@ -1981,6 +2214,7 @@ func cmdAuthLogin(ctx context.Context, args []string) error {
 	fmt.Printf("Created profile %q.\n", profileName)
 	fmt.Printf("  DID:   %s\n", identity.URI)
 	fmt.Printf("  State: %s\n", dataPath)
+	fmt.Printf("  Vault: encrypted\n")
 
 	return nil
 }
