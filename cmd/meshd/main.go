@@ -682,7 +682,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 	}
 
 	// Fetch and persist context key if available.
-	var contextKeyB64 string
+	var contextKeyPriv []byte
 	useContextEnc := false
 	if nodeRecordID != "" {
 		contextKey, ckErr := fetchContextKey(ctx, identity, &state.NetworkState{
@@ -694,7 +694,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 			privBytes, pbErr := contextKey.PrivateKeyBytes()
 			if pbErr == nil {
 				encMgr.StoreContextKey(networkID, privBytes)
-				contextKeyB64 = base64.StdEncoding.EncodeToString(privBytes)
+				contextKeyPriv = privBytes
 				useContextEnc = true
 			}
 		}
@@ -736,7 +736,9 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		NodeRecordID:    nodeRecordID,
 		NodeDateCreated: nodeDateCreated,
 		MemberRecordID:  memberRecordID,
-		ContextKey:      contextKeyB64,
+	}
+	if err := attachContextKeyForNetworkSave(stateDir, ns, contextKeyPriv); err != nil {
+		return fmt.Errorf("caching context key: %w", err)
 	}
 	if err := state.SaveNetworkState(stateDir, ns); err != nil {
 		return fmt.Errorf("saving network state: %w", err)
@@ -1441,17 +1443,14 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		useContextEncryption = true
 	} else {
 		// Try cached context key first (survives DWN outages at startup).
-		if ns.ContextKey != "" {
-			privBytes, err := base64.StdEncoding.DecodeString(ns.ContextKey)
-			if err == nil {
-				encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
-				useContextEncryption = true
-				fmt.Printf("  Context key: loaded from cache\n")
-			} else {
-				slog.Warn("cached context key decode failed, will fetch from DWN",
-					slog.Any("error", err),
-				)
-			}
+		source, ok, err := loadLocalContextKeyForCLI(stateDir, ns, encMgr)
+		if err != nil {
+			slog.Warn("cached context key load failed, will fetch from DWN",
+				slog.Any("error", err),
+			)
+		} else if ok {
+			useContextEncryption = true
+			fmt.Printf("  Context key: loaded from %s\n", source)
 		}
 
 		// Fall back to DWN fetch if not cached.
@@ -1470,8 +1469,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 				useContextEncryption = true
 
 				// Persist for next startup.
-				ns.ContextKey = base64.StdEncoding.EncodeToString(privBytes)
-				if saveErr := state.SaveNetworkState(stateDir, ns); saveErr != nil {
+				if saveErr := saveContextKeyForCommand(stateDir, ns, privBytes); saveErr != nil {
 					slog.Warn("failed to persist context key", slog.Any("error", saveErr))
 				}
 				fmt.Printf("  Context key: received (Protocol Context encryption enabled)\n")
@@ -1954,6 +1952,8 @@ func cmdDown(ctx context.Context, args []string) error {
 
 const vaultPasswordEnv = "MESHD_VAULT_PASSWORD"
 
+var cachedVaultPassword string
+
 func defaultProfileName(flagProfile string) string {
 	if flagProfile != "" {
 		return flagProfile
@@ -1988,7 +1988,11 @@ func storeIdentityForCLI(identity *did.DID, stateDir string) error {
 
 func vaultPasswordForUnlock() (string, error) {
 	if password := os.Getenv(vaultPasswordEnv); password != "" {
+		cachedVaultPassword = password
 		return password, nil
+	}
+	if cachedVaultPassword != "" {
+		return cachedVaultPassword, nil
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return "", fmt.Errorf("vault password required; run in a terminal or set %s", vaultPasswordEnv)
@@ -2004,12 +2008,17 @@ func vaultPasswordForUnlock() (string, error) {
 	if password == "" {
 		return "", fmt.Errorf("vault password is required")
 	}
+	cachedVaultPassword = password
 	return password, nil
 }
 
 func vaultPasswordForCreate() (string, error) {
 	if password := os.Getenv(vaultPasswordEnv); password != "" {
+		cachedVaultPassword = password
 		return password, nil
+	}
+	if cachedVaultPassword != "" {
+		return cachedVaultPassword, nil
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return "", fmt.Errorf("vault password required; run in a terminal or set %s", vaultPasswordEnv)
@@ -2035,6 +2044,7 @@ func vaultPasswordForCreate() (string, error) {
 	if password != string(confirmBytes) {
 		return "", fmt.Errorf("vault passwords do not match")
 	}
+	cachedVaultPassword = password
 	return password, nil
 }
 
@@ -2063,6 +2073,80 @@ func loadIdentity(stateDir string) (*did.DID, error) {
 		return nil, fmt.Errorf("loading identity: %w", err)
 	}
 	return identity, nil
+}
+
+func loadLocalContextKeyForCLI(stateDir string, ns *state.NetworkState, encMgr *dwncrypto.EncryptionKeyManager) (string, bool, error) {
+	if ns == nil || ns.NetworkRecordID == "" {
+		return "", false, nil
+	}
+
+	if did.EncryptedExists(stateDir) {
+		password, err := vaultPasswordForUnlock()
+		if err != nil {
+			return "", false, err
+		}
+		privBytes, ok, err := state.LoadContextKey(stateDir, password, ns.NetworkRecordID)
+		if err != nil {
+			return "", false, err
+		}
+		if ok {
+			encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
+			return "vault", true, nil
+		}
+	}
+
+	if ns.ContextKey == "" {
+		return "", false, nil
+	}
+	privBytes, err := base64.StdEncoding.DecodeString(ns.ContextKey)
+	if err != nil {
+		return "", false, fmt.Errorf("decode cached context key: %w", err)
+	}
+	encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
+
+	if did.EncryptedExists(stateDir) {
+		password, err := vaultPasswordForUnlock()
+		if err != nil {
+			return "", false, err
+		}
+		if err := state.StoreContextKey(stateDir, password, ns.NetworkRecordID, privBytes); err != nil {
+			return "", false, err
+		}
+		ns.ContextKey = ""
+		if err := state.SaveNetworkState(stateDir, ns); err != nil {
+			return "", false, err
+		}
+		return "legacy cache (migrated)", true, nil
+	}
+
+	return "legacy cache", true, nil
+}
+
+func attachContextKeyForNetworkSave(stateDir string, ns *state.NetworkState, privateKey []byte) error {
+	if len(privateKey) == 0 {
+		return nil
+	}
+	if did.EncryptedExists(stateDir) {
+		password, err := vaultPasswordForUnlock()
+		if err != nil {
+			return err
+		}
+		if err := state.StoreContextKey(stateDir, password, ns.NetworkRecordID, privateKey); err != nil {
+			return err
+		}
+		ns.ContextKey = ""
+		return nil
+	}
+
+	ns.ContextKey = base64.StdEncoding.EncodeToString(privateKey)
+	return nil
+}
+
+func saveContextKeyForCommand(stateDir string, ns *state.NetworkState, privateKey []byte) error {
+	if err := attachContextKeyForNetworkSave(stateDir, ns, privateKey); err != nil {
+		return err
+	}
+	return state.SaveNetworkState(stateDir, ns)
 }
 
 // newEncryptionKeyManager creates an EncryptionKeyManager from a DID identity.
@@ -2419,13 +2503,9 @@ func cmdACLShow(ctx context.Context, args []string, flagProfile string) error {
 
 	// Load context key for decryption. Try cached key first, then DWN fetch.
 	if ns.AnchorDID != identity.URI {
-		contextKeyLoaded := false
-		if ns.ContextKey != "" {
-			privBytes, decErr := base64.StdEncoding.DecodeString(ns.ContextKey)
-			if decErr == nil {
-				encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
-				contextKeyLoaded = true
-			}
+		_, contextKeyLoaded, loadErr := loadLocalContextKeyForCLI(stateDir, ns, encMgr)
+		if loadErr != nil {
+			fmt.Printf("  Warning: cached context key load failed: %v\n", loadErr)
 		}
 		if !contextKeyLoaded {
 			contextKey, ckErr := fetchContextKey(ctx, identity, ns)
@@ -2439,8 +2519,7 @@ func cmdACLShow(ctx context.Context, args []string, flagProfile string) error {
 				encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
 
 				// Persist for next time.
-				ns.ContextKey = base64.StdEncoding.EncodeToString(privBytes)
-				if saveErr := state.SaveNetworkState(stateDir, ns); saveErr != nil {
+				if saveErr := saveContextKeyForCommand(stateDir, ns, privBytes); saveErr != nil {
 					fmt.Printf("  Warning: failed to persist context key: %v\n", saveErr)
 				}
 			}
