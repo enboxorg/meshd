@@ -31,7 +31,7 @@ import (
 //  4. Node A registers its node record (encrypted, no WireGuardPubKey — derived from did:jwk)
 //  5. Node A registers Node B's node record (recipient = B's DID, assigns network/node role)
 //  6. Node A delivers context key to both nodes
-//  6b. Node B fetches context key, re-registers node + endpoint with Protocol Context encryption
+//     6b. Node B fetches context key, re-registers node + endpoint with Protocol Context encryption
 //  7. Both nodes create real engines (UserspaceEngine + netstack)
 //  8. Both engines start, poll DWN, and discover each other
 //  9. TCP connectivity test: B dials A's mesh IP, echo round-trip verified
@@ -207,7 +207,6 @@ func TestTwoNodeConnectivity(t *testing.T) {
 			EncryptionKeyManager: nodeB.encMgr,
 			LocalEndpoints:       mesh.DiscoverLocalEndpoints(0),
 			NATType:              "unknown",
-			ProtocolRole:         "network/node",
 		})
 		if err != nil {
 			t.Logf("  Warning: Node B endpoint write failed: %v", err)

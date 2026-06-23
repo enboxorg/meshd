@@ -28,8 +28,8 @@ import (
 	"github.com/enboxorg/meshnet/tailcfg"
 	"github.com/enboxorg/meshnet/tsd"
 	"github.com/enboxorg/meshnet/types/key"
-	"github.com/enboxorg/meshnet/types/logid"
 	"github.com/enboxorg/meshnet/types/logger"
+	"github.com/enboxorg/meshnet/types/logid"
 	"github.com/enboxorg/meshnet/wgengine"
 	"github.com/enboxorg/meshnet/wgengine/netstack"
 	"github.com/enboxorg/meshnet/wgengine/router"
@@ -44,11 +44,11 @@ import (
 //
 // Engine is the core of `meshd up`.
 type Engine struct {
-	backend         *ipnlocal.LocalBackend
-	netMon          *netmon.Monitor
-	ns              *netstack.Impl
-	subWatcher      *SubscriptionWatcher
-	logger          *slog.Logger
+	backend    *ipnlocal.LocalBackend
+	netMon     *netmon.Monitor
+	ns         *netstack.Impl
+	subWatcher *SubscriptionWatcher
+	logger     *slog.Logger
 
 	// tunDev is the real TUN device when running in TUN mode.
 	// nil in userspace-only (netstack) mode.
@@ -300,7 +300,7 @@ func New(cfg Config) (*Engine, error) {
 	// process's own dialer for mesh connections.
 	ns, err := netstack.Create(
 		logf,
-		sys.Tun.Get(),      // the tstun.Wrapper created by the engine
+		sys.Tun.Get(),       // the tstun.Wrapper created by the engine
 		eng,                 // wgengine.Engine
 		sys.MagicSock.Get(), // magicsock.Conn for direct connections
 		dial,                // tsdial.Dialer
@@ -578,9 +578,9 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 				localEPs = append(localEPs, ap.String())
 			} else {
 				publicEPs = append(publicEPs, control.PublicEndpoint{
-					Address:  addr.String(),
-					Port:     int(ap.Port()),
-					Source:   "stun",
+					Address: addr.String(),
+					Port:    int(ap.Port()),
+					Source:  "stun",
 				})
 			}
 		}
@@ -607,16 +607,6 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 			slog.String("discoKey", discoKeyB64),
 		)
 
-		// Determine the protocol role for the endpoint write. Devices write
-		// their own endpoint records using recipient-based authorization:
-		//   - Owner-provisioned: recipient of network/node
-		//   - Member-associated: recipient of network/member/node
-		// The protocol role is passed to authorize the write.
-		protocolRole := "network/node"
-		if cfg.MemberRecordID != "" {
-			protocolRole = "network/member/node"
-		}
-
 		err := mesh.WriteEndpoint(ctx, mesh.WriteEndpointParams{
 			AnchorEndpoint:       cfg.AnchorEndpoint,
 			AnchorDID:            cfg.AnchorTenant,
@@ -629,7 +619,6 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 			LocalEndpoints:       localEPs,
 			DiscoKey:             discoKeyB64,
 			NATType:              "unknown",
-			ProtocolRole:         protocolRole,
 			UseContextEncryption: cfg.UseContextEncryption,
 		})
 		if err != nil {

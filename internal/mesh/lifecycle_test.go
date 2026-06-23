@@ -21,7 +21,7 @@ import (
 //  3. Anchor creates member record for an external user
 //  4. Anchor registers member's node (network/member/node path)
 //  5. Owner node writes its own nodeInfo and endpoint (recipient-based auth)
-//  6. Member node writes its own nodeInfo and endpoint (recipient-based auth with role)
+//  6. Member node writes its own nodeInfo and endpoint (recipient-based auth)
 //  7. LoadState from anchor verifies both paths are merged
 //  8. LoadState from non-anchor verifies role-based reads work
 //
@@ -40,8 +40,8 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 	// Step 1: Create identities for anchor, owner device, and member
 	// ================================================================
 	t.Log("Step 1: Creating identities")
-	anchor := newNode(t, endpoint)   // network owner
-	member := newNode(t, endpoint)   // external member (person)
+	anchor := newNode(t, endpoint) // network owner
+	member := newNode(t, endpoint) // external member (person)
 	t.Logf("  Anchor: %s", anchor.DID.URI)
 	t.Logf("  Member: %s", member.DID.URI)
 
@@ -106,6 +106,7 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		networkRecordID = records[0].ID
 	}
 	t.Logf("  Network record: %s", networkRecordID)
+	shareContextKeyForTest(t, networkRecordID, anchor, member)
 
 	// ================================================================
 	// Step 4: Register anchor's own device as an owner node (network/node)
@@ -125,6 +126,7 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		EncryptionKeyManager: anchor.EncMgr,
 		MeshIP:               anchorIP.String(),
 		Label:                "anchor-device",
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		t.Fatalf("registering anchor node: %v", err)
@@ -143,6 +145,7 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		Signer:               anchor.Signer,
 		EncryptionKeyManager: anchor.EncMgr,
 		Hostname:             "anchor-host",
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		t.Fatalf("anchor WriteNodeInfo failed: %v", err)
@@ -163,8 +166,9 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		PublicEndpoints: []control.PublicEndpoint{
 			{Address: "198.51.100.1", Port: 51820, Source: "test"},
 		},
-		LocalEndpoints: []string{"192.168.1.10:51820"},
-		NATType:        "full-cone",
+		LocalEndpoints:       []string{"192.168.1.10:51820"},
+		NATType:              "full-cone",
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		t.Fatalf("anchor WriteEndpoint failed: %v", err)
@@ -208,6 +212,7 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		EncryptionKeyManager: anchor.EncMgr,
 		MeshIP:               memberIP.String(),
 		Label:                "alice-laptop",
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		t.Fatalf("registering member node: %v", err)
@@ -215,7 +220,7 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 	t.Logf("  Member node: IP=%s, record=%s", memberIP, regMember.NodeRecordID)
 
 	// ================================================================
-	// Step 9: Member writes its own nodeInfo (recipient-based auth with role)
+	// Step 9: Member writes its own nodeInfo (recipient-based write auth)
 	// ================================================================
 	t.Log("Step 9: Member writes its own nodeInfo (recipient-based write auth)")
 	err = mesh.WriteNodeInfo(ctx, mesh.WriteNodeInfoParams{
@@ -227,7 +232,7 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		Signer:               member.Signer, // member signs its own record
 		EncryptionKeyManager: member.EncMgr,
 		Hostname:             "alice-laptop",
-		ProtocolRole:         "network/member",
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		t.Fatalf("member WriteNodeInfo failed: %v (this was the pre-PR#84 bug)", err)
@@ -249,9 +254,9 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		PublicEndpoints: []control.PublicEndpoint{
 			{Address: "203.0.113.50", Port: 51820, Source: "test"},
 		},
-		LocalEndpoints: []string{"10.0.0.42:51820"},
-		NATType:        "symmetric",
-		ProtocolRole:   "network/member",
+		LocalEndpoints:       []string{"10.0.0.42:51820"},
+		NATType:              "symmetric",
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		t.Fatalf("member WriteEndpoint failed: %v", err)
@@ -396,6 +401,16 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 	t.Log("  Recipient-based write auth: verified (member wrote own nodeInfo+endpoint)")
 }
 
+func shareContextKeyForTest(t *testing.T, contextID string, owner *nodeIdentity, recipient *nodeIdentity) {
+	t.Helper()
+
+	contextKey, err := owner.EncMgr.DeriveContextDecryptionKey(contextID)
+	if err != nil {
+		t.Fatalf("deriving context key for test: %v", err)
+	}
+	recipient.EncMgr.StoreContextKey(contextID, contextKey)
+}
+
 // TestE2ERecipientBasedOwnerNodeWrite verifies that an owner-provisioned
 // node (non-anchor) can write its own nodeInfo and endpoint records using
 // recipient-based authorization (the exact scenario that failed before PR #84).
@@ -450,6 +465,7 @@ func TestE2ERecipientBasedOwnerNodeWrite(t *testing.T) {
 			networkRecordID = records[0].ID
 		}
 	}
+	shareContextKeyForTest(t, networkRecordID, anchor, nodeB)
 
 	// Anchor registers node B (recipient = B's DID, assigns network/node role).
 	ipB, err := mesh.AllocateMeshIP("10.200.0.0/16", nodeB.DID.URI)
@@ -465,6 +481,7 @@ func TestE2ERecipientBasedOwnerNodeWrite(t *testing.T) {
 		EncryptionKeyManager: anchor.EncMgr,
 		MeshIP:               ipB.String(),
 		Label:                "node-b",
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		t.Fatalf("registering node B: %v", err)
@@ -481,6 +498,7 @@ func TestE2ERecipientBasedOwnerNodeWrite(t *testing.T) {
 		Signer:               nodeB.Signer, // B signs its own record
 		EncryptionKeyManager: nodeB.EncMgr,
 		Hostname:             "node-b-host",
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		t.Fatalf("Node B WriteNodeInfo failed: %v — recipient-based auth is broken!", err)
@@ -499,8 +517,9 @@ func TestE2ERecipientBasedOwnerNodeWrite(t *testing.T) {
 		PublicEndpoints: []control.PublicEndpoint{
 			{Address: "192.0.2.42", Port: 51820, Source: "test"},
 		},
-		LocalEndpoints: []string{"172.16.0.5:51820"},
-		NATType:        "port-restricted",
+		LocalEndpoints:       []string{"172.16.0.5:51820"},
+		NATType:              "port-restricted",
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		t.Fatalf("Node B WriteEndpoint failed: %v — recipient-based auth is broken!", err)
@@ -519,6 +538,7 @@ func TestE2ERecipientBasedOwnerNodeWrite(t *testing.T) {
 		EncryptionKeyManager: anchor.EncMgr,
 		MeshIP:               anchorIP.String(),
 		Label:                "anchor",
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		t.Fatalf("registering anchor node: %v", err)
@@ -797,6 +817,7 @@ func TestE2ELoadStateNonAnchor(t *testing.T) {
 			networkRecordID = records[0].ID
 		}
 	}
+	shareContextKeyForTest(t, networkRecordID, anchor, nodeB)
 
 	// Register both nodes.
 	anchorIP, _ := mesh.AllocateMeshIP("10.200.0.0/16", anchor.DID.URI)
@@ -805,6 +826,7 @@ func TestE2ELoadStateNonAnchor(t *testing.T) {
 		NetworkRecordID: networkRecordID, NodeDID: anchor.DID.URI,
 		Signer: anchor.Signer, EncryptionKeyManager: anchor.EncMgr,
 		MeshIP: anchorIP.String(), Label: "anchor",
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		t.Fatalf("registering anchor: %v", err)
@@ -816,6 +838,7 @@ func TestE2ELoadStateNonAnchor(t *testing.T) {
 		NetworkRecordID: networkRecordID, NodeDID: nodeB.DID.URI,
 		Signer: anchor.Signer, EncryptionKeyManager: anchor.EncMgr,
 		MeshIP: ipB.String(), Label: "node-b",
+		UseContextEncryption: true,
 	})
 	if err != nil {
 		t.Fatalf("registering node B: %v", err)

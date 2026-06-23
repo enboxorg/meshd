@@ -652,46 +652,71 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		fmt.Printf("  Found node record (owner-provisioned).\n")
 	}
 
-	// If not found, try network/member/node.
+	// If not found, try member-associated nodes. DWN requires nested
+	// protocol queries to include the direct parent contextId, so first
+	// discover the member record and then query its child node records.
 	if nodeRecordID == "" {
-		memberNodeRecords, mQueryStatus, mErr := api.Query(ctx, anchorDID, dwn.QueryParams{
+		memberRecords, memStatus, memErr := api.Query(ctx, anchorDID, dwn.QueryParams{
 			Filter: dwn.RecordsFilter{
 				Protocol:     protocols.MeshProtocolURI,
-				ProtocolPath: "network/member/node",
+				ProtocolPath: "network/member",
 				ContextID:    networkID,
 				Recipient:    identity.URI,
 			},
 			DateSort: "createdDescending",
-		}, "")
-		if mErr != nil {
-			fmt.Printf("  Warning: member node query failed: %v\n", mErr)
-		} else if mQueryStatus.Code == 200 && len(memberNodeRecords) > 0 {
-			nodeRecordID = memberNodeRecords[0].ID
-			nodeDateCreated = memberNodeRecords[0].DateCreated
-			var nodeData struct {
-				MeshIP string `json:"meshIP"`
-			}
-			if err := memberNodeRecords[0].Data().JSON(ctx, &nodeData); err == nil && nodeData.MeshIP != "" {
-				meshIP = nodeData.MeshIP
-			}
-			fmt.Printf("  Found node record (member-associated).\n")
+		}, "network/member")
+		if memErr != nil {
+			fmt.Printf("  Warning: member query failed: %v\n", memErr)
+		} else if memStatus.Code == 200 {
+			for _, memberRecord := range memberRecords {
+				memberNodeRecords, mQueryStatus, mErr := api.Query(ctx, anchorDID, dwn.QueryParams{
+					Filter: dwn.RecordsFilter{
+						Protocol:     protocols.MeshProtocolURI,
+						ProtocolPath: "network/member/node",
+						ContextID:    networkID + "/" + memberRecord.ID,
+						Recipient:    identity.URI,
+					},
+					DateSort: "createdDescending",
+				}, "network/member")
+				if mErr != nil {
+					fmt.Printf("  Warning: member node query failed: %v\n", mErr)
+					continue
+				}
+				if mQueryStatus.Code != 200 || len(memberNodeRecords) == 0 {
+					continue
+				}
 
-			// Find the member record for this node.
-			memberRecords, memStatus, memErr := api.Query(ctx, anchorDID, dwn.QueryParams{
-				Filter: dwn.RecordsFilter{
-					Protocol:     protocols.MeshProtocolURI,
-					ProtocolPath: "network/member",
-					ContextID:    networkID,
-					Recipient:    identity.URI,
-				},
-				DateSort: "createdDescending",
-			}, "")
-			if memErr == nil && memStatus.Code == 200 && len(memberRecords) > 0 {
-				memberRecordID = memberRecords[0].ID
+				memberRecordID = memberRecord.ID
+				nodeRecordID = memberNodeRecords[0].ID
+				nodeDateCreated = memberNodeRecords[0].DateCreated
+				var nodeData struct {
+					MeshIP string `json:"meshIP"`
+				}
+				if err := memberNodeRecords[0].Data().JSON(ctx, &nodeData); err == nil && nodeData.MeshIP != "" {
+					meshIP = nodeData.MeshIP
+				}
+				fmt.Printf("  Found node record (member-associated).\n")
+				break
 			}
 		}
 	}
 
+	// If a member node was not found but the member record exists, keep
+	// the member record ID so future writes can use the correct protocol path.
+	if nodeRecordID == "" && memberRecordID == "" {
+		memberRecords, memStatus, memErr := api.Query(ctx, anchorDID, dwn.QueryParams{
+			Filter: dwn.RecordsFilter{
+				Protocol:     protocols.MeshProtocolURI,
+				ProtocolPath: "network/member",
+				ContextID:    networkID,
+				Recipient:    identity.URI,
+			},
+			DateSort: "createdDescending",
+		}, "network/member")
+		if memErr == nil && memStatus.Code == 200 && len(memberRecords) > 0 {
+			memberRecordID = memberRecords[0].ID
+		}
+	}
 	// If no node record found, the anchor hasn't added us yet.
 	// Allocate a mesh IP deterministically and save partial state.
 	if meshIP == "" {
@@ -733,12 +758,6 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 
 	// Write nodeInfo if we have a node record (so the network sees our hostname/OS).
 	if nodeRecordID != "" {
-		// Determine protocol role for the nodeInfo write.
-		nodeInfoRole := "network/node"
-		if memberRecordID != "" {
-			nodeInfoRole = "network/member/node"
-		}
-
 		if err := mesh.WriteNodeInfo(ctx, mesh.WriteNodeInfoParams{
 			AnchorEndpoint:       endpoint,
 			AnchorDID:            anchorDID,
@@ -747,7 +766,6 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 			NodeRecordID:         nodeRecordID,
 			Signer:               signer,
 			EncryptionKeyManager: encMgr,
-			ProtocolRole:         nodeInfoRole,
 			UseContextEncryption: useContextEnc,
 		}); err != nil {
 			fmt.Printf("  Warning: nodeInfo write failed: %v\n", err)
@@ -1051,16 +1069,29 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 	}
 
 	// Also query member-associated node records (network/member/node).
+	// Nested protocol queries must use the direct parent member context.
 	memberRecords, mStatus, mErr := api.Query(ctx, ns.AnchorDID, dwn.QueryParams{
 		Filter: dwn.RecordsFilter{
 			Protocol:     protocols.MeshProtocolURI,
-			ProtocolPath: "network/member/node",
+			ProtocolPath: "network/member",
 			ContextID:    ns.NetworkRecordID,
 		},
 		DateSort: "createdAscending",
 	}, queryRole)
 	if mErr == nil && mStatus.Code == 200 {
-		records = append(records, memberRecords...)
+		for _, memberRecord := range memberRecords {
+			memberNodeRecords, mnStatus, mnErr := api.Query(ctx, ns.AnchorDID, dwn.QueryParams{
+				Filter: dwn.RecordsFilter{
+					Protocol:     protocols.MeshProtocolURI,
+					ProtocolPath: "network/member/node",
+					ContextID:    ns.NetworkRecordID + "/" + memberRecord.ID,
+				},
+				DateSort: "createdAscending",
+			}, queryRole)
+			if mnErr == nil && mnStatus.Code == 200 {
+				records = append(records, memberNodeRecords...)
+			}
+		}
 	}
 
 	if len(records) == 0 {
@@ -1554,15 +1585,6 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	// Write/update endpoint record (encrypted) before starting the engine.
 	if ns.NodeRecordID != "" {
 		localEndpoints := mesh.DiscoverLocalEndpoints(f.listenPort)
-		// Determine the protocol role for the endpoint write. Devices write
-		// their own endpoint records using recipient-based authorization.
-		endpointRole := ""
-		if ns.AnchorDID != identity.URI {
-			endpointRole = "network/node"
-			if ns.MemberRecordID != "" {
-				endpointRole = "network/member/node"
-			}
-		}
 		wpParams := mesh.WriteEndpointParams{
 			AnchorEndpoint:       ns.AnchorEndpoint,
 			AnchorDID:            ns.AnchorDID,
@@ -1573,7 +1595,6 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 			EncryptionKeyManager: encMgr,
 			LocalEndpoints:       localEndpoints,
 			NATType:              "unknown",
-			ProtocolRole:         endpointRole,
 			UseContextEncryption: useContextEncryption,
 		}
 		err = mesh.WriteEndpoint(ctx, wpParams)

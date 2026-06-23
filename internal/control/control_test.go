@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
+	"reflect"
 	"testing"
 	"time"
 
@@ -443,6 +444,46 @@ func TestExtractEntryMetadata(t *testing.T) {
 			t.Errorf("expected empty metadata, got %+v", meta)
 		}
 	})
+}
+
+func TestMemberNodeParentQueriesUseDirectMemberContexts(t *testing.T) {
+	c := &DWNClient{
+		networkRecordID: "net-root",
+		members: map[string]*MemberRecord{
+			"did:example:b": {RecordID: "member-b"},
+			"did:example:a": {RecordID: "member-a"},
+			"did:example:x": {},
+		},
+	}
+
+	got := c.memberNodeParentQueries()
+	want := []memberNodeParentQuery{
+		{MemberRecordID: "member-a", ParentContextID: "net-root/member-a"},
+		{MemberRecordID: "member-b", ParentContextID: "net-root/member-b"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("memberNodeParentQueries() = %#v, want %#v", got, want)
+	}
+}
+
+func TestNodeChildRecordQueriesUseDirectNodeContexts(t *testing.T) {
+	c := &DWNClient{
+		networkRecordID: "net-root",
+		nodes: map[string]*NodeRecord{
+			"did:example:owner":  {RecordID: "owner-node"},
+			"did:example:member": {RecordID: "member-node", MemberRecordID: "member-a"},
+			"did:example:empty":  {},
+		},
+	}
+
+	got := c.nodeChildRecordQueries("nodeInfo")
+	want := []nodeChildRecordQuery{
+		{ProtocolPath: "network/member/node/nodeInfo", ParentContextID: "net-root/member-a/member-node"},
+		{ProtocolPath: "network/node/nodeInfo", ParentContextID: "net-root/owner-node"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("nodeChildRecordQueries() = %#v, want %#v", got, want)
+	}
 }
 
 func TestDetectDerivationScheme(t *testing.T) {
