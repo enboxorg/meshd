@@ -1128,8 +1128,8 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 	}
 
 	fmt.Printf("Peers in %q:\n", ns.NetworkName)
-	fmt.Printf("%-50s %-16s %-12s %s\n", "DID", "MESH IP", "LABEL", "PATH")
-	fmt.Println(strings.Repeat("-", 90))
+	fmt.Printf("%-50s %-16s %-12s %-12s %s\n", "DID", "MESH IP", "DEVICE", "LABEL", "PATH")
+	fmt.Println(strings.Repeat("-", 105))
 
 	for _, r := range records {
 		peerDID := r.Recipient
@@ -1137,6 +1137,7 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 		if displayDID == "" {
 			displayDID = "(unknown)"
 		}
+		device := peerListDevice(peerDID, identity.URI)
 
 		var node struct {
 			MeshIP string `json:"meshIP"`
@@ -1144,21 +1145,30 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 		}
 		if err := r.Data().JSON(ctx, &node); err != nil {
 			// Data may not be inline (encrypted records need context key).
-			fmt.Printf("%-50s %-16s %-12s %s\n",
+			fmt.Printf("%-50s %-16s %-12s %-12s %s\n",
 				truncate(displayDID, 50),
 				peerListMeshIP(ns.MeshCIDR, peerDID, ""),
+				device,
 				"(encrypted)",
 				r.ProtocolPath)
 			continue
 		}
-		fmt.Printf("%-50s %-16s %-12s %s\n",
+		fmt.Printf("%-50s %-16s %-12s %-12s %s\n",
 			truncate(displayDID, 50),
 			peerListMeshIP(ns.MeshCIDR, peerDID, node.MeshIP),
+			device,
 			node.Label,
 			r.ProtocolPath)
 	}
 
 	return nil
+}
+
+func peerListDevice(peerDID string, selfDID string) string {
+	if peerDID != "" && peerDID == selfDID {
+		return "this device"
+	}
+	return "peer"
 }
 
 func peerListMeshIP(meshCIDR string, peerDID string, recordMeshIP string) string {
