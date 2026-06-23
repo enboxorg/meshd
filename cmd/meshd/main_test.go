@@ -28,6 +28,74 @@ func TestParseUpFlagsInviteURL(t *testing.T) {
 	}
 }
 
+func TestParseNetworkCreateArgs(t *testing.T) {
+	t.Setenv("DWN_ENDPOINT", "")
+
+	name, endpoint := parseNetworkCreateArgs([]string{"home", "--endpoint", "https://dwn.example.com"})
+	if name != "home" {
+		t.Fatalf("name = %q, want home", name)
+	}
+	if endpoint != "https://dwn.example.com" {
+		t.Fatalf("endpoint = %q, want https://dwn.example.com", endpoint)
+	}
+}
+
+func TestParseNetworkCreateArgsUsesEndpointEnv(t *testing.T) {
+	t.Setenv("DWN_ENDPOINT", "https://env.example.com")
+
+	name, endpoint := parseNetworkCreateArgs([]string{"home"})
+	if name != "home" {
+		t.Fatalf("name = %q, want home", name)
+	}
+	if endpoint != "https://env.example.com" {
+		t.Fatalf("endpoint = %q, want https://env.example.com", endpoint)
+	}
+}
+
+func TestParseNetworkJoinArgs(t *testing.T) {
+	t.Setenv("DWN_ENDPOINT", "")
+
+	endpoint, anchorDID, networkID, preauth := parseNetworkJoinArgs([]string{
+		"--endpoint", "https://dwn.example.com",
+		"--anchor", "did:jwk:anchor",
+		"--network", "net",
+		"--preauth",
+	})
+	if endpoint != "https://dwn.example.com" {
+		t.Fatalf("endpoint = %q, want https://dwn.example.com", endpoint)
+	}
+	if anchorDID != "did:jwk:anchor" {
+		t.Fatalf("anchorDID = %q, want did:jwk:anchor", anchorDID)
+	}
+	if networkID != "net" {
+		t.Fatalf("networkID = %q, want net", networkID)
+	}
+	if !preauth {
+		t.Fatal("preauth = false, want true")
+	}
+}
+
+func TestParseNetworkJoinArgsUsesEndpointEnv(t *testing.T) {
+	t.Setenv("DWN_ENDPOINT", "https://env.example.com")
+
+	endpoint, anchorDID, networkID, preauth := parseNetworkJoinArgs([]string{
+		"--anchor", "did:jwk:anchor",
+		"--network", "net",
+	})
+	if endpoint != "https://env.example.com" {
+		t.Fatalf("endpoint = %q, want https://env.example.com", endpoint)
+	}
+	if anchorDID != "did:jwk:anchor" {
+		t.Fatalf("anchorDID = %q, want did:jwk:anchor", anchorDID)
+	}
+	if networkID != "net" {
+		t.Fatalf("networkID = %q, want net", networkID)
+	}
+	if preauth {
+		t.Fatal("preauth = true, want false")
+	}
+}
+
 func resetVaultPasswordCache(t *testing.T) {
 	t.Helper()
 	previous := cachedVaultPassword

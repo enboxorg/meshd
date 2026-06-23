@@ -324,29 +324,30 @@ func cmdVaultUnlock(args []string, flagProfile string) error {
 
 // cmdNetworkCreate creates a new mesh network.
 //
-// Usage: meshd network create <name> --endpoint <dwn-url>
+// Usage: meshd network create [name] [--endpoint <dwn-url>]
 func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) error {
-	if len(args) < 3 {
-		return fmt.Errorf("usage: meshd network create <name> --endpoint <dwn-url>")
-	}
-
-	name := args[0]
-	endpoint := ""
-	for i := 1; i < len(args); i++ {
-		if args[i] == "--endpoint" && i+1 < len(args) {
-			endpoint = args[i+1]
-			break
+	name, endpoint := parseNetworkCreateArgs(args)
+	if name == "" || endpoint == "" {
+		if !stdinIsTerminal() {
+			return fmt.Errorf("usage: meshd network create [name] [--endpoint <dwn-url>]")
+		}
+		scanner := bufio.NewScanner(os.Stdin)
+		var err error
+		if name == "" {
+			name, err = promptRequired(scanner, "Network name")
+			if err != nil {
+				return err
+			}
+		}
+		if endpoint == "" {
+			endpoint, err = promptRequired(scanner, "DWN endpoint URL")
+			if err != nil {
+				return err
+			}
 		}
 	}
-	if endpoint == "" {
-		return fmt.Errorf("--endpoint is required")
-	}
 
-	stateDir, err := resolveStateDir(flagProfile)
-	if err != nil {
-		return err
-	}
-	identity, err := loadIdentity(stateDir)
+	stateDir, identity, err := ensureIdentityForCommand(ctx, flagProfile, endpoint)
 	if err != nil {
 		return err
 	}
@@ -507,16 +508,7 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	return nil
 }
 
-// cmdNetworkJoin joins an existing mesh network.
-//
-// Usage: meshd network join --endpoint <url> --anchor <did> --network <id>
-func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) error {
-	if len(args) == 1 && strings.HasPrefix(strings.TrimSpace(args[0]), invite.SchemePrefix) {
-		return cmdJoin(ctx, args, flagProfile)
-	}
-
-	var endpoint, anchorDID, networkID string
-	preauthRequested := false
+func parseNetworkCreateArgs(args []string) (name string, endpoint string) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--endpoint":
@@ -524,30 +516,69 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 				endpoint = args[i+1]
 				i++
 			}
-		case "--anchor":
-			if i+1 < len(args) {
-				anchorDID = args[i+1]
-				i++
+		default:
+			if name == "" && !strings.HasPrefix(args[i], "-") {
+				name = args[i]
 			}
-		case "--network":
-			if i+1 < len(args) {
-				networkID = args[i+1]
-				i++
+		}
+	}
+	if endpoint == "" {
+		endpoint = os.Getenv("DWN_ENDPOINT")
+	}
+	return name, endpoint
+}
+
+// cmdNetworkJoin joins an existing mesh network.
+//
+// Usage: meshd network join <invite-url>
+// Usage: meshd network join --endpoint <url> --anchor <did> --network <id>
+func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) error {
+	if len(args) == 1 && strings.HasPrefix(strings.TrimSpace(args[0]), invite.SchemePrefix) {
+		return cmdJoin(ctx, args, flagProfile)
+	}
+
+	endpoint, anchorDID, networkID, preauthRequested := parseNetworkJoinArgs(args)
+	if endpoint == "" || anchorDID == "" || networkID == "" {
+		if !stdinIsTerminal() {
+			return fmt.Errorf("usage: meshd network join <invite-url> OR meshd network join --endpoint <url> --anchor <did> --network <id>")
+		}
+		scanner := bufio.NewScanner(os.Stdin)
+		if len(args) == 0 {
+			fmt.Print("Invite URL (or press Enter for manual join): ")
+			if !scanner.Scan() {
+				return fmt.Errorf("no input received")
 			}
-		case "--preauth":
-			preauthRequested = true
+			inviteURL := strings.TrimSpace(scanner.Text())
+			if inviteURL != "" {
+				if !strings.HasPrefix(inviteURL, invite.SchemePrefix) {
+					return fmt.Errorf("invite URL must start with %s", invite.SchemePrefix)
+				}
+				return cmdJoin(ctx, []string{inviteURL}, flagProfile)
+			}
+		}
+
+		var err error
+		if endpoint == "" {
+			endpoint, err = promptRequired(scanner, "DWN endpoint URL")
+			if err != nil {
+				return err
+			}
+		}
+		if anchorDID == "" {
+			anchorDID, err = promptRequired(scanner, "Anchor DID")
+			if err != nil {
+				return err
+			}
+		}
+		if networkID == "" {
+			networkID, err = promptRequired(scanner, "Network record ID")
+			if err != nil {
+				return err
+			}
 		}
 	}
 
-	if endpoint == "" || anchorDID == "" || networkID == "" {
-		return fmt.Errorf("usage: meshd network join --endpoint <url> --anchor <did> --network <id>")
-	}
-
-	stateDir, err := resolveStateDir(flagProfile)
-	if err != nil {
-		return err
-	}
-	identity, err := loadIdentity(stateDir)
+	stateDir, identity, err := ensureIdentityForCommand(ctx, flagProfile, endpoint)
 	if err != nil {
 		return err
 	}
@@ -752,6 +783,34 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 	fmt.Printf("\nRun 'meshd up' to start the mesh.\n")
 
 	return nil
+}
+
+func parseNetworkJoinArgs(args []string) (endpoint string, anchorDID string, networkID string, preauthRequested bool) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--endpoint":
+			if i+1 < len(args) {
+				endpoint = args[i+1]
+				i++
+			}
+		case "--anchor":
+			if i+1 < len(args) {
+				anchorDID = args[i+1]
+				i++
+			}
+		case "--network":
+			if i+1 < len(args) {
+				networkID = args[i+1]
+				i++
+			}
+		case "--preauth":
+			preauthRequested = true
+		}
+	}
+	if endpoint == "" {
+		endpoint = os.Getenv("DWN_ENDPOINT")
+	}
+	return endpoint, anchorDID, networkID, preauthRequested
 }
 
 // cmdNetworkLeave leaves the current mesh network.
@@ -1847,6 +1906,22 @@ func setupInteractive(ctx context.Context, f upFlags, stateDir string, identity 
 	default:
 		return nil, fmt.Errorf("invalid choice %q (expected 1 or 2)", choice)
 	}
+}
+
+func stdinIsTerminal() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+func promptRequired(scanner *bufio.Scanner, label string) (string, error) {
+	fmt.Printf("%s: ", label)
+	if !scanner.Scan() {
+		return "", fmt.Errorf("no input received")
+	}
+	value := strings.TrimSpace(scanner.Text())
+	if value == "" {
+		return "", fmt.Errorf("%s is required", strings.ToLower(label))
+	}
+	return value, nil
 }
 
 // interactiveCreate guides the user through creating a new network.
