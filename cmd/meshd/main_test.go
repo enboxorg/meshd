@@ -61,6 +61,19 @@ func TestPeerListMeshIPFallsBackToDeterministicIP(t *testing.T) {
 	}
 }
 
+func TestPeerListDeviceLabelsSelf(t *testing.T) {
+	const selfDID = "did:jwk:self"
+	if got := peerListDevice(selfDID, selfDID); got != "this device" {
+		t.Fatalf("peerListDevice(self) = %q, want this device", got)
+	}
+	if got := peerListDevice("did:jwk:peer", selfDID); got != "peer" {
+		t.Fatalf("peerListDevice(peer) = %q, want peer", got)
+	}
+	if got := peerListDevice("", selfDID); got != "peer" {
+		t.Fatalf("peerListDevice(empty) = %q, want peer", got)
+	}
+}
+
 func TestParseUpFlagsTunUsesPlatformDefault(t *testing.T) {
 	flags := parseUpFlags([]string{"--tun"})
 	want := defaultTUNName(runtime.GOOS)
