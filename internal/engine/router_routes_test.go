@@ -5,6 +5,9 @@ import (
 	"net/netip"
 	"reflect"
 	"testing"
+
+	"github.com/enboxorg/meshnet/tailcfg"
+	"github.com/enboxorg/meshnet/types/netmap"
 )
 
 func TestTunnelRoutesExcludesLocalRoutes(t *testing.T) {
@@ -14,6 +17,52 @@ func TestTunnelRoutesExcludesLocalRoutes(t *testing.T) {
 	want := []netip.Prefix{peer}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tunnelRoutes() = %v, want %v", got, want)
+	}
+}
+
+func TestRouterConfigFromNetMap(t *testing.T) {
+	self := &tailcfg.Node{
+		Addresses: []netip.Prefix{
+			netip.MustParsePrefix("10.200.26.192/32"),
+		},
+	}
+	peerA := &tailcfg.Node{
+		Addresses: []netip.Prefix{
+			netip.MustParsePrefix("10.200.43.197/32"),
+		},
+		AllowedIPs: []netip.Prefix{
+			netip.MustParsePrefix("10.200.43.197/32"),
+			netip.MustParsePrefix("0.0.0.0/0"),
+		},
+	}
+	peerB := &tailcfg.Node{
+		Addresses: []netip.Prefix{
+			netip.MustParsePrefix("10.200.99.7/32"),
+		},
+	}
+
+	cfg, ok := routerConfigFromNetMap(&netmap.NetworkMap{
+		SelfNode: self.View(),
+		Peers: []tailcfg.NodeView{
+			peerB.View(),
+			peerA.View(),
+		},
+	})
+	if !ok {
+		t.Fatal("routerConfigFromNetMap returned !ok")
+	}
+
+	wantAddrs := []netip.Prefix{netip.MustParsePrefix("10.200.26.192/32")}
+	if !reflect.DeepEqual(cfg.LocalAddrs, wantAddrs) {
+		t.Fatalf("LocalAddrs = %v, want %v", cfg.LocalAddrs, wantAddrs)
+	}
+
+	wantRoutes := []netip.Prefix{
+		netip.MustParsePrefix("10.200.43.197/32"),
+		netip.MustParsePrefix("10.200.99.7/32"),
+	}
+	if !reflect.DeepEqual(cfg.Routes, wantRoutes) {
+		t.Fatalf("Routes = %v, want %v", cfg.Routes, wantRoutes)
 	}
 }
 

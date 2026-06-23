@@ -52,8 +52,9 @@ type Engine struct {
 
 	// tunDev is the real TUN device when running in TUN mode.
 	// nil in userspace-only (netstack) mode.
-	tunDev  tun.Device
-	tunName string
+	tunDev   tun.Device
+	tunName  string
+	osRouter *synchronizedRouter
 
 	mu      sync.Mutex
 	running bool
@@ -253,7 +254,8 @@ func New(cfg Config) (*Engine, error) {
 	//      the netstack dialer can communicate through the mesh tunnel.
 	var tunDev tun.Device
 	var tunName string
-	var osRouter router.Router
+	var osRouter *synchronizedRouter
+	var wgRouter router.Router
 	userspaceOnly := true
 
 	if cfg.TUNName != "" {
@@ -273,14 +275,15 @@ func New(cfg Config) (*Engine, error) {
 			// TUN interface. Unsupported platforms return nil and fall back
 			// to the fake router (no OS routing).
 			if rtr := newOSRouter(logf, tunName); rtr != nil {
-				osRouter = rtr
+				osRouter = newSynchronizedRouter(rtr)
+				wgRouter = osRouter
 			}
 		}
 	}
 
 	wgConfig := wgengine.Config{
 		Tun:           tunDev, // nil = fake TUN (userspace only)
-		Router:        osRouter,
+		Router:        wgRouter,
 		EventBus:      sys.Bus.Get(),
 		ListenPort:    cfg.ListenPort,
 		NetMon:        nm,
@@ -424,6 +427,7 @@ func New(cfg Config) (*Engine, error) {
 		subWatcher: subWatcher,
 		tunDev:     tunDev,
 		tunName:    tunName,
+		osRouter:   osRouter,
 		logger:     l,
 	}, nil
 }
@@ -443,7 +447,7 @@ func (e *Engine) Start(ctx context.Context) error {
 		return fmt.Errorf("engine already running")
 	}
 
-	_, cancel := context.WithCancel(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
 	e.cancel = cancel
 
 	e.logger.InfoContext(ctx, "starting meshd engine")
@@ -457,13 +461,15 @@ func (e *Engine) Start(ctx context.Context) error {
 		cancel()
 		return fmt.Errorf("starting backend: %w", err)
 	}
+	e.waitForInitialTUNRoutes(runCtx, 5*time.Second)
+	go e.runTUNRouteReconciler(runCtx)
 
 	// Start the subscription watcher for real-time updates.
 	// This is best-effort: if the DWN server doesn't support WebSocket
 	// subscriptions, we fall back to polling only. The watcher will
 	// auto-reconnect on transient failures.
 	if e.subWatcher != nil {
-		if err := e.subWatcher.Start(ctx); err != nil {
+		if err := e.subWatcher.Start(runCtx); err != nil {
 			e.logger.Warn("failed to start subscription watcher, falling back to polling",
 				slog.Any("error", err),
 			)
