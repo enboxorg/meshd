@@ -81,7 +81,7 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 	networkRecord, writeStatus, err := anchor.API.Write(ctx, anchor.DID.URI, dwn.WriteParams{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network",
-		Schema:       "https://enbox.org/schemas/wireguard-mesh/network",
+		Schema:       "https://enbox.id/schemas/wireguard-mesh/network",
 		DataFormat:   "application/json",
 		Data:         networkData,
 	})
@@ -449,7 +449,7 @@ func TestE2ERecipientBasedOwnerNodeWrite(t *testing.T) {
 	networkRecord, ws, err := anchor.API.Write(ctx, anchor.DID.URI, dwn.WriteParams{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network",
-		Schema:       "https://enbox.org/schemas/wireguard-mesh/network",
+		Schema:       "https://enbox.id/schemas/wireguard-mesh/network",
 		DataFormat:   "application/json",
 		Data:         networkData,
 	})
@@ -617,7 +617,7 @@ func TestE2EACLPolicyRoundTrip(t *testing.T) {
 	networkRecord, ws, err := anchor.API.Write(ctx, anchor.DID.URI, dwn.WriteParams{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network",
-		Schema:       "https://enbox.org/schemas/wireguard-mesh/network",
+		Schema:       "https://enbox.id/schemas/wireguard-mesh/network",
 		DataFormat:   "application/json",
 		Data:         networkData,
 	})
@@ -801,7 +801,7 @@ func TestE2ELoadStateNonAnchor(t *testing.T) {
 	networkRecord, ws, err := anchor.API.Write(ctx, anchor.DID.URI, dwn.WriteParams{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network",
-		Schema:       "https://enbox.org/schemas/wireguard-mesh/network",
+		Schema:       "https://enbox.id/schemas/wireguard-mesh/network",
 		DataFormat:   "application/json",
 		Data:         networkData,
 	})

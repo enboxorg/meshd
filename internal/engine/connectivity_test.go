@@ -101,7 +101,7 @@ func TestTwoNodeConnectivity(t *testing.T) {
 	networkRecord, writeStatus, err := nodeA.api.Write(ctx, nodeA.identity.URI, dwn.WriteParams{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network",
-		Schema:       "https://enbox.org/schemas/wireguard-mesh/network",
+		Schema:       "https://enbox.id/schemas/wireguard-mesh/network",
 		DataFormat:   "application/json",
 		Data:         networkData,
 	})
@@ -676,7 +676,7 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 	networkRecord, ws, err := nodeA.api.Write(ctx, nodeA.identity.URI, dwn.WriteParams{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network",
-		Schema:       "https://enbox.org/schemas/wireguard-mesh/network",
+		Schema:       "https://enbox.id/schemas/wireguard-mesh/network",
 		DataFormat:   "application/json",
 		Data:         networkData,
 	})

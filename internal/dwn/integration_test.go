@@ -78,11 +78,11 @@ func TestIntegrationProtocolsConfigure(t *testing.T) {
 
 	// Install a test protocol.
 	protocolDef := json.RawMessage(`{
-		"protocol": "https://enbox.org/protocols/integration-test",
+		"protocol": "https://enbox.id/protocols/integration-test",
 		"published": true,
 		"types": {
 			"note": {
-				"schema": "https://enbox.org/schemas/integration-test/note",
+				"schema": "https://enbox.id/schemas/integration-test/note",
 				"dataFormats": ["application/json"]
 			}
 		},
@@ -117,11 +117,11 @@ func TestIntegrationRecordsWriteReadQuery(t *testing.T) {
 
 	// 1. Install protocol first.
 	protocolDef := json.RawMessage(`{
-		"protocol": "https://enbox.org/protocols/integration-test",
+		"protocol": "https://enbox.id/protocols/integration-test",
 		"published": true,
 		"types": {
 			"note": {
-				"schema": "https://enbox.org/schemas/integration-test/note",
+				"schema": "https://enbox.id/schemas/integration-test/note",
 				"dataFormats": ["application/json"]
 			}
 		},
@@ -139,9 +139,9 @@ func TestIntegrationRecordsWriteReadQuery(t *testing.T) {
 	noteData := []byte(`{"title":"Integration Test","body":"This was written by meshd Go client"}`)
 
 	record, writeStatus, err := api.Write(ctx, signer.DID, dwn.WriteParams{
-		Protocol:     "https://enbox.org/protocols/integration-test",
+		Protocol:     "https://enbox.id/protocols/integration-test",
 		ProtocolPath: "note",
-		Schema:       "https://enbox.org/schemas/integration-test/note",
+		Schema:       "https://enbox.id/schemas/integration-test/note",
 		DataFormat:   "application/json",
 		Data:         noteData,
 	})
@@ -157,7 +157,7 @@ func TestIntegrationRecordsWriteReadQuery(t *testing.T) {
 	// 3. Query records — should find the one we just wrote.
 	records, queryStatus, err := api.Query(ctx, signer.DID, dwn.QueryParams{
 		Filter: dwn.RecordsFilter{
-			Protocol:     "https://enbox.org/protocols/integration-test",
+			Protocol:     "https://enbox.id/protocols/integration-test",
 			ProtocolPath: "note",
 		},
 	}, "")
@@ -201,7 +201,7 @@ func TestIntegrationRecordsWriteReadQuery(t *testing.T) {
 
 	// 5. Read the record directly.
 	readRecord, readStatus, err := api.Read(ctx, signer.DID, dwn.RecordsFilter{
-		Protocol:     "https://enbox.org/protocols/integration-test",
+		Protocol:     "https://enbox.id/protocols/integration-test",
 		ProtocolPath: "note",
 	}, "")
 	if err != nil {
@@ -240,11 +240,11 @@ func TestIntegrationRecordsDelete(t *testing.T) {
 
 	// Install protocol.
 	protocolDef := json.RawMessage(`{
-		"protocol": "https://enbox.org/protocols/integration-test",
+		"protocol": "https://enbox.id/protocols/integration-test",
 		"published": true,
 		"types": {
 			"note": {
-				"schema": "https://enbox.org/schemas/integration-test/note",
+				"schema": "https://enbox.id/schemas/integration-test/note",
 				"dataFormats": ["application/json"]
 			}
 		},
@@ -256,9 +256,9 @@ func TestIntegrationRecordsDelete(t *testing.T) {
 
 	// Write a record.
 	_, writeStatus, err := api.Write(ctx, signer.DID, dwn.WriteParams{
-		Protocol:     "https://enbox.org/protocols/integration-test",
+		Protocol:     "https://enbox.id/protocols/integration-test",
 		ProtocolPath: "note",
-		Schema:       "https://enbox.org/schemas/integration-test/note",
+		Schema:       "https://enbox.id/schemas/integration-test/note",
 		DataFormat:   "application/json",
 		Data:         []byte(`{"title":"To be deleted"}`),
 	})
@@ -272,7 +272,7 @@ func TestIntegrationRecordsDelete(t *testing.T) {
 	// Query to get the record ID.
 	records, _, err := api.Query(ctx, signer.DID, dwn.QueryParams{
 		Filter: dwn.RecordsFilter{
-			Protocol:     "https://enbox.org/protocols/integration-test",
+			Protocol:     "https://enbox.id/protocols/integration-test",
 			ProtocolPath: "note",
 		},
 	}, "")
@@ -311,11 +311,11 @@ func TestIntegrationEncryptedRecordsWrite(t *testing.T) {
 
 	// Install a protocol with encryption.
 	protocolDef := json.RawMessage(`{
-		"protocol": "https://enbox.org/protocols/encryption-test",
+		"protocol": "https://enbox.id/protocols/encryption-test",
 		"published": true,
 		"types": {
 			"secret": {
-				"schema": "https://enbox.org/schemas/encryption-test/secret",
+				"schema": "https://enbox.id/schemas/encryption-test/secret",
 				"dataFormats": ["application/json"]
 			}
 		},
@@ -347,9 +347,9 @@ func TestIntegrationEncryptedRecordsWrite(t *testing.T) {
 	plaintext := []byte(`{"message":"This is encrypted end-to-end!","code":42}`)
 
 	record, writeStatus, err := api.Write(ctx, signer.DID, dwn.WriteParams{
-		Protocol:     "https://enbox.org/protocols/encryption-test",
+		Protocol:     "https://enbox.id/protocols/encryption-test",
 		ProtocolPath: "secret",
-		Schema:       "https://enbox.org/schemas/encryption-test/secret",
+		Schema:       "https://enbox.id/schemas/encryption-test/secret",
 		DataFormat:   "application/json",
 		Data:         plaintext,
 		EncryptionRecipients: []dwncrypto.KeyEncryptionInput{{
@@ -369,7 +369,7 @@ func TestIntegrationEncryptedRecordsWrite(t *testing.T) {
 	// Query to find the record.
 	records, queryStatus, err := api.Query(ctx, signer.DID, dwn.QueryParams{
 		Filter: dwn.RecordsFilter{
-			Protocol:     "https://enbox.org/protocols/encryption-test",
+			Protocol:     "https://enbox.id/protocols/encryption-test",
 			ProtocolPath: "secret",
 		},
 	}, "")
@@ -386,7 +386,7 @@ func TestIntegrationEncryptedRecordsWrite(t *testing.T) {
 
 	// Read the encrypted record.
 	readRecord, readStatus, err := api.Read(ctx, signer.DID, dwn.RecordsFilter{
-		Protocol:     "https://enbox.org/protocols/encryption-test",
+		Protocol:     "https://enbox.id/protocols/encryption-test",
 		ProtocolPath: "secret",
 	}, "")
 	if err != nil {
@@ -461,11 +461,11 @@ func TestIntegrationEncryptedWriteQueryDelete(t *testing.T) {
 
 	// Install protocol.
 	protocolDef := json.RawMessage(`{
-		"protocol": "https://enbox.org/protocols/encryption-lifecycle-test",
+		"protocol": "https://enbox.id/protocols/encryption-lifecycle-test",
 		"published": true,
 		"types": {
 			"item": {
-				"schema": "https://enbox.org/schemas/encryption-lifecycle-test/item",
+				"schema": "https://enbox.id/schemas/encryption-lifecycle-test/item",
 				"dataFormats": ["application/json"]
 			}
 		},
@@ -493,9 +493,9 @@ func TestIntegrationEncryptedWriteQueryDelete(t *testing.T) {
 		plaintext := []byte(fmt.Sprintf(`{"index":%d,"data":"item-%d"}`, i, i))
 
 		_, ws, err := api.Write(ctx, signer.DID, dwn.WriteParams{
-			Protocol:     "https://enbox.org/protocols/encryption-lifecycle-test",
+			Protocol:     "https://enbox.id/protocols/encryption-lifecycle-test",
 			ProtocolPath: "item",
-			Schema:       "https://enbox.org/schemas/encryption-lifecycle-test/item",
+			Schema:       "https://enbox.id/schemas/encryption-lifecycle-test/item",
 			DataFormat:   "application/json",
 			Data:         plaintext,
 			EncryptionRecipients: []dwncrypto.KeyEncryptionInput{{
@@ -516,7 +516,7 @@ func TestIntegrationEncryptedWriteQueryDelete(t *testing.T) {
 	// Query all encrypted records.
 	records, qs, err := api.Query(ctx, signer.DID, dwn.QueryParams{
 		Filter: dwn.RecordsFilter{
-			Protocol:     "https://enbox.org/protocols/encryption-lifecycle-test",
+			Protocol:     "https://enbox.id/protocols/encryption-lifecycle-test",
 			ProtocolPath: "item",
 		},
 	}, "")
@@ -545,7 +545,7 @@ func TestIntegrationEncryptedWriteQueryDelete(t *testing.T) {
 	// Verify one fewer record.
 	records2, _, err := api.Query(ctx, signer.DID, dwn.QueryParams{
 		Filter: dwn.RecordsFilter{
-			Protocol:     "https://enbox.org/protocols/encryption-lifecycle-test",
+			Protocol:     "https://enbox.id/protocols/encryption-lifecycle-test",
 			ProtocolPath: "item",
 		},
 	}, "")
@@ -572,11 +572,11 @@ func TestIntegrationEncryptedMultiRecipient(t *testing.T) {
 
 	// Install protocol.
 	protocolDef := json.RawMessage(`{
-		"protocol": "https://enbox.org/protocols/multi-recipient-test",
+		"protocol": "https://enbox.id/protocols/multi-recipient-test",
 		"published": true,
 		"types": {
 			"shared": {
-				"schema": "https://enbox.org/schemas/multi-recipient-test/shared",
+				"schema": "https://enbox.id/schemas/multi-recipient-test/shared",
 				"dataFormats": ["application/json"]
 			}
 		},
@@ -607,9 +607,9 @@ func TestIntegrationEncryptedMultiRecipient(t *testing.T) {
 
 	// Write encrypted for 2 recipients.
 	_, ws, err := api.Write(ctx, signer.DID, dwn.WriteParams{
-		Protocol:     "https://enbox.org/protocols/multi-recipient-test",
+		Protocol:     "https://enbox.id/protocols/multi-recipient-test",
 		ProtocolPath: "shared",
-		Schema:       "https://enbox.org/schemas/multi-recipient-test/shared",
+		Schema:       "https://enbox.id/schemas/multi-recipient-test/shared",
 		DataFormat:   "application/json",
 		Data:         plaintext,
 		EncryptionRecipients: []dwncrypto.KeyEncryptionInput{
@@ -640,9 +640,9 @@ func TestIntegrationEncryptedMultiRecipient(t *testing.T) {
 		DID:        signer.DID,
 		PrivateKey: signer.PrivateKey,
 	}, dwn.RecordsWriteOptions{
-		Protocol:     "https://enbox.org/protocols/multi-recipient-test",
+		Protocol:     "https://enbox.id/protocols/multi-recipient-test",
 		ProtocolPath: "shared",
-		Schema:       "https://enbox.org/schemas/multi-recipient-test/shared",
+		Schema:       "https://enbox.id/schemas/multi-recipient-test/shared",
 		DataFormat:   "application/json",
 		Data:         plaintext,
 		EncryptionRecipients: []dwncrypto.KeyEncryptionInput{

@@ -1,46 +1,46 @@
 {
-  "protocol": "https://enbox.org/protocols/wireguard-mesh",
+  "protocol": "https://enbox.id/protocols/wireguard-mesh",
   "published": true,
   "types": {
     "network": {
-      "schema": "https://enbox.org/schemas/wireguard-mesh/network",
+      "schema": "https://enbox.id/schemas/wireguard-mesh/network",
       "dataFormats": ["application/json"]
     },
     "member": {
-      "schema": "https://enbox.org/schemas/wireguard-mesh/member",
+      "schema": "https://enbox.id/schemas/wireguard-mesh/member",
       "dataFormats": ["application/json"]
     },
     "nodeRequest": {
-      "schema": "https://enbox.org/schemas/wireguard-mesh/node-request",
+      "schema": "https://enbox.id/schemas/wireguard-mesh/node-request",
       "dataFormats": ["application/json"]
     },
     "node": {
-      "schema": "https://enbox.org/schemas/wireguard-mesh/node",
+      "schema": "https://enbox.id/schemas/wireguard-mesh/node",
       "dataFormats": ["application/json"],
       "encryptionRequired": true
     },
     "nodeInfo": {
-      "schema": "https://enbox.org/schemas/wireguard-mesh/node-info",
+      "schema": "https://enbox.id/schemas/wireguard-mesh/node-info",
       "dataFormats": ["application/json"],
       "encryptionRequired": true
     },
     "endpoint": {
-      "schema": "https://enbox.org/schemas/wireguard-mesh/endpoint",
+      "schema": "https://enbox.id/schemas/wireguard-mesh/endpoint",
       "dataFormats": ["application/json"],
       "encryptionRequired": true
     },
     "aclPolicy": {
-      "schema": "https://enbox.org/schemas/wireguard-mesh/acl-policy",
+      "schema": "https://enbox.id/schemas/wireguard-mesh/acl-policy",
       "dataFormats": ["application/json"],
       "encryptionRequired": true
     },
     "relay": {
-      "schema": "https://enbox.org/schemas/wireguard-mesh/relay",
+      "schema": "https://enbox.id/schemas/wireguard-mesh/relay",
       "dataFormats": ["application/json"],
       "encryptionRequired": true
     },
     "preAuthKey": {
-      "schema": "https://enbox.org/schemas/wireguard-mesh/pre-auth-key",
+      "schema": "https://enbox.id/schemas/wireguard-mesh/pre-auth-key",
       "dataFormats": ["application/json"],
       "encryptionRequired": true
     }

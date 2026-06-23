@@ -187,9 +187,9 @@ func TestBuildRecordsWrite(t *testing.T) {
 
 	t.Run("initial write", func(t *testing.T) {
 		result, err := BuildRecordsWrite(s, RecordsWriteOptions{
-			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
+			Protocol:     "https://enbox.id/protocols/wireguard-mesh",
 			ProtocolPath: "network",
-			Schema:       "https://enbox.org/schemas/wireguard-mesh/network",
+			Schema:       "https://enbox.id/schemas/wireguard-mesh/network",
 			DataFormat:   "application/json",
 			Data:         []byte(`{"name":"test-net","meshCIDR":"10.200.0.0/16"}`),
 		})
@@ -242,11 +242,11 @@ func TestBuildRecordsWrite(t *testing.T) {
 
 	t.Run("protocolRole in signature payload", func(t *testing.T) {
 		result, err := BuildRecordsWrite(s, RecordsWriteOptions{
-			Protocol:     "https://example.com/test",
-			ProtocolPath: "root/child",
-			DataFormat:   "application/json",
-			Data:         []byte(`{}`),
-			ProtocolRole: "root/member",
+			Protocol:        "https://example.com/test",
+			ProtocolPath:    "root/child",
+			DataFormat:      "application/json",
+			Data:            []byte(`{}`),
+			ProtocolRole:    "root/member",
 			ParentContextID: "abc123",
 		})
 		if err != nil {
@@ -363,7 +363,7 @@ func TestBuildRecordsQuery(t *testing.T) {
 	s := newTestSigner(t)
 
 	msg, err := BuildRecordsQuery(s, RecordsFilter{
-		Protocol:     "https://enbox.org/protocols/wireguard-mesh",
+		Protocol:     "https://enbox.id/protocols/wireguard-mesh",
 		ProtocolPath: "network/node",
 	}, "createdAscending", nil, "network/node")
 	if err != nil {
@@ -511,7 +511,7 @@ func TestBuildRecordsWriteEncrypted(t *testing.T) {
 
 	kid := "did:dht:recipient#enc-1"
 	result, err := BuildRecordsWrite(s, RecordsWriteOptions{
-		Protocol:     "https://enbox.org/protocols/wireguard-mesh",
+		Protocol:     "https://enbox.id/protocols/wireguard-mesh",
 		ProtocolPath: "network",
 		DataFormat:   "application/json",
 		Data:         plaintext,

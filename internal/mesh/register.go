@@ -17,13 +17,13 @@ import (
 )
 
 const (
-	schemaMember      = "https://enbox.org/schemas/wireguard-mesh/member"
-	schemaNodeRequest = "https://enbox.org/schemas/wireguard-mesh/node-request"
-	schemaNode        = "https://enbox.org/schemas/wireguard-mesh/node"
-	schemaNodeInfo    = "https://enbox.org/schemas/wireguard-mesh/node-info"
-	schemaEndpoint    = "https://enbox.org/schemas/wireguard-mesh/endpoint"
-	schemaACLPolicy   = "https://enbox.org/schemas/wireguard-mesh/acl-policy"
-	schemaPreAuthKey  = "https://enbox.org/schemas/wireguard-mesh/pre-auth-key"
+	schemaMember      = "https://enbox.id/schemas/wireguard-mesh/member"
+	schemaNodeRequest = "https://enbox.id/schemas/wireguard-mesh/node-request"
+	schemaNode        = "https://enbox.id/schemas/wireguard-mesh/node"
+	schemaNodeInfo    = "https://enbox.id/schemas/wireguard-mesh/node-info"
+	schemaEndpoint    = "https://enbox.id/schemas/wireguard-mesh/endpoint"
+	schemaACLPolicy   = "https://enbox.id/schemas/wireguard-mesh/acl-policy"
+	schemaPreAuthKey  = "https://enbox.id/schemas/wireguard-mesh/pre-auth-key"
 )
 
 // MemberRegistration holds the result of creating a member record.

@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://enbox.org/schemas/wireguard-mesh/network",
+  "$id": "https://enbox.id/schemas/wireguard-mesh/network",
   "type": "object",
   "required": ["name", "meshCIDR"],
   "additionalProperties": false,
