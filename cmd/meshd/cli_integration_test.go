@@ -32,8 +32,8 @@ func TestCLIInviteJoinFlow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	anchorStateDir, anchorIdentity := createRegisteredCLIIdentity(t, ctx, endpoint, "anchor")
-	joinerStateDir, joinerIdentity := createRegisteredCLIIdentity(t, ctx, endpoint, "joiner")
+	anchorStateDir, anchorIdentity := createCLIIdentity(t, ctx, "anchor")
+	joinerStateDir, joinerIdentity := createCLIIdentity(t, ctx, "joiner")
 
 	networkName := "cli-e2e-" + time.Now().UTC().Format("20060102-150405")
 	if err := cmdNetworkCreate(ctx, []string{networkName, "--endpoint", endpoint}, "anchor"); err != nil {
@@ -116,15 +116,12 @@ func TestCLIInviteJoinFlow(t *testing.T) {
 	}
 }
 
-func createRegisteredCLIIdentity(t *testing.T, ctx context.Context, endpoint string, profileName string) (string, *did.DID) {
+func createCLIIdentity(t *testing.T, ctx context.Context, profileName string) (string, *did.DID) {
 	t.Helper()
 
-	stateDir, identity, err := ensureIdentityForCommand(ctx, profileName, endpoint)
+	stateDir, identity, err := ensureIdentityForCommand(ctx, profileName, "")
 	if err != nil {
 		t.Fatalf("ensureIdentityForCommand(%s): %v", profileName, err)
-	}
-	if err := dwn.RegisterTenant(ctx, endpoint, identity.URI); err != nil {
-		t.Fatalf("RegisterTenant(%s): %v", profileName, err)
 	}
 	return stateDir, identity
 }

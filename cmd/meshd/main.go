@@ -361,6 +361,9 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	if state.HasNetwork(stateDir) {
 		return fmt.Errorf("already in a network. Use 'meshd network leave' first.")
 	}
+	if err := ensureDWNTenantRegistered(ctx, endpoint, identity); err != nil {
+		return err
+	}
 
 	signer := &dwn.Signer{
 		DID:        identity.URI,
@@ -591,6 +594,9 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 
 	if state.HasNetwork(stateDir) {
 		return fmt.Errorf("already in a network. Use 'meshd network leave' first.")
+	}
+	if err := ensureDWNTenantRegistered(ctx, endpoint, identity); err != nil {
+		return err
 	}
 
 	signer := &dwn.Signer{
@@ -984,6 +990,9 @@ func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
 			return fmt.Errorf("loading network state: %w", loadErr)
 		}
 		if ns != nil && ns.NetworkRecordID == payload.NetworkID && ns.AnchorDID == payload.AnchorDID && ns.NodeRecordID == "" {
+			if err := ensureDWNTenantRegistered(ctx, payload.Endpoint, identity); err != nil {
+				return err
+			}
 			refreshed, err := refreshPendingJoin(ctx, stateDir, ns, flagProfile)
 			if err != nil {
 				return err
@@ -994,6 +1003,9 @@ func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
 			return nil
 		}
 		return fmt.Errorf("already in a network. Use 'meshd network leave' first.")
+	}
+	if err := ensureDWNTenantRegistered(ctx, payload.Endpoint, identity); err != nil {
+		return err
 	}
 
 	preauth := payload.TokenID != "" || payload.Secret != ""
@@ -1939,6 +1951,18 @@ func ensureIdentityForCommand(ctx context.Context, flagProfile, endpoint string)
 		return "", nil, err
 	}
 	return stateDir, identity, nil
+}
+
+func ensureDWNTenantRegistered(ctx context.Context, endpoint string, identity *did.DID) error {
+	if endpoint == "" || identity == nil || identity.URI == "" {
+		return nil
+	}
+	fmt.Printf("Registering DID with DWN...\n")
+	if err := dwn.RegisterTenant(ctx, endpoint, identity.URI); err != nil {
+		return fmt.Errorf("registering DID with DWN: %w", err)
+	}
+	fmt.Printf("  DWN tenant ready.\n")
+	return nil
 }
 
 // ensureNetwork handles network setup when the user is not yet in a network.

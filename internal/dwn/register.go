@@ -17,7 +17,7 @@ import (
 
 // serverInfo represents the response from GET /info.
 type serverInfo struct {
-	RegistrationRequirements []string         `json:"registrationRequirements"`
+	RegistrationRequirements []string          `json:"registrationRequirements"`
 	ProviderAuth             *providerAuthInfo `json:"providerAuth,omitempty"`
 }
 
@@ -205,6 +205,9 @@ func registerViaProviderAuth(ctx context.Context, client *http.Client, baseURL, 
 
 	if regResp.StatusCode != 200 {
 		body, _ := io.ReadAll(regResp.Body)
+		if registrationAlreadyExists(regResp.StatusCode, body) {
+			return nil
+		}
 		return fmt.Errorf("registration failed: %d %s", regResp.StatusCode, string(body))
 	}
 
@@ -301,10 +304,22 @@ func registerViaProofOfWork(ctx context.Context, client *http.Client, baseURL, d
 
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
+		if registrationAlreadyExists(resp.StatusCode, body) {
+			return nil
+		}
 		return fmt.Errorf("registration failed: %d %s", resp.StatusCode, string(body))
 	}
 
 	return nil
+}
+
+func registrationAlreadyExists(statusCode int, body []byte) bool {
+	if statusCode == http.StatusConflict {
+		return true
+	}
+	msg := strings.ToLower(string(body))
+	return strings.Contains(msg, "already") &&
+		(strings.Contains(msg, "registered") || strings.Contains(msg, "exists"))
 }
 
 // hashHex computes SHA-256 of a string and returns it as lowercase hex.
