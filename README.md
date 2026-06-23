@@ -18,19 +18,18 @@ DWN. See [DESIGN.md](DESIGN.md) for the full architecture.
 
 ```bash
 # On your first machine
-meshd network create my-network --endpoint https://dwn.example.com
-# prints: Your device identity: did:jwk:eyJr...
-# prints: Network "my-network" created. Mesh IP: 10.200.x.x
-# prints: Create a join invite with: meshd invite create
+meshd up --create my-network --endpoint https://dwn.example.com
+# prompts once to create a local vault password, creates the network, then starts meshd
 
-# Create an invite URL
+# In another terminal on the first machine, create an invite URL
 meshd invite create
 # prints: meshd://invite/eyJ...
 
 # On your second machine, join from the invite
 meshd join meshd://invite/eyJ...
+# prompts once to create a local vault password and submits a join request
 
-# Start meshd on both machines
+# Start meshd on the second machine
 meshd up
 
 # That's it. After the anchor approves the invite, the machines can reach each other at 10.200.x.x
@@ -93,6 +92,9 @@ Identity:
   auth list         List all profiles
   auth use <name>   Set the default profile
   auth logout       Remove a profile from config
+  vault status      Show local vault state
+  vault init        Encrypt a legacy plaintext identity
+  vault unlock      Verify the vault password and show identity
 
 Network:
   network create    Create a new mesh network on a DWN
@@ -143,8 +145,9 @@ mesh. They never need a public IP. They never appear in your DID document.
 ## How it works under the hood
 
 **Identity:** Each device gets a `did:jwk` identity -- an Ed25519 key pair
-encoded as a DID. The WireGuard key is derived from the same identity
-(Ed25519 to X25519 birational map), so there is exactly one key to manage.
+encoded as a DID. The private key is stored in a password-encrypted local
+vault. The WireGuard key is derived from the same identity (Ed25519 to
+X25519 birational map), so there is exactly one key to manage.
 
 **Networking:** meshd uses [meshnet](https://github.com/enboxorg/meshnet),
 a fork of Tailscale's open-source networking engine. This gives us
@@ -210,6 +213,7 @@ internal/
   engine/               WireGuard engine integration (meshnet)
   mesh/                 Mesh registration, node/endpoint/ACL writes
   did/                  DID generation (did:jwk), key derivation, persistence
+  vault/                Password-encrypted local secret storage
   state/                On-disk state management
   daemon/               Unix socket daemon for up/down/status
   profile/              Multi-identity profile management
