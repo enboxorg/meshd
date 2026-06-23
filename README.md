@@ -112,6 +112,9 @@ Network:
   down              Stop the mesh agent daemon
 ```
 
+Run `meshd network create` or `meshd network join` without all arguments in
+an interactive terminal and meshd will prompt for the missing values.
+
 ## If you already have a DID and DWN
 
 meshd becomes something more: **private infrastructure for your DWN
