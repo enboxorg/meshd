@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/enboxorg/meshd/compare/v0.3.2...v0.3.3) (2026-06-23)
+
+
+### Bug Fixes
+
+* register dwn tenant during setup ([#120](https://github.com/enboxorg/meshd/issues/120)) ([b3b2445](https://github.com/enboxorg/meshd/commit/b3b244553f9bf3309f4a4f177e41b3037c2ed4f0))
+
 ## [0.3.2](https://github.com/enboxorg/meshd/compare/v0.3.1...v0.3.2) (2026-06-23)
 
 
