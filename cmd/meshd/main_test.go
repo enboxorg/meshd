@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -68,6 +69,13 @@ func TestParseUpFlagsTunUsesPlatformDefault(t *testing.T) {
 	}
 }
 
+func TestParseUpFlagsForeground(t *testing.T) {
+	flags := parseUpFlags([]string{"--foreground"})
+	if !flags.foreground {
+		t.Fatal("expected --foreground to be parsed")
+	}
+}
+
 func TestShouldReexecWithSudoForTun(t *testing.T) {
 	if !shouldReexecWithSudoForTun(upFlags{}, 501, "darwin", true) {
 		t.Fatal("expected interactive non-root darwin up to reexec with sudo")
@@ -99,6 +107,8 @@ func TestSudoEnvironmentAssignments(t *testing.T) {
 	t.Setenv("ENBOX_PROFILE", "work")
 	t.Setenv("MESHD_STATE_DIR", filepath.Join(home, "state"))
 	t.Setenv("MESHD_VAULT_PASSWORD", "secret")
+	t.Setenv(vaultPasswordCacheDirEnv, filepath.Join(home, "runtime-cache"))
+	t.Setenv(vaultPasswordCacheTTLEnv, "2m")
 
 	assignments := sudoEnvironmentAssignments()
 	for _, want := range []string{
@@ -109,6 +119,8 @@ func TestSudoEnvironmentAssignments(t *testing.T) {
 		"DWN_ENDPOINT=https://dwn.example",
 		"ENBOX_PROFILE=work",
 		"MESHD_STATE_DIR=" + filepath.Join(home, "state"),
+		vaultPasswordCacheDirEnv + "=" + filepath.Join(home, "runtime-cache"),
+		vaultPasswordCacheTTLEnv + "=2m",
 	} {
 		if !hasString(assignments, want) {
 			t.Fatalf("sudoEnvironmentAssignments() missing %q in %v", want, assignments)
@@ -323,10 +335,51 @@ func TestParseNetworkJoinArgsUsesEndpointEnv(t *testing.T) {
 func resetVaultPasswordCache(t *testing.T) {
 	t.Helper()
 	previous := cachedVaultPassword
+	previousStateDir := cachedVaultPasswordStateDir
 	cachedVaultPassword = ""
+	cachedVaultPasswordStateDir = ""
+	t.Setenv(vaultPasswordCacheDirEnv, t.TempDir())
+	t.Setenv(vaultPasswordCacheTTLEnv, "")
 	t.Cleanup(func() {
 		cachedVaultPassword = previous
+		cachedVaultPasswordStateDir = previousStateDir
 	})
+}
+
+func TestVaultPasswordCachePersistsAcrossCLIInvocations(t *testing.T) {
+	resetVaultPasswordCache(t)
+
+	stateDir := t.TempDir()
+	identity, err := did.Generate()
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if err := identity.StoreEncrypted(stateDir, "test-password"); err != nil {
+		t.Fatalf("StoreEncrypted: %v", err)
+	}
+
+	rememberVaultPassword(stateDir, "test-password", true)
+	cachePath, err := vaultPasswordCachePath(stateDir)
+	if err != nil {
+		t.Fatalf("vaultPasswordCachePath: %v", err)
+	}
+	info, err := os.Stat(cachePath)
+	if err != nil {
+		t.Fatalf("stat vault password cache: %v", err)
+	}
+	if info.Mode().Perm() != vaultPasswordCacheFileMode {
+		t.Fatalf("cache mode = %v, want %v", info.Mode().Perm(), vaultPasswordCacheFileMode)
+	}
+
+	cachedVaultPassword = ""
+	cachedVaultPasswordStateDir = ""
+	loaded, err := loadIdentity(stateDir)
+	if err != nil {
+		t.Fatalf("loadIdentity: %v", err)
+	}
+	if loaded.URI != identity.URI {
+		t.Fatalf("loaded DID = %q, want %q", loaded.URI, identity.URI)
+	}
 }
 
 func TestEnsureIdentityForCommandCreatesDefaultProfile(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"github.com/enboxorg/meshd/internal/dwn"
 
 	"github.com/enboxorg/meshnet/control/controlclient"
+	"github.com/enboxorg/meshnet/types/key"
 	"github.com/enboxorg/meshnet/types/netmap"
 )
 
@@ -134,6 +135,35 @@ func TestSubscriptionWatcherOnCreatedCallback(t *testing.T) {
 
 	if !hasControl {
 		t.Error("watcher does not have DWNControl reference after OnCreated")
+	}
+}
+
+func TestDWNControlPublishesInitialDiscoKey(t *testing.T) {
+	nodeKey := key.NewNode()
+	disco := key.NewDisco().Public()
+	registry := NewInMemoryDiscoRegistry()
+
+	cc, err := NewDWNControl(
+		&DWNControlConfig{
+			MapResponseFunc: func(ctx context.Context) (*netmap.NetworkMap, error) {
+				return nil, nil
+			},
+			PollInterval:     time.Hour,
+			NodePrivateKey:   nodeKey,
+			DiscoKeyRegistry: registry,
+		},
+		controlclient.Options{
+			DiscoPublicKey:    disco,
+			SkipStartForTests: true,
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewDWNControl: %v", err)
+	}
+	defer cc.Shutdown()
+
+	if got := registry.GetDisco(nodeKey.Public()); got != disco {
+		t.Fatalf("registry disco = %v, want %v", got, disco)
 	}
 }
 
