@@ -31,6 +31,11 @@ type Converter struct {
 	// MagicDNSSuffix is the suffix for mesh-local DNS (e.g. "mesh.local").
 	MagicDNSSuffix string
 
+	// DERPMapOverride, when set, replaces the DERP map loaded from DWN.
+	// This is primarily useful for embedded deployments and deterministic
+	// integration tests that provide their own relay map.
+	DERPMapOverride *control.DERPMap
+
 	logger *slog.Logger
 }
 
@@ -116,8 +121,12 @@ func (c *Converter) Convert(resp *control.MapResponse) (*netmap.NetworkMap, erro
 	nm.Peers = peerViews
 
 	// Convert DERP map.
-	if resp.DERPMap != nil {
-		nm.DERPMap = c.convertDERPMap(resp.DERPMap)
+	derpMap := resp.DERPMap
+	if c.DERPMapOverride != nil {
+		derpMap = c.DERPMapOverride
+	}
+	if derpMap != nil {
+		nm.DERPMap = c.convertDERPMap(derpMap)
 	}
 
 	// Convert DNS config.

@@ -268,6 +268,72 @@ func TestConvertFullMapResponse(t *testing.T) {
 	}
 }
 
+func TestConverterDERPMapOverride(t *testing.T) {
+	resp := &control.MapResponse{
+		Node: &control.Node{
+			ID:            1,
+			Name:          "node-a",
+			DID:           "did:example:self",
+			Key:           testWireGuardKey(),
+			MeshIP:        netip.MustParseAddr("10.200.0.2"),
+			PreferredDERP: 1,
+		},
+		DERPMap: &control.DERPMap{
+			Regions: map[int]*control.DERPRegion{
+				1: {
+					RegionID:   1,
+					RegionCode: "public",
+					RegionName: "Public",
+					Nodes: []control.DERPNode{{
+						Name:     "public-1",
+						RegionID: 1,
+						HostName: "derp1.example.com",
+						DERPPort: 443,
+					}},
+				},
+			},
+		},
+	}
+
+	override := &control.DERPMap{
+		Regions: map[int]*control.DERPRegion{
+			1: {
+				RegionID:   1,
+				RegionCode: "local",
+				RegionName: "Local Test",
+				Nodes: []control.DERPNode{{
+					Name:             "local-1",
+					RegionID:         1,
+					HostName:         "127.0.0.1",
+					DERPPort:         12345,
+					InsecureForTests: true,
+				}},
+			},
+		},
+	}
+
+	conv := NewConverter("test-mesh")
+	conv.DERPMapOverride = override
+
+	nm, err := conv.Convert(resp)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	if nm.DERPMap == nil {
+		t.Fatal("DERPMap is nil")
+	}
+	node := nm.DERPMap.Regions[1].Nodes[0]
+	if node.HostName != "127.0.0.1" {
+		t.Fatalf("DERP override hostname = %q, want 127.0.0.1", node.HostName)
+	}
+	if node.DERPPort != 12345 {
+		t.Fatalf("DERP override port = %d, want 12345", node.DERPPort)
+	}
+	if !node.InsecureForTests {
+		t.Fatal("DERP override should preserve InsecureForTests")
+	}
+}
+
 func TestConvertNilMapResponse(t *testing.T) {
 	conv := NewConverter("test")
 	_, err := conv.Convert(nil)

@@ -133,6 +133,11 @@ type Config struct {
 	// won't be exchanged, which prevents DERP relay between peers).
 	DiscoKeyRegistry DiscoKeyRegistry
 
+	// DERPMap, when non-nil, overrides relay records loaded from DWN.
+	// Normal CLI operation should use DWN relay records; this hook is useful
+	// for embedded callers and deterministic integration tests.
+	DERPMap *control.DERPMap
+
 	// TUNName, if non-empty, creates a real OS TUN device with this name
 	// (e.g., "meshd0") instead of using a fake TUN. This enables regular
 	// applications (ping, ssh, curl) to route through the mesh tunnel.
@@ -212,6 +217,7 @@ func New(cfg Config) (*Engine, error) {
 	// Create the converter that bridges meshd types to meshnet types.
 	converter := NewConverter(domain, WithConverterLogger(l))
 	converter.MagicDNSSuffix = magicDNS
+	converter.DERPMapOverride = cfg.DERPMap
 
 	// Create the meshnet system container.
 	sys := tsd.NewSystem()
