@@ -14,8 +14,9 @@ import (
 // for the DWN Key Delivery Protocol.
 //
 // When a network owner creates a network or adds a node, they derive a
-// Protocol Context key for the network context and deliver it (encrypted)
-// to each participant. Participants can then decrypt records in that context.
+// Protocol Context key for the network context and deliver it to each
+// participant through an access-controlled contextKey record. Participants
+// can then decrypt records in that context.
 type KeyDeliveryManager struct {
 	// Endpoint is the DWN server URL.
 	Endpoint string
@@ -46,10 +47,11 @@ type DeliverContextKeyParams struct {
 }
 
 // DeliverContextKey derives the Protocol Context key for a context and
-// writes an encrypted contextKey record to the anchor's DWN.
+// writes a contextKey record to the anchor's DWN.
 //
-// The contextKey record is encrypted with the Protocol Path scheme for
-// the key-delivery protocol, so only the recipient can decrypt it.
+// The contextKey record payload is plaintext JSON, but protocol authorization
+// only allows the addressed recipient to read it. It is not Protocol Context
+// encrypted, because that would create a circular key exchange dependency.
 //
 // This MUST be called by the DWN owner (anchor) who has the root private key.
 func (m *KeyDeliveryManager) DeliverContextKey(ctx context.Context, params DeliverContextKeyParams) error {
@@ -120,9 +122,12 @@ type FetchContextKeyParams struct {
 	// SelfDID is this node's DID (the recipient).
 	SelfDID string
 
+	// ContextID is the network root context ID that the key must decrypt.
+	// When set, FetchContextKey ignores delivered keys for other contexts.
+	ContextID string
+
 	// Signer signs query/read messages.
 	Signer *dwn.Signer
-
 }
 
 // FetchContextKey queries the anchor DWN for a contextKey record addressed
@@ -158,34 +163,59 @@ func FetchContextKey(ctx context.Context, params FetchContextKeyParams) (*dwncry
 	if status.Code != 200 {
 		return nil, fmt.Errorf("querying contextKey: unexpected status %d %s", status.Code, status.Detail)
 	}
-	if len(records) == 0 {
-		return nil, nil // No matching record found.
+	for _, queryRecord := range records {
+		// Query results do not include data; read each candidate newest-first
+		// and return the first payload for the requested network context.
+		record, readStatus, err := api.Read(ctx, params.AnchorDID, dwn.RecordsFilter{
+			RecordID: queryRecord.ID,
+		}, "")
+		if err != nil {
+			return nil, fmt.Errorf("reading contextKey record: %w", err)
+		}
+		if readStatus.Code != 200 || record == nil {
+			return nil, fmt.Errorf("contextKey read failed: %d %s", readStatus.Code, readStatus.Detail)
+		}
+
+		// Get the record data. For RecordsRead, data comes from the HTTP body
+		// (stored as rawData) or from encodedData (for small inline payloads).
+		// contextKey records are written unencrypted (access controlled by $actions),
+		// so the data is plaintext JSON.
+		dataBytes, err := record.Data().Bytes(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("reading contextKey data: %w", err)
+		}
+
+		key, err := dwncrypto.ParseDerivedPrivateJwk(dataBytes)
+		if err != nil {
+			return nil, err
+		}
+		if !contextKeyMatchesContext(key, params.ContextID) {
+			continue
+		}
+		return key, nil
 	}
 
-	// Read the first (most recent) match to get the full data.
-	record, readStatus, err := api.Read(ctx, params.AnchorDID, dwn.RecordsFilter{
-		RecordID: records[0].ID,
-	}, "")
-	if err != nil {
-		return nil, fmt.Errorf("reading contextKey record: %w", err)
-	}
-	if readStatus.Code != 200 || record == nil {
-		return nil, fmt.Errorf("contextKey read failed: %d %s", readStatus.Code, readStatus.Detail)
-	}
-
-	// Get the record data. For RecordsRead, data comes from the HTTP body
-	// (stored as rawData) or from encodedData (for small inline payloads).
-	// contextKey records are written unencrypted (access controlled by $actions),
-	// so the data is plaintext JSON.
-	dataBytes, err := record.Data().Bytes(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("reading contextKey data: %w", err)
-	}
-
-	return dwncrypto.ParseDerivedPrivateJwk(dataBytes)
+	return nil, nil // No matching record found.
 }
 
-
+func contextKeyMatchesContext(key *dwncrypto.DerivedPrivateJwk, contextID string) bool {
+	if contextID == "" {
+		return true
+	}
+	if key == nil || key.DerivationScheme != dwncrypto.DerivationSchemeProtocolContext {
+		return false
+	}
+	expectedPath := dwncrypto.BuildProtocolContextDerivation(contextID)
+	if len(key.DerivationPath) != len(expectedPath) {
+		return false
+	}
+	for i := range expectedPath {
+		if key.DerivationPath[i] != expectedPath[i] {
+			return false
+		}
+	}
+	return true
+}
 
 // EnsureKeyDeliveryProtocol installs the key-delivery protocol on the
 // given DWN with $encryption directives injected.

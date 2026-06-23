@@ -14,6 +14,7 @@ import (
 
 	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/internal/meshaddr"
 	"github.com/enboxorg/meshd/pkg/dids/didjwk"
 	"github.com/enboxorg/meshd/protocols"
 )
@@ -655,12 +656,11 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 		rec := c.nodes[did]
 		node := nodeRecordToNode(nodeID, did, rec)
 		nodeID++
+		c.applyFallbackMeshIP(node)
 
-		// Skip peers whose node records could not be decrypted. Without
-		// a mesh IP the peer has no addresses and WireGuard cannot route
-		// traffic to it. These "ghost" nodes are still tracked in c.nodes
-		// for auto key delivery purposes, but should not be injected
-		// into the network map.
+		// Skip peers whose mesh IP cannot be read or derived. These
+		// "ghost" nodes are still tracked in c.nodes for auto key delivery
+		// purposes, but should not be injected into the network map.
 		if did != c.selfDID && !node.MeshIP.IsValid() {
 			c.logger.Debug("skipping undecryptable peer in network map",
 				slog.String("did", did),
@@ -688,6 +688,29 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 	}
 
 	return resp
+}
+
+func (c *DWNClient) applyFallbackMeshIP(node *Node) {
+	if node == nil || node.MeshIP.IsValid() || c.network == nil || c.network.MeshCIDR == "" {
+		return
+	}
+	ip, err := meshaddr.AllocateMeshIP(c.network.MeshCIDR, node.DID)
+	if err != nil {
+		c.logger.Debug("fallback mesh IP allocation failed",
+			slog.String("did", node.DID),
+			slog.String("cidr", c.network.MeshCIDR),
+			slog.Any("error", err),
+		)
+		return
+	}
+	node.MeshIP = ip
+	if len(node.AllowedIPs) == 0 {
+		node.AllowedIPs = []netip.Prefix{netip.PrefixFrom(ip, ip.BitLen())}
+	}
+	c.logger.Debug("using deterministic fallback mesh IP",
+		slog.String("did", node.DID),
+		slog.String("ip", ip.String()),
+	)
 }
 
 func nodeRecordToNode(id int64, did string, rec *NodeRecord) *Node {
@@ -880,8 +903,14 @@ func (c *DWNClient) buildFilterRules() []FilterRule {
 	// Build DID → mesh IP lookup from the current node map.
 	didToIP := make(map[string]string, len(c.nodes))
 	for did, node := range c.nodes {
-		if node.MeshIP != "" {
-			didToIP[did] = node.MeshIP
+		ip := node.MeshIP
+		if ip == "" && c.network != nil && c.network.MeshCIDR != "" {
+			if fallbackIP, err := meshaddr.AllocateMeshIP(c.network.MeshCIDR, did); err == nil {
+				ip = fallbackIP.String()
+			}
+		}
+		if ip != "" {
+			didToIP[did] = ip
 		}
 	}
 

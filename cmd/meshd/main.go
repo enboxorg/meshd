@@ -1122,27 +1122,47 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 	fmt.Println(strings.Repeat("-", 90))
 
 	for _, r := range records {
+		peerDID := r.Recipient
+		displayDID := peerDID
+		if displayDID == "" {
+			displayDID = "(unknown)"
+		}
+
 		var node struct {
 			MeshIP string `json:"meshIP"`
 			Label  string `json:"label"`
 		}
 		if err := r.Data().JSON(ctx, &node); err != nil {
 			// Data may not be inline (encrypted records need context key).
-			fmt.Printf("%-50s %-16s %-12s %s\n", truncate(r.Recipient, 50), "?", "(encrypted)", r.ProtocolPath)
+			fmt.Printf("%-50s %-16s %-12s %s\n",
+				truncate(displayDID, 50),
+				peerListMeshIP(ns.MeshCIDR, peerDID, ""),
+				"(encrypted)",
+				r.ProtocolPath)
 			continue
 		}
-		peerDID := r.Recipient
-		if peerDID == "" {
-			peerDID = "(unknown)"
-		}
 		fmt.Printf("%-50s %-16s %-12s %s\n",
-			truncate(peerDID, 50),
-			node.MeshIP,
+			truncate(displayDID, 50),
+			peerListMeshIP(ns.MeshCIDR, peerDID, node.MeshIP),
 			node.Label,
 			r.ProtocolPath)
 	}
 
 	return nil
+}
+
+func peerListMeshIP(meshCIDR string, peerDID string, recordMeshIP string) string {
+	if recordMeshIP != "" {
+		return recordMeshIP
+	}
+	if meshCIDR == "" || peerDID == "" {
+		return "?"
+	}
+	ip, err := mesh.AllocateMeshIP(meshCIDR, peerDID)
+	if err != nil {
+		return "?"
+	}
+	return ip.String()
 }
 
 // cmdPeerAdd adds a peer to the mesh network. This creates a node record
@@ -2452,6 +2472,7 @@ func fetchContextKey(ctx context.Context, identity *did.DID, ns *state.NetworkSt
 		AnchorEndpoint: ns.AnchorEndpoint,
 		AnchorDID:      ns.AnchorDID,
 		SelfDID:        identity.URI,
+		ContextID:      ns.NetworkRecordID,
 		Signer:         signer,
 	})
 }

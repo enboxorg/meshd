@@ -301,6 +301,7 @@ func TestTwoNodeConnectivity(t *testing.T) {
 		AnchorEndpoint: endpoint,
 		AnchorDID:      nodeA.identity.URI,
 		SelfDID:        nodeB.identity.URI,
+		ContextID:      networkRecordID,
 		Signer:         nodeB.signer,
 	})
 	if err != nil {
@@ -777,6 +778,7 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 		AnchorEndpoint: endpoint,
 		AnchorDID:      nodeA.identity.URI,
 		SelfDID:        nodeB.identity.URI,
+		ContextID:      networkRecordID,
 		Signer:         nodeB.signer,
 	})
 	if err != nil {

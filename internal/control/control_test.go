@@ -10,6 +10,7 @@ import (
 	"time"
 
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/internal/meshaddr"
 	"github.com/enboxorg/meshd/pkg/dids/didjwk"
 )
 
@@ -126,6 +127,47 @@ func TestNewDWNClientProtocolRoleDefaults(t *testing.T) {
 			t.Fatalf("protocolRole = %q, want network/member", c.protocolRole)
 		}
 	})
+}
+
+func TestBuildMapResponseFallsBackToDeterministicMeshIP(t *testing.T) {
+	selfDID, _ := testDIDJWK(t)
+	peerDID, _ := testDIDJWK(t)
+	c := NewDWNClient("https://dwn.example", "did:example:anchor", "network-1", selfDID, nil)
+	c.network = &NetworkConfig{Name: "test", MeshCIDR: "10.200.0.0/16"}
+	c.nodes[selfDID] = &NodeRecord{DID: selfDID, RecordID: "self-record"}
+	c.nodes[peerDID] = &NodeRecord{DID: peerDID, RecordID: "peer-record"}
+
+	resp := c.buildMapResponse()
+	if resp == nil {
+		t.Fatal("buildMapResponse returned nil")
+	}
+	if resp.Node == nil {
+		t.Fatal("missing self node")
+	}
+	wantSelfIP, err := meshaddr.AllocateMeshIP("10.200.0.0/16", selfDID)
+	if err != nil {
+		t.Fatalf("AllocateMeshIP(self): %v", err)
+	}
+	if resp.Node.MeshIP != wantSelfIP {
+		t.Fatalf("self MeshIP = %s, want %s", resp.Node.MeshIP, wantSelfIP)
+	}
+	if len(resp.Node.AllowedIPs) != 1 || resp.Node.AllowedIPs[0].Addr() != wantSelfIP {
+		t.Fatalf("self AllowedIPs = %v, want %s/32", resp.Node.AllowedIPs, wantSelfIP)
+	}
+
+	if len(resp.Peers) != 1 {
+		t.Fatalf("peers = %d, want 1", len(resp.Peers))
+	}
+	wantPeerIP, err := meshaddr.AllocateMeshIP("10.200.0.0/16", peerDID)
+	if err != nil {
+		t.Fatalf("AllocateMeshIP(peer): %v", err)
+	}
+	if resp.Peers[0].MeshIP != wantPeerIP {
+		t.Fatalf("peer MeshIP = %s, want %s", resp.Peers[0].MeshIP, wantPeerIP)
+	}
+	if len(resp.Peers[0].AllowedIPs) != 1 || resp.Peers[0].AllowedIPs[0].Addr() != wantPeerIP {
+		t.Fatalf("peer AllowedIPs = %v, want %s/32", resp.Peers[0].AllowedIPs, wantPeerIP)
+	}
 }
 
 func TestNodeRecordToNode(t *testing.T) {
@@ -777,6 +819,50 @@ func TestBuildFilterRules_WithACLPolicy(t *testing.T) {
 	}
 	if rules[1].DstPorts[2].Ports != (PortRange{8000, 9000}) {
 		t.Errorf("port[2] = %+v", rules[1].DstPorts[2].Ports)
+	}
+}
+
+func TestBuildFilterRules_FallbackMeshIP(t *testing.T) {
+	did1, _ := testDIDJWK(t)
+	did2, _ := testDIDJWK(t)
+	wantSrc, err := meshaddr.AllocateMeshIP("10.200.0.0/16", did1)
+	if err != nil {
+		t.Fatalf("AllocateMeshIP source: %v", err)
+	}
+	wantDst, err := meshaddr.AllocateMeshIP("10.200.0.0/16", did2)
+	if err != nil {
+		t.Fatalf("AllocateMeshIP destination: %v", err)
+	}
+
+	c := &DWNClient{
+		network: &NetworkConfig{MeshCIDR: "10.200.0.0/16"},
+		nodes: map[string]*NodeRecord{
+			did1: {DID: did1, RecordID: "node-1"},
+			did2: {DID: did2, RecordID: "node-2"},
+		},
+		acl: &ACLPolicyData{
+			Version:       1,
+			DefaultAction: "drop",
+			Rules: []ACLRule{
+				{
+					Action:   "accept",
+					Src:      []string{did1},
+					Dst:      []string{did2},
+					DstPorts: []string{"22"},
+				},
+			},
+		},
+	}
+
+	rules := c.buildFilterRules()
+	if len(rules) != 1 {
+		t.Fatalf("want 1 rule, got %d", len(rules))
+	}
+	if len(rules[0].SrcIPs) != 1 || rules[0].SrcIPs[0] != wantSrc.String() {
+		t.Fatalf("SrcIPs = %v, want %s", rules[0].SrcIPs, wantSrc)
+	}
+	if len(rules[0].DstPorts) != 1 || rules[0].DstPorts[0].IP != wantDst.String() {
+		t.Fatalf("DstPorts = %v, want destination %s", rules[0].DstPorts, wantDst)
 	}
 }
 

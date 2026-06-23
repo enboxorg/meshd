@@ -14,6 +14,7 @@ import (
 
 	"github.com/enboxorg/meshd/internal/did"
 	"github.com/enboxorg/meshd/internal/invite"
+	"github.com/enboxorg/meshd/internal/mesh"
 	"github.com/enboxorg/meshd/internal/profile"
 	"github.com/enboxorg/meshd/internal/state"
 )
@@ -39,6 +40,23 @@ func TestDefaultTUNName(t *testing.T) {
 	}
 	if got := defaultTUNName("linux"); got != "meshd0" {
 		t.Fatalf("defaultTUNName(linux) = %q, want meshd0", got)
+	}
+}
+
+func TestPeerListMeshIPFallsBackToDeterministicIP(t *testing.T) {
+	const peerDID = "did:jwk:test-peer"
+	want, err := mesh.AllocateMeshIP("10.200.0.0/16", peerDID)
+	if err != nil {
+		t.Fatalf("AllocateMeshIP: %v", err)
+	}
+	if got := peerListMeshIP("10.200.0.0/16", peerDID, ""); got != want.String() {
+		t.Fatalf("peerListMeshIP fallback = %q, want %q", got, want)
+	}
+	if got := peerListMeshIP("10.200.0.0/16", peerDID, "10.200.9.9"); got != "10.200.9.9" {
+		t.Fatalf("peerListMeshIP explicit = %q, want explicit record IP", got)
+	}
+	if got := peerListMeshIP("", peerDID, ""); got != "?" {
+		t.Fatalf("peerListMeshIP missing CIDR = %q, want ?", got)
 	}
 }
 
