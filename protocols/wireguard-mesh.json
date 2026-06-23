@@ -97,7 +97,6 @@
               "rootKeyId": "#dwn-enc",
               "publicKeyJwk": {}
             },
-            "$recordLimit": { "max": 1, "strategy": "purgeOldest" },
             "$actions": [
               { "who": "recipient", "of": "network/member/node", "can": ["create", "update"] },
               { "role": "network/member", "can": ["read"] },
@@ -112,7 +111,6 @@
               "rootKeyId": "#dwn-enc",
               "publicKeyJwk": {}
             },
-            "$recordLimit": { "max": 1, "strategy": "purgeOldest" },
             "$actions": [
               { "who": "recipient", "of": "network/member/node", "can": ["create", "update"] },
               { "role": "network/member", "can": ["read"] },
@@ -151,7 +149,6 @@
             "rootKeyId": "#dwn-enc",
             "publicKeyJwk": {}
           },
-          "$recordLimit": { "max": 1, "strategy": "purgeOldest" },
           "$actions": [
             { "who": "recipient", "of": "network/node", "can": ["create", "update"] },
             { "role": "network/member", "can": ["read"] },
@@ -166,7 +163,6 @@
             "rootKeyId": "#dwn-enc",
             "publicKeyJwk": {}
           },
-          "$recordLimit": { "max": 1, "strategy": "purgeOldest" },
           "$actions": [
             { "who": "recipient", "of": "network/node", "can": ["create", "update"] },
             { "role": "network/member", "can": ["read"] },
@@ -176,12 +172,12 @@
       },
 
       "aclPolicy": {
+        "$squash": true,
         "$size": { "max": 100000 },
         "$encryption": {
           "rootKeyId": "#dwn-enc",
           "publicKeyJwk": {}
         },
-        "$recordLimit": { "max": 1, "strategy": "purgeOldest" },
         "$actions": [
           { "who": "author", "of": "network", "can": ["create", "update"] },
           { "role": "network/member", "can": ["read"] },

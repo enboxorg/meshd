@@ -236,7 +236,7 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		Filter: dwn.RecordsFilter{
 			Protocol:     "https://enbox.org/protocols/wireguard-mesh",
 			ProtocolPath: "network/node",
-			ParentID:     networkRecordID,
+			ContextID:    networkRecordID,
 		},
 		DateSort: "createdAscending",
 	}, "")

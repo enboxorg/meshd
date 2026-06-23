@@ -460,9 +460,8 @@ type WriteACLPolicyParams struct {
 	PolicyData []byte
 }
 
-// WriteACLPolicy writes or updates the ACL policy record (encrypted) on the
-// anchor DWN. Only the network author (anchor) can create/update the ACL policy.
-// The protocol enforces $recordLimit: max 1 — newer writes replace older ones.
+// WriteACLPolicy writes a squashed ACL policy snapshot (encrypted) on the anchor
+// DWN. Only the network author (anchor) can create/update the ACL policy.
 func WriteACLPolicy(ctx context.Context, params WriteACLPolicyParams) error {
 	if params.EncryptionKeyManager == nil {
 		return fmt.Errorf("EncryptionKeyManager is required for encrypted writes")
@@ -485,6 +484,7 @@ func WriteACLPolicy(ctx context.Context, params WriteACLPolicyParams) error {
 		ParentContextID:      params.NetworkRecordID,
 		Data:                 params.PolicyData,
 		EncryptionRecipients: recipients,
+		Squash:               true,
 	})
 	if err != nil {
 		return fmt.Errorf("writing ACL policy: %w", err)
