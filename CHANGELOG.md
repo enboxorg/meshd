@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/enboxorg/meshd/compare/v0.3.0...v0.3.1) (2026-06-23)
+
+
+### Bug Fixes
+
+* support macOS TUN routing ([97fb20e](https://github.com/enboxorg/meshd/commit/97fb20e8f54e0550cb7a8e28dfb5c5bebf05c9e7))
+
 ## [0.3.0](https://github.com/enboxorg/meshd/compare/v0.2.0...v0.3.0) (2026-06-23)
 
 
