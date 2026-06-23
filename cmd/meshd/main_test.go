@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -44,6 +45,130 @@ func TestParseUpFlagsTunUsesPlatformDefault(t *testing.T) {
 	if flags.tunName != want {
 		t.Fatalf("tunName = %q, want %q", flags.tunName, want)
 	}
+}
+
+func TestShouldReexecWithSudoForTun(t *testing.T) {
+	if !shouldReexecWithSudoForTun(upFlags{}, 501, "darwin", true) {
+		t.Fatal("expected interactive non-root darwin up to reexec with sudo")
+	}
+	if !shouldReexecWithSudoForTun(upFlags{}, 1000, "linux", true) {
+		t.Fatal("expected interactive non-root linux up to reexec with sudo")
+	}
+	if shouldReexecWithSudoForTun(upFlags{}, 0, "linux", true) {
+		t.Fatal("did not expect root to reexec with sudo")
+	}
+	if shouldReexecWithSudoForTun(upFlags{noTun: true}, 1000, "linux", true) {
+		t.Fatal("did not expect --no-tun to reexec with sudo")
+	}
+	if shouldReexecWithSudoForTun(upFlags{}, 1000, "linux", false) {
+		t.Fatal("did not expect non-interactive up to reexec with sudo")
+	}
+	if shouldReexecWithSudoForTun(upFlags{}, 1000, "freebsd", true) {
+		t.Fatal("did not expect unsupported OS to reexec with sudo")
+	}
+}
+
+func TestSudoEnvironmentAssignments(t *testing.T) {
+	home := t.TempDir()
+	enboxHome := filepath.Join(home, ".enbox-custom")
+	t.Setenv("HOME", home)
+	t.Setenv("ENBOX_HOME", enboxHome)
+	t.Setenv("PATH", "/tmp/test-path")
+	t.Setenv("DWN_ENDPOINT", "https://dwn.example")
+	t.Setenv("ENBOX_PROFILE", "work")
+	t.Setenv("MESHD_STATE_DIR", filepath.Join(home, "state"))
+	t.Setenv("MESHD_VAULT_PASSWORD", "secret")
+
+	assignments := sudoEnvironmentAssignments()
+	for _, want := range []string{
+		sudoChildEnv + "=1",
+		"HOME=" + home,
+		"ENBOX_HOME=" + enboxHome,
+		"PATH=/tmp/test-path",
+		"DWN_ENDPOINT=https://dwn.example",
+		"ENBOX_PROFILE=work",
+		"MESHD_STATE_DIR=" + filepath.Join(home, "state"),
+	} {
+		if !hasString(assignments, want) {
+			t.Fatalf("sudoEnvironmentAssignments() missing %q in %v", want, assignments)
+		}
+	}
+	for _, got := range assignments {
+		if strings.HasPrefix(got, "MESHD_VAULT_PASSWORD=") {
+			t.Fatal("sudoEnvironmentAssignments must not expose MESHD_VAULT_PASSWORD")
+		}
+	}
+}
+
+func TestSudoEnvironmentAssignmentsDefaultsEnboxHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ENBOX_HOME", "")
+
+	assignments := sudoEnvironmentAssignments()
+	want := "ENBOX_HOME=" + filepath.Join(home, ".enbox")
+	if !hasString(assignments, want) {
+		t.Fatalf("sudoEnvironmentAssignments() missing %q in %v", want, assignments)
+	}
+}
+
+func TestSudoOriginalIDs(t *testing.T) {
+	t.Setenv("SUDO_UID", "501")
+	t.Setenv("SUDO_GID", "20")
+
+	uid, gid, ok := sudoOriginalIDs()
+	if !ok || uid != 501 || gid != 20 {
+		t.Fatalf("sudoOriginalIDs() = %d, %d, %v; want 501, 20, true", uid, gid, ok)
+	}
+
+	t.Setenv("SUDO_UID", "0")
+	if _, _, ok := sudoOriginalIDs(); ok {
+		t.Fatal("sudoOriginalIDs() should reject root SUDO_UID")
+	}
+}
+
+func TestSudoOwnershipRoots(t *testing.T) {
+	home := t.TempDir()
+	stateDir := filepath.Join(home, "state")
+	enboxHome := filepath.Join(home, ".enbox")
+	t.Setenv("HOME", home)
+	t.Setenv("MESHD_STATE_DIR", stateDir)
+	t.Setenv("ENBOX_HOME", enboxHome)
+
+	roots := sudoOwnershipRoots()
+	if len(roots) != 1 || roots[0] != stateDir {
+		t.Fatalf("sudoOwnershipRoots() = %v, want [%s]", roots, stateDir)
+	}
+
+	t.Setenv("MESHD_STATE_DIR", "")
+	roots = sudoOwnershipRoots()
+	if len(roots) != 1 || roots[0] != enboxHome {
+		t.Fatalf("sudoOwnershipRoots() = %v, want [%s]", roots, enboxHome)
+	}
+}
+
+func TestSudoOwnershipRootsRejectsOutsideHome(t *testing.T) {
+	home := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "state")
+	t.Setenv("HOME", home)
+	t.Setenv("MESHD_STATE_DIR", outside)
+	t.Setenv("ENBOX_HOME", "")
+
+	if roots := sudoOwnershipRoots(); len(roots) != 0 {
+		t.Fatalf("sudoOwnershipRoots() = %v, want empty for path outside HOME", roots)
+	}
+	if isSafeSudoOwnershipRoot(home, home) {
+		t.Fatal("home itself must not be accepted as an ownership root")
+	}
+}
+
+func hasString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestParseNetworkCreateArgs(t *testing.T) {

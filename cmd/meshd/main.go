@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -65,8 +68,8 @@ Up flags:
   --endpoint <url>  DWN endpoint (or set DWN_ENDPOINT env var)
   --anchor <did>    Anchor DID when joining a network
   --network <id>    Network record ID when joining a network
-  --tun [name]      Create a real TUN device (auto if root; macOS: utun)
-  --no-tun          Disable auto TUN even when running as root
+  --tun [name]      Create a real TUN device (default; asks sudo when needed)
+  --no-tun          Use userspace mode without OS routes
   --port <n>        WireGuard UDP listen port (default: auto)
   --poll-interval   DWN poll interval (default: 30s)
   -v, --verbose     Enable debug logging
@@ -91,6 +94,8 @@ Environment:
 `
 
 var version = "dev"
+
+const sudoChildEnv = "MESHD_SUDO_CHILD"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -1470,6 +1475,142 @@ func defaultTUNName(goos string) string {
 	return "meshd0"
 }
 
+func supportsRealTUN(goos string) bool {
+	return goos == "darwin" || goos == "linux"
+}
+
+func shouldReexecWithSudoForTun(f upFlags, uid int, goos string, stdinTTY bool) bool {
+	if uid == 0 || f.noTun || !stdinTTY || !supportsRealTUN(goos) {
+		return false
+	}
+	return true
+}
+
+func reexecUpWithSudo(args []string, flagProfile string) error {
+	sudoPath, err := exec.LookPath("sudo")
+	if err != nil {
+		return fmt.Errorf("system routing requires administrator privileges, but sudo was not found; run meshd as root or use --no-tun")
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolving meshd executable for sudo handoff: %w", err)
+	}
+
+	sudoArgs := []string{"env"}
+	sudoArgs = append(sudoArgs, sudoEnvironmentAssignments()...)
+	sudoArgs = append(sudoArgs, exePath, "up")
+	if flagProfile != "" {
+		sudoArgs = append(sudoArgs, "--profile", flagProfile)
+	}
+	sudoArgs = append(sudoArgs, args...)
+
+	fmt.Fprintln(os.Stderr, "meshd: system routing needs administrator privileges; asking sudo to start the tunnel.")
+
+	cmd := exec.Command(sudoPath, sudoArgs...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func sudoEnvironmentAssignments() []string {
+	assignments := []string{sudoChildEnv + "=1"}
+
+	home := os.Getenv("HOME")
+	if home == "" {
+		if userHome, err := os.UserHomeDir(); err == nil {
+			home = userHome
+		}
+	}
+	if home != "" {
+		assignments = append(assignments, "HOME="+home)
+	}
+
+	enboxHome := os.Getenv("ENBOX_HOME")
+	if enboxHome == "" && home != "" {
+		enboxHome = filepath.Join(home, ".enbox")
+	}
+	if enboxHome != "" {
+		assignments = append(assignments, "ENBOX_HOME="+enboxHome)
+	}
+
+	for _, key := range []string{"PATH", "DWN_ENDPOINT", "ENBOX_PROFILE", "MESHD_STATE_DIR"} {
+		if value := os.Getenv(key); value != "" {
+			assignments = append(assignments, key+"="+value)
+		}
+	}
+
+	return assignments
+}
+
+func restoreSudoUserOwnership() {
+	uid, gid, ok := sudoOriginalIDs()
+	if !ok {
+		return
+	}
+
+	for _, root := range sudoOwnershipRoots() {
+		if root == "" {
+			continue
+		}
+		_ = filepath.WalkDir(root, func(path string, _ os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			_ = os.Lchown(path, uid, gid)
+			return nil
+		})
+	}
+}
+
+func sudoOriginalIDs() (uid int, gid int, ok bool) {
+	uid64, uidErr := strconv.ParseInt(os.Getenv("SUDO_UID"), 10, 32)
+	gid64, gidErr := strconv.ParseInt(os.Getenv("SUDO_GID"), 10, 32)
+	if uidErr != nil || gidErr != nil || uid64 <= 0 || gid64 < 0 {
+		return 0, 0, false
+	}
+	return int(uid64), int(gid64), true
+}
+
+func sudoOwnershipRoots() []string {
+	home := os.Getenv("HOME")
+	if home == "" {
+		return nil
+	}
+
+	var candidates []string
+	if stateDir := os.Getenv("MESHD_STATE_DIR"); stateDir != "" {
+		candidates = append(candidates, stateDir)
+	} else if enboxHome := os.Getenv("ENBOX_HOME"); enboxHome != "" {
+		candidates = append(candidates, enboxHome)
+	}
+
+	roots := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		if isSafeSudoOwnershipRoot(candidate, home) {
+			roots = append(roots, candidate)
+		}
+	}
+	return roots
+}
+
+func isSafeSudoOwnershipRoot(root string, home string) bool {
+	absRoot, rootErr := filepath.Abs(root)
+	absHome, homeErr := filepath.Abs(home)
+	if rootErr != nil || homeErr != nil {
+		return false
+	}
+	if absRoot == absHome {
+		return false
+	}
+	rel, err := filepath.Rel(absHome, absRoot)
+	if err != nil || rel == "." {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // cmdUp starts the mesh agent daemon.
 //
 // This is the main entry point for meshd. It handles the full lifecycle:
@@ -1482,6 +1623,10 @@ func defaultTUNName(goos string) string {
 // setup. Without flags, it guides the user interactively.
 func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	f := parseUpFlags(args)
+	if os.Getenv(sudoChildEnv) == "1" {
+		defer restoreSudoUserOwnership()
+	}
+	shouldElevate := shouldReexecWithSudoForTun(f, os.Getuid(), runtime.GOOS, stdinIsTerminal())
 
 	// ── Step 1: Ensure identity exists ──────────────────────────────
 	stateDir, identity, err := ensureIdentityForCommand(ctx, flagProfile, f.endpoint)
@@ -1510,6 +1655,9 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		if ns.NodeRecordID == "" {
 			return fmt.Errorf("join request is still pending anchor approval; run 'meshd up' again after the anchor is online")
 		}
+	}
+	if shouldElevate {
+		return reexecUpWithSudo(args, flagProfile)
 	}
 
 	// ── Step 3: Start the engine ────────────────────────────────────

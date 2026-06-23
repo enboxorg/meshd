@@ -26,9 +26,13 @@ import (
 
 // DefaultSocketPath returns the default Unix socket path for the daemon.
 //
+// ENBOX_HOME set: $ENBOX_HOME/meshd.sock
 // Root: /var/run/meshd/meshd.sock
 // User: ~/.enbox/meshd.sock
 func DefaultSocketPath() string {
+	if d := os.Getenv("ENBOX_HOME"); d != "" {
+		return filepath.Join(d, "meshd.sock")
+	}
 	if os.Getuid() == 0 {
 		return "/var/run/meshd/meshd.sock"
 	}

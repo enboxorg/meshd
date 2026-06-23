@@ -16,6 +16,17 @@ func testSocketPath(t *testing.T) string {
 	return filepath.Join(t.TempDir(), "meshd.sock")
 }
 
+func TestDefaultSocketPathUsesEnboxHome(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ENBOX_HOME", dir)
+
+	got := DefaultSocketPath()
+	want := filepath.Join(dir, "meshd.sock")
+	if got != want {
+		t.Fatalf("DefaultSocketPath() = %q, want %q", got, want)
+	}
+}
+
 func TestServerStartStop(t *testing.T) {
 	sock := testSocketPath(t)
 	srv := NewServer(sock, nil, nil)
