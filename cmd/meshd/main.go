@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -64,7 +65,7 @@ Up flags:
   --endpoint <url>  DWN endpoint (or set DWN_ENDPOINT env var)
   --anchor <did>    Anchor DID when joining a network
   --network <id>    Network record ID when joining a network
-  --tun [name]      Create a real TUN device (default: meshd0, auto if root)
+  --tun [name]      Create a real TUN device (auto if root; macOS: utun)
   --no-tun          Disable auto TUN even when running as root
   --port <n>        WireGuard UDP listen port (default: auto)
   --poll-interval   DWN poll interval (default: 30s)
@@ -1436,7 +1437,7 @@ func parseUpFlags(args []string) upFlags {
 				f.tunName = args[i+1]
 				i++
 			} else {
-				f.tunName = "meshd0"
+				f.tunName = defaultTUNName(runtime.GOOS)
 			}
 		case "--no-tun":
 			f.noTun = true
@@ -1456,10 +1457,17 @@ func parseUpFlags(args []string) upFlags {
 
 	// Auto-enable TUN when running as root (unless --no-tun or --tun already set).
 	if f.tunName == "" && !f.noTun && os.Getuid() == 0 {
-		f.tunName = "meshd0"
+		f.tunName = defaultTUNName(runtime.GOOS)
 	}
 
 	return f
+}
+
+func defaultTUNName(goos string) string {
+	if goos == "darwin" {
+		return "utun"
+	}
+	return "meshd0"
 }
 
 // cmdUp starts the mesh agent daemon.

@@ -269,10 +269,10 @@ func New(cfg Config) (*Engine, error) {
 			userspaceOnly = false
 			l.Info("created TUN device", slog.String("name", tunName))
 
-			// Create a Linux router to manage addresses and routes on the
-			// TUN interface. On non-Linux platforms, newLinuxRouter returns
-			// nil and we fall back to the fake router (no OS routing).
-			if rtr := newLinuxRouter(logf, tunName); rtr != nil {
+			// Create an OS router to manage addresses and routes on the
+			// TUN interface. Unsupported platforms return nil and fall back
+			// to the fake router (no OS routing).
+			if rtr := newOSRouter(logf, tunName); rtr != nil {
 				osRouter = rtr
 			}
 		}

@@ -33,8 +33,8 @@ type linuxRouter struct {
 	routes []netip.Prefix
 }
 
-// newLinuxRouter creates a new router for the given TUN device.
-func newLinuxRouter(logf logger.Logf, tunName string) router.Router {
+// newOSRouter creates a new router for the given TUN device.
+func newOSRouter(logf logger.Logf, tunName string) router.Router {
 	return &linuxRouter{logf: logf, tunName: tunName}
 }
 
@@ -59,20 +59,7 @@ func (r *linuxRouter) Set(cfg *router.Config) error {
 		return fmt.Errorf("syncing addresses: %w", err)
 	}
 
-	// Sync routes: add new ones, remove stale ones.
-	// Skip routes that are in LocalRoutes (should not go through the tunnel).
-	localRouteSet := make(map[netip.Prefix]bool, len(cfg.LocalRoutes))
-	for _, lr := range cfg.LocalRoutes {
-		localRouteSet[lr] = true
-	}
-	var tunnelRoutes []netip.Prefix
-	for _, rt := range cfg.Routes {
-		if !localRouteSet[rt] {
-			tunnelRoutes = append(tunnelRoutes, rt)
-		}
-	}
-
-	if err := r.syncRoutes(tunnelRoutes); err != nil {
+	if err := r.syncRoutes(tunnelRoutes(cfg.Routes, cfg.LocalRoutes)); err != nil {
 		return fmt.Errorf("syncing routes: %w", err)
 	}
 
