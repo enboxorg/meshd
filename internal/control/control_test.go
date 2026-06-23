@@ -98,6 +98,36 @@ func TestBuildStaticMapResponse(t *testing.T) {
 	})
 }
 
+func TestNewDWNClientProtocolRoleDefaults(t *testing.T) {
+	t.Run("anchor reads without role", func(t *testing.T) {
+		c := NewDWNClient("https://dwn.example", "did:example:anchor", "network", "did:example:anchor", nil)
+		if c.protocolRole != "" {
+			t.Fatalf("protocolRole = %q, want empty", c.protocolRole)
+		}
+	})
+
+	t.Run("non-anchor infers node read role", func(t *testing.T) {
+		c := NewDWNClient("https://dwn.example", "did:example:anchor", "network", "did:example:node", nil)
+		if c.protocolRole != "network/node" {
+			t.Fatalf("protocolRole = %q, want network/node", c.protocolRole)
+		}
+	})
+
+	t.Run("explicit role wins", func(t *testing.T) {
+		c := NewDWNClient(
+			"https://dwn.example",
+			"did:example:anchor",
+			"network",
+			"did:example:member",
+			nil,
+			WithProtocolRole("network/member"),
+		)
+		if c.protocolRole != "network/member" {
+			t.Fatalf("protocolRole = %q, want network/member", c.protocolRole)
+		}
+	})
+}
+
 func TestNodeRecordToNode(t *testing.T) {
 	now := time.Now().UTC()
 	recentUpdate := now.Add(-2 * time.Minute).Format(time.RFC3339)

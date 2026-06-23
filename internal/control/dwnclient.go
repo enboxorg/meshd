@@ -66,8 +66,7 @@ func WithEncryptionKeyManager(mgr *dwncrypto.EncryptionKeyManager) Option {
 
 // WithProtocolRole sets the DWN protocol role used for read queries.
 // The anchor (network owner) should leave this empty (reads as author).
-// Non-anchor nodes should set "network/node" (assigned via the recipient
-// field on their node record).
+// Non-anchor nodes default to "network/node" when no explicit role is set.
 func WithProtocolRole(role string) Option {
 	return func(o *dwnClientOptions) {
 		o.protocolRole = role
@@ -88,8 +87,7 @@ type DWNClient struct {
 
 	// protocolRole is the DWN protocol role used for read queries.
 	// The anchor (network author) leaves this empty (reads as author).
-	// Non-anchor nodes use "network/node" (assigned via the recipient
-	// field on their node record).
+	// Non-anchor nodes default to "network/node" unless explicitly set.
 	protocolRole string
 
 	mu      sync.RWMutex
@@ -119,6 +117,11 @@ func NewDWNClient(
 		opt(options)
 	}
 
+	protocolRole := options.protocolRole
+	if protocolRole == "" && anchorTenant != "" && selfDID != "" && anchorTenant != selfDID {
+		protocolRole = "network/node"
+	}
+
 	return &DWNClient{
 		anchorDWN:       dwn.NewClient(anchorEndpoint, signer),
 		anchorTenant:    anchorTenant,
@@ -128,7 +131,7 @@ func NewDWNClient(
 		logger:          options.logger,
 		resolver:        options.resolver,
 		encManager:      options.encManager,
-		protocolRole:    options.protocolRole,
+		protocolRole:    protocolRole,
 		members:         make(map[string]*MemberRecord),
 		nodes:           make(map[string]*NodeRecord),
 		peerEndpoints:   make(map[string]*PeerEndpointInfo),
