@@ -57,6 +57,7 @@ jobs:
           fi
           go test ./internal/dwn/ -run TestIntegration -v -count=1 -timeout 120s
           go test ./internal/mesh/ -run TestE2E -v -count=1 -timeout 180s
+          go test ./cmd/meshd/ -run TestCLIInviteJoinFlow -v -count=1 -timeout 180s
 
       - name: Engine Connectivity Tests (with retry)
         env:
