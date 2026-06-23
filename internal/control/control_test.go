@@ -493,7 +493,7 @@ func TestDetectDerivationScheme(t *testing.T) {
 func TestParseEntryData(t *testing.T) {
 	t.Run("direct JSON", func(t *testing.T) {
 		var net NetworkConfig
-		err := parseEntryData([]byte(`{"name":"test","meshCIDR":"10.200.0.0/16"}`), &net, nil)
+		err := ParseEntryData([]byte(`{"name":"test","meshCIDR":"10.200.0.0/16"}`), &net, nil)
 		if err != nil {
 			t.Fatalf("error: %v", err)
 		}
@@ -505,7 +505,7 @@ func TestParseEntryData(t *testing.T) {
 	t.Run("wrapped encodedData", func(t *testing.T) {
 		wrapped := `{"recordsWrite":{"encodedData":"eyJuYW1lIjoid3JhcHBlZCIsIm1lc2hDSURSIjoiMTAuMjAwLjAuMC8xNiJ9"}}`
 		var net NetworkConfig
-		err := parseEntryData([]byte(wrapped), &net, nil)
+		err := ParseEntryData([]byte(wrapped), &net, nil)
 		if err != nil {
 			t.Fatalf("error: %v", err)
 		}
@@ -516,7 +516,7 @@ func TestParseEntryData(t *testing.T) {
 
 	t.Run("nil entry", func(t *testing.T) {
 		var net NetworkConfig
-		err := parseEntryData(nil, &net, nil)
+		err := ParseEntryData(nil, &net, nil)
 		if !errors.Is(err, ErrNoEntry) {
 			t.Errorf("got %v, want %v", err, ErrNoEntry)
 		}
@@ -525,7 +525,7 @@ func TestParseEntryData(t *testing.T) {
 	t.Run("flat encodedData", func(t *testing.T) {
 		flat := `{"encodedData":"eyJuYW1lIjoiZmxhdCIsIm1lc2hDSURSIjoiMTAuMjAwLjAuMC8xNiJ9"}`
 		var net NetworkConfig
-		err := parseEntryData([]byte(flat), &net, nil)
+		err := ParseEntryData([]byte(flat), &net, nil)
 		if err != nil {
 			t.Fatalf("error: %v", err)
 		}
@@ -574,7 +574,7 @@ func TestParseEntryData(t *testing.T) {
 		}
 
 		var net NetworkConfig
-		err = parseEntryData(entry, &net, decryptor)
+		err = ParseEntryData(entry, &net, decryptor)
 		if err != nil {
 			t.Fatalf("error: %v", err)
 		}
@@ -600,14 +600,14 @@ func TestParsePortRange(t *testing.T) {
 		{"80-443", PortRange{80, 443}, true},
 		{"8000-9000", PortRange{8000, 9000}, true},
 		{"0-65535", PortRange{0, 65535}, true},
-		{"443-80", PortRange{}, false},     // first > last
-		{"65536", PortRange{}, false},      // overflow
-		{"", PortRange{}, false},           // empty
-		{"abc", PortRange{}, false},        // non-numeric
-		{"80-", PortRange{}, false},        // missing last
-		{"-80", PortRange{}, false},        // missing first
-		{"80-abc", PortRange{}, false},     // non-numeric last
-		{"100000", PortRange{}, false},     // too large
+		{"443-80", PortRange{}, false}, // first > last
+		{"65536", PortRange{}, false},  // overflow
+		{"", PortRange{}, false},       // empty
+		{"abc", PortRange{}, false},    // non-numeric
+		{"80-", PortRange{}, false},    // missing last
+		{"-80", PortRange{}, false},    // missing first
+		{"80-abc", PortRange{}, false}, // non-numeric last
+		{"100000", PortRange{}, false}, // too large
 	}
 
 	for _, tc := range tests {
@@ -827,9 +827,9 @@ func TestBuildFilterRules_DirectIP(t *testing.T) {
 			Version: 1,
 			Rules: []ACLRule{
 				{
-					Action: "accept",
-					Src:    []string{"10.200.0.0/16"},
-					Dst:    []string{"10.200.0.5"},
+					Action:   "accept",
+					Src:      []string{"10.200.0.0/16"},
+					Dst:      []string{"10.200.0.5"},
 					DstPorts: []string{"80"},
 				},
 			},

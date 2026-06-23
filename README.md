@@ -18,22 +18,22 @@ DWN. See [DESIGN.md](DESIGN.md) for the full architecture.
 
 ```bash
 # On your first machine
-meshd up --create my-network --endpoint https://dwn.example.com
+meshd network create my-network --endpoint https://dwn.example.com
 # prints: Your device identity: did:jwk:eyJr...
 # prints: Network "my-network" created. Mesh IP: 10.200.x.x
-# prints: To add a peer: meshd peer add <their-did>
+# prints: Create a join invite with: meshd invite create
 
-# On your second machine
-meshd init
-# prints: Your device identity: did:jwk:eyJr...
+# Create an invite URL
+meshd invite create
+# prints: meshd://invite/eyJ...
 
-# Back on the first machine, add the second
-meshd peer add did:jwk:eyJr...
+# On your second machine, join from the invite
+meshd join meshd://invite/eyJ...
 
-# On the second machine, join and start
-meshd up --endpoint https://dwn.example.com --anchor <first-did> --network <network-id>
+# Start meshd on both machines
+meshd up
 
-# That's it. The machines can reach each other at 10.200.x.x
+# That's it. After the anchor approves the invite, the machines can reach each other at 10.200.x.x
 # through encrypted WireGuard tunnels. NAT traversal is automatic.
 ```
 
@@ -98,6 +98,8 @@ Network:
   network create    Create a new mesh network on a DWN
   network join      Join an existing mesh network
   network leave     Leave the current mesh network
+  invite create     Create an invite URL for joining this network
+  join <url>        Join a network from a meshd://invite URL
   peer add          Add a peer to the mesh (anchor only)
   peer list         List all peers in the mesh
   peer approve      Deliver encryption keys to a peer (anchor only)
