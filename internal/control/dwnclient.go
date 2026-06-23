@@ -174,7 +174,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 
 	var network NetworkConfig
 	// Network record is NOT encrypted (publicly readable anchor).
-	if err := parseEntryData(netResp.Reply.Entry, &network, nil); err != nil {
+	if err := ParseEntryData(netResp.Reply.Entry, &network, nil); err != nil {
 		return nil, fmt.Errorf("parsing network: %w", err)
 	}
 
@@ -233,7 +233,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 				memberDID := meta.Recipient
 
 				var member MemberRecord
-				if err := parseEntryData(entry, &member, memberDecryptor); err != nil {
+				if err := ParseEntryData(entry, &member, memberDecryptor); err != nil {
 					c.logger.DebugContext(ctx, "parsing member entry",
 						slog.Any("error", err),
 						slog.String("memberDID", memberDID),
@@ -315,7 +315,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	c.relays = nil // Clear stale relays before repopulating.
 	for _, entry := range relayEntries {
 		var relay RelayData
-		if err := parseEntryData(entry, &relay, relayDecryptor); err != nil {
+		if err := ParseEntryData(entry, &relay, relayDecryptor); err != nil {
 			c.logger.DebugContext(ctx, "parsing relay entry", slog.Any("error", err))
 			continue
 		}
@@ -340,7 +340,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 			// $recordLimit: max 1 — take the first (most recent) entry.
 			aclDecryptor := c.makeDecryptor("network/aclPolicy")
 			var policy ACLPolicyData
-			if err := parseEntryData(aclEntries[0], &policy, aclDecryptor); err != nil {
+			if err := ParseEntryData(aclEntries[0], &policy, aclDecryptor); err != nil {
 				c.logger.DebugContext(ctx, "parsing ACL policy entry", slog.Any("error", err))
 			} else {
 				c.mu.Lock()
@@ -385,12 +385,12 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 // loadNodeEntry parses a node record entry and adds it to the nodes map.
 // memberRecordID is the parent member record ID (empty for owner-provisioned nodes).
 // Caller must hold c.mu.
-func (c *DWNClient) loadNodeEntry(ctx context.Context, entry json.RawMessage, decryptor entryDecryptor, memberRecordID string) {
+func (c *DWNClient) loadNodeEntry(ctx context.Context, entry json.RawMessage, decryptor EntryDecryptor, memberRecordID string) {
 	meta := extractEntryMetadata(entry)
 	nodeDID := meta.Recipient
 
 	var node NodeRecord
-	if err := parseEntryData(entry, &node, decryptor); err != nil {
+	if err := ParseEntryData(entry, &node, decryptor); err != nil {
 		c.logger.DebugContext(ctx, "parsing node entry",
 			slog.Any("error", err),
 			slog.String("nodeDID", nodeDID),
@@ -416,7 +416,7 @@ func (c *DWNClient) loadNodeEntry(ctx context.Context, entry json.RawMessage, de
 
 // loadChildRecords queries child records at the given protocol path and
 // processes each entry with the provided handler function.
-func (c *DWNClient) loadChildRecords(ctx context.Context, protocolPath string, role string, handler func(ctx context.Context, entry json.RawMessage, decryptor entryDecryptor)) {
+func (c *DWNClient) loadChildRecords(ctx context.Context, protocolPath string, role string, handler func(ctx context.Context, entry json.RawMessage, decryptor EntryDecryptor)) {
 	resp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: protocolPath,
@@ -454,10 +454,10 @@ func (c *DWNClient) loadChildRecords(ctx context.Context, protocolPath string, r
 
 // loadNodeInfoEntry parses a nodeInfo entry and attaches it to the parent node.
 // Caller must hold c.mu.
-func (c *DWNClient) loadNodeInfoEntry(ctx context.Context, entry json.RawMessage, decryptor entryDecryptor) {
+func (c *DWNClient) loadNodeInfoEntry(ctx context.Context, entry json.RawMessage, decryptor EntryDecryptor) {
 	meta := extractEntryMetadata(entry)
 	var info NodeInfoData
-	if err := parseEntryData(entry, &info, decryptor); err != nil {
+	if err := ParseEntryData(entry, &info, decryptor); err != nil {
 		c.logger.DebugContext(ctx, "parsing nodeInfo entry", slog.Any("error", err))
 		return
 	}
@@ -474,10 +474,10 @@ func (c *DWNClient) loadNodeInfoEntry(ctx context.Context, entry json.RawMessage
 
 // loadEndpointEntry parses an endpoint entry and attaches it to the parent node.
 // Caller must hold c.mu.
-func (c *DWNClient) loadEndpointEntry(ctx context.Context, entry json.RawMessage, decryptor entryDecryptor) {
+func (c *DWNClient) loadEndpointEntry(ctx context.Context, entry json.RawMessage, decryptor EntryDecryptor) {
 	meta := extractEntryMetadata(entry)
 	var ep EndpointData
-	if err := parseEntryData(entry, &ep, decryptor); err != nil {
+	if err := ParseEntryData(entry, &ep, decryptor); err != nil {
 		c.logger.DebugContext(ctx, "parsing endpoint entry", slog.Any("error", err))
 		return
 	}
@@ -1031,10 +1031,10 @@ func extractEntryMetadata(entry json.RawMessage) entryMetadata {
 	return meta
 }
 
-// parseEntryData extracts the data from a DWN read response entry.
+// ParseEntryData extracts the data from a DWN read response entry.
 // If the entry contains encryption metadata and a decryptor is provided,
 // the data is decrypted before unmarshaling.
-func parseEntryData(entry json.RawMessage, dst any, decryptor entryDecryptor) error {
+func ParseEntryData(entry json.RawMessage, dst any, decryptor EntryDecryptor) error {
 	if entry == nil {
 		return ErrNoEntry
 	}
@@ -1042,7 +1042,7 @@ func parseEntryData(entry json.RawMessage, dst any, decryptor entryDecryptor) er
 	// First try wrapped entry (RecordsRead response format).
 	var wrapped struct {
 		RecordsWrite struct {
-			EncodedData string               `json:"encodedData"`
+			EncodedData string                `json:"encodedData"`
 			Encryption  *dwncrypto.Encryption `json:"encryption"`
 		} `json:"recordsWrite"`
 	}
@@ -1065,7 +1065,7 @@ func parseEntryData(entry json.RawMessage, dst any, decryptor entryDecryptor) er
 
 	// Try flat entry format (query results).
 	var flat struct {
-		EncodedData string               `json:"encodedData"`
+		EncodedData string                `json:"encodedData"`
 		Encryption  *dwncrypto.Encryption `json:"encryption"`
 	}
 	if err := json.Unmarshal(entry, &flat); err == nil && flat.EncodedData != "" {
@@ -1089,8 +1089,8 @@ func parseEntryData(entry json.RawMessage, dst any, decryptor entryDecryptor) er
 	return json.Unmarshal(entry, dst)
 }
 
-// entryDecryptor is a function that decrypts ciphertext using the JWE metadata.
-type entryDecryptor func(ciphertext []byte, enc *dwncrypto.Encryption) ([]byte, error)
+// EntryDecryptor is a function that decrypts ciphertext using the JWE metadata.
+type EntryDecryptor func(ciphertext []byte, enc *dwncrypto.Encryption) ([]byte, error)
 
 // makeDecryptor creates a decryptor function from an EncryptionKeyManager
 // and a protocol path. Returns nil if no key manager is available.
@@ -1099,7 +1099,7 @@ type entryDecryptor func(ciphertext []byte, enc *dwncrypto.Encryption) ([]byte, 
 // scheme used and applies the correct decryption strategy:
 //   - protocolPath: derives the key from root via HKDF at the given path
 //   - protocolContext: uses a delivered context key (or derives from root if owner)
-func (c *DWNClient) makeDecryptor(protocolPath string) entryDecryptor {
+func (c *DWNClient) makeDecryptor(protocolPath string) EntryDecryptor {
 	if c.encManager == nil {
 		return nil
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 	"github.com/enboxorg/meshd/internal/engine"
+	"github.com/enboxorg/meshd/internal/invite"
 	"github.com/enboxorg/meshd/internal/mesh"
 	"github.com/enboxorg/meshd/internal/profile"
 	"github.com/enboxorg/meshd/internal/state"
@@ -43,6 +44,8 @@ Network:
   network create    Create a new mesh network on a DWN
   network join      Join an existing mesh network
   network leave     Leave the current mesh network
+  invite create     Create an invite URL for joining this network
+  join <url>        Join a network from a meshd://invite URL
   peer add          Add a peer to the mesh (anchor only)
   peer list         List all peers in the mesh
   peer approve      Deliver encryption keys to a peer (anchor only)
@@ -65,7 +68,8 @@ Up flags:
 
 Quick start:
   meshd up --create my-network --endpoint https://dwn.example.com
-  meshd up --endpoint <url> --anchor <did> --network <id>
+  meshd invite create
+  meshd join meshd://invite/<token>
 
 Global flags:
   --profile <name>  Use a specific identity profile
@@ -94,6 +98,7 @@ func main() {
 		combined := os.Args[1] + " " + os.Args[2]
 		switch combined {
 		case "network create", "network join", "network leave",
+			"invite create",
 			"peer list", "peer add", "peer approve",
 			"acl set", "acl show",
 			"auth login", "auth list", "auth use", "auth logout":
@@ -131,6 +136,10 @@ func main() {
 		err = cmdNetworkJoin(ctx, args, flagProfile)
 	case "network leave":
 		err = cmdNetworkLeave(ctx, args, flagProfile)
+	case "invite create":
+		err = cmdInviteCreate(ctx, args, flagProfile)
+	case "join":
+		err = cmdJoin(ctx, args, flagProfile)
 	case "peer add":
 		err = cmdPeerAdd(ctx, args, flagProfile)
 	case "peer list":
@@ -191,8 +200,6 @@ func cmdInit(ctx context.Context, args []string, flagProfile string) error {
 	fmt.Printf("  State: %s\n", stateDir)
 	return nil
 }
-
-
 
 // cmdNetworkCreate creates a new mesh network.
 //
@@ -373,9 +380,8 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	fmt.Printf("  Mesh IP: %s\n", meshIP)
 	fmt.Printf("  Record: %s\n", record.ID)
 	fmt.Printf("  Anchor: %s\n", endpoint)
-	fmt.Printf("\nShare this join token with peers:\n")
-	fmt.Printf("  meshd network join --endpoint %s --anchor %s --network %s\n",
-		endpoint, identity.URI, record.ID)
+	fmt.Printf("\nCreate a join invite with:\n")
+	fmt.Printf("  meshd invite create\n")
 
 	return nil
 }
@@ -384,7 +390,12 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 //
 // Usage: meshd network join --endpoint <url> --anchor <did> --network <id>
 func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) error {
+	if len(args) == 1 && strings.HasPrefix(strings.TrimSpace(args[0]), invite.SchemePrefix) {
+		return cmdJoin(ctx, args, flagProfile)
+	}
+
 	var endpoint, anchorDID, networkID string
+	preauthRequested := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--endpoint":
@@ -402,6 +413,8 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 				networkID = args[i+1]
 				i++
 			}
+		case "--preauth":
+			preauthRequested = true
 		}
 	}
 
@@ -538,8 +551,13 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 	}
 
 	if nodeRecordID == "" {
-		fmt.Printf("  No node record found — the anchor needs to run:\n")
-		fmt.Printf("    meshd peer add %s\n", identity.URI)
+		if preauthRequested {
+			fmt.Printf("  Join request submitted. Waiting for the anchor to approve this invite.\n")
+			fmt.Printf("  Run 'meshd up' again after the anchor has processed the request.\n")
+		} else {
+			fmt.Printf("  No node record found — the anchor needs to run:\n")
+			fmt.Printf("    meshd peer add %s\n", identity.URI)
+		}
 	}
 
 	// Fetch and persist context key if available.
@@ -640,6 +658,165 @@ func cmdNetworkLeave(ctx context.Context, args []string, flagProfile string) err
 	}
 	fmt.Printf("Left network %q.\n", name)
 	return nil
+}
+
+// cmdInviteCreate creates a preauth invite URL for the current network.
+//
+// Usage: meshd invite create [--label <label>] [--expires <duration>] [--reusable] [--ephemeral]
+func cmdInviteCreate(ctx context.Context, args []string, flagProfile string) error {
+	label := ""
+	expires := 24 * time.Hour
+	reusable := false
+	ephemeral := false
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--label":
+			if i+1 < len(args) {
+				label = args[i+1]
+				i++
+			}
+		case "--expires":
+			if i+1 < len(args) {
+				if args[i+1] == "never" || args[i+1] == "0" {
+					expires = 0
+				} else {
+					d, err := time.ParseDuration(args[i+1])
+					if err != nil {
+						return fmt.Errorf("invalid --expires duration %q: %w", args[i+1], err)
+					}
+					expires = d
+				}
+				i++
+			}
+		case "--reusable":
+			reusable = true
+		case "--ephemeral":
+			ephemeral = true
+		}
+	}
+
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
+	identity, err := loadIdentity(stateDir)
+	if err != nil {
+		return err
+	}
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return fmt.Errorf("loading network state: %w", err)
+	}
+	if ns == nil {
+		return fmt.Errorf("not in a network. Use 'meshd network create' first.")
+	}
+	if ns.AnchorDID != identity.URI {
+		return fmt.Errorf("only the network anchor (%s) can create invites", ns.AnchorDID)
+	}
+
+	expiresAt := time.Time{}
+	if expires > 0 {
+		expiresAt = time.Now().Add(expires)
+	}
+	if label == "" {
+		label = ns.NetworkName
+	}
+
+	signer := &dwn.Signer{DID: identity.URI, PrivateKey: identity.SigningKey}
+	result, err := mesh.CreatePreAuthKey(ctx, mesh.CreatePreAuthKeyParams{
+		AnchorEndpoint:       ns.AnchorEndpoint,
+		AnchorDID:            ns.AnchorDID,
+		NetworkRecordID:      ns.NetworkRecordID,
+		NetworkName:          ns.NetworkName,
+		Signer:               signer,
+		EncryptionKeyManager: newEncryptionKeyManager(identity),
+		Label:                label,
+		ExpiresAt:            expiresAt,
+		Reusable:             reusable,
+		Ephemeral:            ephemeral,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Invite created for %q.\n", ns.NetworkName)
+	if result.ExpiresAt != "" {
+		fmt.Printf("  Expires: %s\n", result.ExpiresAt)
+	}
+	if reusable {
+		fmt.Printf("  Reusable: yes\n")
+	} else {
+		fmt.Printf("  Reusable: no\n")
+	}
+	fmt.Printf("\n%s\n", result.URL)
+	fmt.Printf("\nJoin from another device with:\n")
+	fmt.Printf("  meshd join %s\n", result.URL)
+	return nil
+}
+
+// cmdJoin joins a network from a meshd://invite URL.
+//
+// Usage: meshd join <meshd://invite/...>
+func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: meshd join <meshd://invite/...>")
+	}
+
+	payload, err := invite.Decode(args[0])
+	if err != nil {
+		return err
+	}
+
+	stateDir, identity, err := ensureIdentityForCommand(ctx, flagProfile, payload.Endpoint)
+	if err != nil {
+		return err
+	}
+	if state.HasNetwork(stateDir) {
+		ns, loadErr := state.LoadNetworkState(stateDir)
+		if loadErr != nil {
+			return fmt.Errorf("loading network state: %w", loadErr)
+		}
+		if ns != nil && ns.NetworkRecordID == payload.NetworkID && ns.AnchorDID == payload.AnchorDID && ns.NodeRecordID == "" {
+			refreshed, err := refreshPendingJoin(ctx, stateDir, ns, flagProfile)
+			if err != nil {
+				return err
+			}
+			if refreshed.NodeRecordID == "" {
+				fmt.Printf("Join request is still pending anchor approval.\n")
+			}
+			return nil
+		}
+		return fmt.Errorf("already in a network. Use 'meshd network leave' first.")
+	}
+
+	preauth := payload.TokenID != "" || payload.Secret != ""
+	if preauth {
+		if err := payload.ValidatePreAuth(); err != nil {
+			return err
+		}
+		label, _ := os.Hostname()
+		signer := &dwn.Signer{DID: identity.URI, PrivateKey: identity.SigningKey}
+		if err := mesh.WritePreAuthNodeRequest(ctx, mesh.WritePreAuthNodeRequestParams{
+			Invite:  payload,
+			NodeDID: identity.URI,
+			Signer:  signer,
+			Label:   label,
+		}); err != nil {
+			return err
+		}
+		fmt.Printf("Join request submitted for %q.\n", payload.NetworkName)
+	}
+
+	joinArgs := []string{
+		"--endpoint", payload.Endpoint,
+		"--anchor", payload.AnchorDID,
+		"--network", payload.NetworkID,
+	}
+	if preauth {
+		joinArgs = append(joinArgs, "--preauth")
+	}
+	return cmdNetworkJoin(ctx, joinArgs, flagProfile)
 }
 
 // cmdPeerList lists all peers in the current mesh network.
@@ -835,9 +1012,12 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 	fmt.Printf("  Context key delivered.\n")
 
 	fmt.Printf("\nPeer added to network %q.\n", ns.NetworkName)
+	joinURL, err := invite.Encode(invite.New(ns.AnchorEndpoint, ns.AnchorDID, ns.NetworkRecordID, ns.NetworkName, "", "", ""))
+	if err != nil {
+		return err
+	}
 	fmt.Printf("The peer can now join with:\n")
-	fmt.Printf("  meshd network join --endpoint %s --anchor %s --network %s\n",
-		ns.AnchorEndpoint, ns.AnchorDID, ns.NetworkRecordID)
+	fmt.Printf("  meshd join %s\n", joinURL)
 
 	return nil
 }
@@ -984,6 +1164,7 @@ type upFlags struct {
 	endpoint      string // --endpoint <url>: DWN endpoint
 	anchorDID     string // --anchor <did>: anchor DID for joining
 	networkID     string // --network <id>: network record ID for joining
+	inviteURL     string // positional meshd://invite URL
 
 	// Engine flags.
 	tunName      string        // --tun [name]: TUN device name
@@ -1043,6 +1224,10 @@ func parseUpFlags(args []string) upFlags {
 			f.noTun = true
 		case "-v", "--verbose":
 			f.verbose = true
+		default:
+			if !strings.HasPrefix(args[i], "-") && strings.HasPrefix(strings.TrimSpace(args[i]), invite.SchemePrefix) {
+				f.inviteURL = args[i]
+			}
 		}
 	}
 
@@ -1073,28 +1258,9 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	f := parseUpFlags(args)
 
 	// ── Step 1: Ensure identity exists ──────────────────────────────
-	stateDir, err := resolveStateDir(flagProfile)
+	stateDir, identity, err := ensureIdentityForCommand(ctx, flagProfile, f.endpoint)
 	if err != nil {
 		return err
-	}
-
-	var identity *did.DID
-	if did.Exists(stateDir) {
-		identity, err = did.Load(stateDir)
-		if err != nil {
-			return fmt.Errorf("loading identity: %w", err)
-		}
-	} else {
-		fmt.Println("No identity found. Creating one...")
-		identity, err = ensureIdentity(ctx, flagProfile, f.endpoint)
-		if err != nil {
-			return err
-		}
-		// Re-resolve stateDir after profile creation.
-		stateDir, err = resolveStateDir(flagProfile)
-		if err != nil {
-			return err
-		}
 	}
 
 	// ── Step 2: Ensure network membership ───────────────────────────
@@ -1108,6 +1274,15 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		ns, err = ensureNetwork(ctx, f, stateDir, identity, flagProfile)
 		if err != nil {
 			return err
+		}
+	}
+	if ns.NodeRecordID == "" && ns.AnchorDID != identity.URI {
+		ns, err = refreshPendingJoin(ctx, stateDir, ns, flagProfile)
+		if err != nil {
+			return err
+		}
+		if ns.NodeRecordID == "" {
+			return fmt.Errorf("join request is still pending anchor approval; run 'meshd up' again after the anchor is online")
 		}
 	}
 
@@ -1242,6 +1417,9 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 			fmt.Printf("  Auto key delivery: enabled (anchor node)\n")
 		}
 	}
+	if ns.AnchorDID == identity.URI {
+		approvePreAuthRequests(ctx, ns, signer, encMgr, logger)
+	}
 
 	// Determine the protocol role for DWN queries. The anchor reads as
 	// author (no role needed). Non-anchor nodes use their node role.
@@ -1264,7 +1442,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		AutoKeyDelivery:      autoKeyDelivery,
 		UseContextEncryption: useContextEncryption,
 		WireGuardPrivateKey:  wgKeys.PrivateKey,
-		TUNName:             f.tunName,
+		TUNName:              f.tunName,
 		Domain:               ns.NetworkName,
 		ListenPort:           f.listenPort,
 		PollInterval:         f.pollInterval,
@@ -1294,6 +1472,17 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		logger.Warn("daemon control socket failed to start", slog.Any("error", err))
 	} else {
 		defer daemonSrv.Stop()
+	}
+
+	var stopPreAuthApproval chan struct{}
+	if ns.AnchorDID == identity.URI {
+		stopPreAuthApproval = make(chan struct{})
+		interval := f.pollInterval
+		if interval == 0 {
+			interval = 30 * time.Second
+		}
+		go runPreAuthApprovalLoop(ctx, stopPreAuthApproval, interval, ns, signer, encMgr, logger)
+		defer close(stopPreAuthApproval)
 	}
 
 	fmt.Printf("  Status: running\n")
@@ -1353,11 +1542,46 @@ func ensureIdentity(ctx context.Context, flagProfile, endpoint string) (*did.DID
 	return identity, nil
 }
 
+func ensureIdentityForCommand(ctx context.Context, flagProfile, endpoint string) (string, *did.DID, error) {
+	stateDir, err := resolveStateDir(flagProfile)
+	if err == profile.ErrNoProfiles {
+		fmt.Println("No identity found. Creating one...")
+		if _, err := ensureIdentity(ctx, flagProfile, endpoint); err != nil {
+			return "", nil, err
+		}
+		stateDir, err = resolveStateDir(flagProfile)
+	}
+	if err != nil {
+		return "", nil, err
+	}
+
+	if did.Exists(stateDir) {
+		identity, err := did.Load(stateDir)
+		if err != nil {
+			return "", nil, fmt.Errorf("loading identity: %w", err)
+		}
+		return stateDir, identity, nil
+	}
+
+	fmt.Println("No identity found. Creating one...")
+	identity, err := ensureIdentity(ctx, flagProfile, endpoint)
+	if err != nil {
+		return "", nil, err
+	}
+	stateDir, err = resolveStateDir(flagProfile)
+	if err != nil {
+		return "", nil, err
+	}
+	return stateDir, identity, nil
+}
+
 // ensureNetwork handles network setup when the user is not yet in a network.
 // It checks flags (--create, --anchor+--network) and falls back to an
 // interactive prompt.
 func ensureNetwork(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string) (*state.NetworkState, error) {
 	switch {
+	case f.inviteURL != "":
+		return setupJoinInvite(ctx, f, stateDir, identity, flagProfile)
 	case f.createNetwork != "":
 		return setupCreateNetwork(ctx, f, stateDir, identity, flagProfile)
 	case f.anchorDID != "" && f.networkID != "":
@@ -1418,6 +1642,54 @@ func setupJoinNetwork(ctx context.Context, f upFlags, stateDir string, identity 
 		return nil, fmt.Errorf("network state not found after join")
 	}
 	return ns, nil
+}
+
+// setupJoinInvite joins an existing network from an invite URL.
+func setupJoinInvite(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string) (*state.NetworkState, error) {
+	if err := cmdJoin(ctx, []string{f.inviteURL}, flagProfile); err != nil {
+		return nil, err
+	}
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("loading network state after invite join: %w", err)
+	}
+	if ns == nil {
+		return nil, fmt.Errorf("network state not found after invite join")
+	}
+	return ns, nil
+}
+
+func refreshPendingJoin(ctx context.Context, stateDir string, ns *state.NetworkState, flagProfile string) (*state.NetworkState, error) {
+	if ns == nil {
+		return nil, fmt.Errorf("network state is missing")
+	}
+	previous := *ns
+
+	fmt.Printf("Checking pending join approval...\n")
+	if err := state.ClearNetworkState(stateDir); err != nil {
+		return nil, fmt.Errorf("clearing pending network state: %w", err)
+	}
+	err := cmdNetworkJoin(ctx, []string{
+		"--endpoint", ns.AnchorEndpoint,
+		"--anchor", ns.AnchorDID,
+		"--network", ns.NetworkRecordID,
+		"--preauth",
+	}, flagProfile)
+	if err != nil {
+		_ = state.SaveNetworkState(stateDir, &previous)
+		return nil, err
+	}
+
+	refreshed, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		_ = state.SaveNetworkState(stateDir, &previous)
+		return nil, fmt.Errorf("loading refreshed network state: %w", err)
+	}
+	if refreshed == nil {
+		_ = state.SaveNetworkState(stateDir, &previous)
+		return &previous, nil
+	}
+	return refreshed, nil
 }
 
 // setupInteractive prompts the user to create or join a network.
@@ -1589,6 +1861,47 @@ func fetchContextKey(ctx context.Context, identity *did.DID, ns *state.NetworkSt
 		SelfDID:        identity.URI,
 		Signer:         signer,
 	})
+}
+
+func approvePreAuthRequests(ctx context.Context, ns *state.NetworkState, signer *dwn.Signer, encMgr *dwncrypto.EncryptionKeyManager, logger *slog.Logger) {
+	result, err := mesh.ApprovePreAuthRequests(ctx, mesh.ApprovePreAuthRequestsParams{
+		AnchorEndpoint:       ns.AnchorEndpoint,
+		AnchorDID:            ns.AnchorDID,
+		NetworkRecordID:      ns.NetworkRecordID,
+		MeshCIDR:             ns.MeshCIDR,
+		Signer:               signer,
+		EncryptionKeyManager: encMgr,
+	})
+	if err != nil {
+		logger.Warn("preauth approval failed", slog.Any("error", err))
+		return
+	}
+	if result.Approved > 0 {
+		fmt.Printf("  Invite requests approved: %d\n", result.Approved)
+	}
+	if result.Rejected > 0 || result.Pending > 0 {
+		logger.Debug("processed invite requests",
+			slog.Int("approved", result.Approved),
+			slog.Int("rejected", result.Rejected),
+			slog.Int("pending", result.Pending),
+		)
+	}
+}
+
+func runPreAuthApprovalLoop(ctx context.Context, stop <-chan struct{}, interval time.Duration, ns *state.NetworkState, signer *dwn.Signer, encMgr *dwncrypto.EncryptionKeyManager, logger *slog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stop:
+			return
+		case <-ticker.C:
+			approvePreAuthRequests(ctx, ns, signer, encMgr, logger)
+		}
+	}
 }
 
 // universalResolver adapts the pkg/dids universal resolver to the

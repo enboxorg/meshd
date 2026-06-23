@@ -18,6 +18,19 @@
       "type": "string",
       "maxLength": 128,
       "description": "Optional label for the proposed device"
+    },
+    "preAuthKeyId": {
+      "type": "string",
+      "description": "Record ID of the encrypted pre-auth key used for this request"
+    },
+    "preAuthProof": {
+      "type": "string",
+      "description": "HMAC proof derived from the pre-auth key secret, network ID, and node DID"
+    },
+    "requestedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the device requested to join"
     }
   }
 }

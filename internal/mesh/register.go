@@ -23,6 +23,7 @@ const (
 	schemaNodeInfo    = "https://enbox.org/schemas/wireguard-mesh/node-info"
 	schemaEndpoint    = "https://enbox.org/schemas/wireguard-mesh/endpoint"
 	schemaACLPolicy   = "https://enbox.org/schemas/wireguard-mesh/acl-policy"
+	schemaPreAuthKey  = "https://enbox.org/schemas/wireguard-mesh/pre-auth-key"
 )
 
 // MemberRegistration holds the result of creating a member record.

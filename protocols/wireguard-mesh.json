@@ -122,6 +122,14 @@
         }
       },
 
+      "nodeRequest": {
+        "$size": { "max": 2000 },
+        "$actions": [
+          { "who": "anyone", "can": ["create"] },
+          { "who": "author", "of": "network", "can": ["read", "delete", "co-delete"] }
+        ]
+      },
+
       "node": {
         "$role": true,
         "$squash": true,
