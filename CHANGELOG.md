@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.6](https://github.com/enboxorg/meshd/compare/v0.3.5...v0.3.6) (2026-06-23)
+
+
+### Bug Fixes
+
+* run up in background and cache vault unlocks ([#126](https://github.com/enboxorg/meshd/issues/126)) ([fe79e54](https://github.com/enboxorg/meshd/commit/fe79e54466fed4f0cb6e1bb9f380cbdbc044f527))
+
 ## [0.3.5](https://github.com/enboxorg/meshd/compare/v0.3.4...v0.3.5) (2026-06-23)
 
 
