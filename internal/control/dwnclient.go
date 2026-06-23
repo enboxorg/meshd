@@ -261,39 +261,40 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	// 4. Query member-associated node records (network/member/node).
 	c.logger.DebugContext(ctx, "querying member nodes")
 
-	memberNodesResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
-		Protocol:     protocols.MeshProtocolURI,
-		ProtocolPath: "network/member/node",
-		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, role)
-	if err != nil {
-		// Non-fatal: member nodes are optional.
-		c.logger.DebugContext(ctx, "querying member nodes failed", slog.Any("error", err))
-	} else {
+	memberNodeCount := 0
+	for _, query := range c.memberNodeParentQueries() {
+		memberNodesResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
+			Protocol:     protocols.MeshProtocolURI,
+			ProtocolPath: "network/member/node",
+			ContextID:    query.ParentContextID,
+		}, "createdAscending", nil, role)
+		if err != nil {
+			// Non-fatal: member nodes are optional.
+			c.logger.DebugContext(ctx, "querying member nodes failed",
+				slog.String("memberRecordId", query.MemberRecordID),
+				slog.Any("error", err),
+			)
+			continue
+		}
+
 		memberNodeEntries, err := dwn.QueryResult(memberNodesResp)
 		if err != nil {
-			c.logger.DebugContext(ctx, "parsing member node results", slog.Any("error", err))
-		} else {
-			memberNodeDecryptor := c.makeDecryptor("network/member/node")
-			c.mu.Lock()
-			for _, entry := range memberNodeEntries {
-				// For member nodes, we need to find which member this node
-				// belongs to by matching the parentId to a member's recordID.
-				meta := extractEntryMetadata(entry)
-				var memberRecordID string
-				for _, m := range c.members {
-					if m.RecordID == meta.ParentID {
-						memberRecordID = m.RecordID
-						break
-					}
-				}
-				c.loadNodeEntry(ctx, entry, memberNodeDecryptor, memberRecordID)
-			}
-			c.mu.Unlock()
-
-			c.logger.DebugContext(ctx, "loaded member nodes", slog.Int("count", len(memberNodeEntries)))
+			c.logger.DebugContext(ctx, "parsing member node results",
+				slog.String("memberRecordId", query.MemberRecordID),
+				slog.Any("error", err),
+			)
+			continue
 		}
+
+		memberNodeDecryptor := c.makeDecryptor("network/member/node")
+		c.mu.Lock()
+		for _, entry := range memberNodeEntries {
+			c.loadNodeEntry(ctx, entry, memberNodeDecryptor, query.MemberRecordID)
+		}
+		c.mu.Unlock()
+		memberNodeCount += len(memberNodeEntries)
 	}
+	c.logger.DebugContext(ctx, "loaded member nodes", slog.Int("count", memberNodeCount))
 
 	// 5. Query relay records.
 	relayResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
@@ -354,17 +355,11 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		}
 	}
 
-	// 7. Query nodeInfo records for owner-provisioned nodes (network/node/nodeInfo).
-	c.loadChildRecords(ctx, "network/node/nodeInfo", role, c.loadNodeInfoEntry)
+	// 7. Query nodeInfo records under each node's direct parent context.
+	c.loadNodeChildRecords(ctx, "nodeInfo", role, c.loadNodeInfoEntry)
 
-	// 8. Query nodeInfo records for member nodes (network/member/node/nodeInfo).
-	c.loadChildRecords(ctx, "network/member/node/nodeInfo", role, c.loadNodeInfoEntry)
-
-	// 9. Query endpoint records for owner-provisioned nodes (network/node/endpoint).
-	c.loadChildRecords(ctx, "network/node/endpoint", role, c.loadEndpointEntry)
-
-	// 10. Query endpoint records for member nodes (network/member/node/endpoint).
-	c.loadChildRecords(ctx, "network/member/node/endpoint", role, c.loadEndpointEntry)
+	// 8. Query endpoint records under each node's direct parent context.
+	c.loadNodeChildRecords(ctx, "endpoint", role, c.loadEndpointEntry)
 
 	hasACL := c.acl != nil
 	c.logger.DebugContext(ctx, "mesh state loaded",
@@ -380,6 +375,31 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		return nil, fmt.Errorf("self DID %q not found in network node records", c.selfDID)
 	}
 	return resp, nil
+}
+
+type memberNodeParentQuery struct {
+	MemberRecordID  string
+	ParentContextID string
+}
+
+func (c *DWNClient) memberNodeParentQueries() []memberNodeParentQuery {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	queries := make([]memberNodeParentQuery, 0, len(c.members))
+	for _, member := range c.members {
+		if member.RecordID == "" {
+			continue
+		}
+		queries = append(queries, memberNodeParentQuery{
+			MemberRecordID:  member.RecordID,
+			ParentContextID: c.networkRecordID + "/" + member.RecordID,
+		})
+	}
+	sort.Slice(queries, func(i, j int) bool {
+		return queries[i].ParentContextID < queries[j].ParentContextID
+	})
+	return queries
 }
 
 // loadNodeEntry parses a node record entry and adds it to the nodes map.
@@ -414,29 +434,79 @@ func (c *DWNClient) loadNodeEntry(ctx context.Context, entry json.RawMessage, de
 	}
 }
 
-// loadChildRecords queries child records at the given protocol path and
-// processes each entry with the provided handler function.
-func (c *DWNClient) loadChildRecords(ctx context.Context, protocolPath string, role string, handler func(ctx context.Context, entry json.RawMessage, decryptor EntryDecryptor)) {
+type nodeChildRecordQuery struct {
+	ProtocolPath    string
+	ParentContextID string
+}
+
+func (c *DWNClient) nodeChildRecordQueries(childType string) []nodeChildRecordQuery {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	queries := make([]nodeChildRecordQuery, 0, len(c.nodes))
+	for _, node := range c.nodes {
+		if node.RecordID == "" {
+			continue
+		}
+
+		if node.MemberRecordID != "" {
+			queries = append(queries, nodeChildRecordQuery{
+				ProtocolPath:    "network/member/node/" + childType,
+				ParentContextID: c.networkRecordID + "/" + node.MemberRecordID + "/" + node.RecordID,
+			})
+			continue
+		}
+
+		queries = append(queries, nodeChildRecordQuery{
+			ProtocolPath:    "network/node/" + childType,
+			ParentContextID: c.networkRecordID + "/" + node.RecordID,
+		})
+	}
+	sort.Slice(queries, func(i, j int) bool {
+		if queries[i].ParentContextID == queries[j].ParentContextID {
+			return queries[i].ProtocolPath < queries[j].ProtocolPath
+		}
+		return queries[i].ParentContextID < queries[j].ParentContextID
+	})
+	return queries
+}
+
+func (c *DWNClient) loadNodeChildRecords(ctx context.Context, childType string, role string, handler func(ctx context.Context, entry json.RawMessage, decryptor EntryDecryptor)) {
+	total := 0
+	for _, query := range c.nodeChildRecordQueries(childType) {
+		total += c.loadChildRecords(ctx, query.ProtocolPath, query.ParentContextID, role, handler)
+	}
+	c.logger.DebugContext(ctx, "loaded node child records",
+		slog.String("type", childType),
+		slog.Int("count", total),
+	)
+}
+
+// loadChildRecords queries child records at the given protocol path under a
+// direct parent context and processes each entry with the provided handler.
+func (c *DWNClient) loadChildRecords(ctx context.Context, protocolPath string, parentContextID string, role string, handler func(ctx context.Context, entry json.RawMessage, decryptor EntryDecryptor)) int {
 	resp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: protocolPath,
-		ContextID:    c.networkRecordID,
+		ContextID:    parentContextID,
 	}, "createdDescending", nil, role)
 	if err != nil {
 		c.logger.DebugContext(ctx, "querying child records failed",
 			slog.String("path", protocolPath),
+			slog.String("parentContextId", parentContextID),
 			slog.Any("error", err),
 		)
-		return
+		return 0
 	}
 
 	entries, err := dwn.QueryResult(resp)
 	if err != nil {
 		c.logger.DebugContext(ctx, "parsing child record results",
 			slog.String("path", protocolPath),
+			slog.String("parentContextId", parentContextID),
 			slog.Any("error", err),
 		)
-		return
+		return 0
 	}
 
 	decryptor := c.makeDecryptor(protocolPath)
@@ -448,8 +518,10 @@ func (c *DWNClient) loadChildRecords(ctx context.Context, protocolPath string, r
 
 	c.logger.DebugContext(ctx, "loaded child records",
 		slog.String("path", protocolPath),
+		slog.String("parentContextId", parentContextID),
 		slog.Int("count", len(entries)),
 	)
+	return len(entries)
 }
 
 // loadNodeInfoEntry parses a nodeInfo entry and attaches it to the parent node.

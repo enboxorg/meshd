@@ -266,7 +266,6 @@ type WriteNodeInfoParams struct {
 	Signer               *dwn.Signer
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 	Hostname             string
-	ProtocolRole         string
 
 	// UseContextEncryption enables Protocol Context encryption.
 	UseContextEncryption bool
@@ -335,8 +334,8 @@ func WriteNodeInfo(ctx context.Context, params WriteNodeInfoParams) error {
 		Recipient:            params.AnchorDID,
 		ParentContextID:      nodeContextID,
 		Data:                 infoDataBytes,
-		ProtocolRole:         params.ProtocolRole,
 		EncryptionRecipients: recipients,
+		Squash:               true,
 	})
 	if err != nil {
 		return fmt.Errorf("writing nodeInfo: %w", err)
@@ -410,9 +409,8 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 		Recipient:            params.AnchorDID,
 		ParentContextID:      nodeContextID,
 		Data:                 endpointData,
-		ProtocolRole:         params.ProtocolRole,
 		EncryptionRecipients: recipients,
-		Squash:               params.Squash,
+		Squash:               true,
 	})
 	if err != nil {
 		return fmt.Errorf("writing endpoint: %w", err)
@@ -436,16 +434,12 @@ type WriteEndpointParams struct {
 	PublicEndpoints      []control.PublicEndpoint
 	LocalEndpoints       []string
 	NATType              string
-	ProtocolRole         string
 
 	// DiscoKey is this node's current disco public key (base64).
 	DiscoKey string
 
 	// UseContextEncryption enables Protocol Context encryption.
 	UseContextEncryption bool
-
-	// Squash indicates this is a squash (snapshot) write.
-	Squash bool
 }
 
 // WriteACLPolicyParams configures an ACL policy write.
