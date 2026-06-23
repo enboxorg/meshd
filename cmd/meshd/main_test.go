@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -159,6 +162,66 @@ func TestSudoOwnershipRootsRejectsOutsideHome(t *testing.T) {
 	}
 	if isSafeSudoOwnershipRoot(home, home) {
 		t.Fatal("home itself must not be accepted as an ownership root")
+	}
+}
+
+func TestEnsureDWNTenantRegistered(t *testing.T) {
+	var registeredDID string
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/info":
+			writeJSON(t, w, map[string]any{
+				"registrationRequirements": []string{"provider-auth-v0"},
+				"providerAuth": map[string]string{
+					"authorizeUrl": server.URL + "/authorize",
+					"tokenUrl":     server.URL + "/token",
+				},
+			})
+		case "/authorize":
+			writeJSON(t, w, map[string]string{
+				"code":  "test-code",
+				"state": r.URL.Query().Get("state"),
+			})
+		case "/token":
+			writeJSON(t, w, map[string]string{"registrationToken": "test-token"})
+		case "/registration":
+			var body struct {
+				RegistrationData struct {
+					DID string `json:"did"`
+				} `json:"registrationData"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decoding registration body: %v", err)
+			}
+			registeredDID = body.RegistrationData.DID
+			writeJSON(t, w, map[string]string{"status": "ok"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	identity := &did.DID{URI: "did:jwk:test"}
+	if err := ensureDWNTenantRegistered(context.Background(), server.URL, identity); err != nil {
+		t.Fatalf("ensureDWNTenantRegistered: %v", err)
+	}
+	if registeredDID != identity.URI {
+		t.Fatalf("registered DID = %q, want %q", registeredDID, identity.URI)
+	}
+}
+
+func TestEnsureDWNTenantRegisteredNoopWithoutEndpoint(t *testing.T) {
+	if err := ensureDWNTenantRegistered(context.Background(), "", &did.DID{URI: "did:jwk:test"}); err != nil {
+		t.Fatalf("ensureDWNTenantRegistered empty endpoint: %v", err)
+	}
+}
+
+func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Fatalf("encoding response: %v", err)
 	}
 }
 
