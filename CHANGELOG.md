@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.7](https://github.com/enboxorg/meshd/compare/v0.3.6...v0.3.7) (2026-06-23)
+
+
+### Bug Fixes
+
+* label local device in peer list ([#128](https://github.com/enboxorg/meshd/issues/128)) ([da75fda](https://github.com/enboxorg/meshd/commit/da75fda5cda26a285e550803f23697544442d737))
+
 ## [0.3.6](https://github.com/enboxorg/meshd/compare/v0.3.5...v0.3.6) (2026-06-23)
 
 
