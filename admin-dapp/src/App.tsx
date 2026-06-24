@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckIcon,
   ClipboardIcon,
@@ -56,6 +56,8 @@ const EXPIRY_OPTIONS: Array<{ value: ExpiryValue; label: string; durationMs?: nu
   { value: "30d", label: "30 days", durationMs: 30 * 24 * 60 * 60 * 1000 },
   { value: "never", label: "Never" }
 ];
+
+const TOPOLOGY_AUTO_REFRESH_MS = 10_000;
 
 function truncateDid(did: string, head = 18, tail = 10) {
   if (did.length <= head + tail + 3) return did;
@@ -203,6 +205,8 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
   const [networkName, setNetworkName] = useState("");
   const [networkCIDR, setNetworkCIDR] = useState("10.200.0.0/16");
   const [busyAction, setBusyAction] = useState<string>();
+  const [topologyRefreshing, setTopologyRefreshing] = useState(false);
+  const topologyRefreshInFlight = useRef(false);
 
   const selectedNetwork = useMemo(() => {
     if (networks.length === 0) return undefined;
@@ -226,14 +230,25 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     }
   }, [context, did, protocolsInitialized, selectedNetworkId, session]);
 
-  const refreshTopology = useCallback(async () => {
+  const refreshTopology = useCallback(async (options?: { silent?: boolean }) => {
     if (!session || !protocolsInitialized || !selectedNetwork || !ownerMatchesDashboardContext(context, did)) return;
-    setError(undefined);
+    if (topologyRefreshInFlight.current) return;
+    topologyRefreshInFlight.current = true;
+    setTopologyRefreshing(true);
+    if (!options?.silent) {
+      setError(undefined);
+    }
     try {
       const nextTopology = await fetchMeshdNetworkTopology(session, selectedNetwork);
       setTopology(nextTopology);
+      setError(undefined);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load network topology.");
+      if (!options?.silent) {
+        setError(err instanceof Error ? err.message : "Could not load network topology.");
+      }
+    } finally {
+      topologyRefreshInFlight.current = false;
+      setTopologyRefreshing(false);
     }
   }, [context, did, protocolsInitialized, selectedNetwork, session]);
 
@@ -244,6 +259,28 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
   useEffect(() => {
     void refreshTopology();
   }, [refreshTopology]);
+
+  useEffect(() => {
+    if (!session || !protocolsInitialized || !selectedNetwork || !ownerMatchesDashboardContext(context, did)) return;
+
+    const tick = () => {
+      if (document.visibilityState !== "visible" || busyAction) return;
+      void refreshTopology({ silent: true });
+    };
+
+    const interval = window.setInterval(tick, TOPOLOGY_AUTO_REFRESH_MS);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && !busyAction) {
+        void refreshTopology({ silent: true });
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [busyAction, context, did, protocolsInitialized, refreshTopology, selectedNetwork, session]);
 
   useEffect(() => {
     if (!selectedNetwork) return;
@@ -450,8 +487,8 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
                   <TerminalIcon size={16} />
                   Copy Setup Command
                 </button>
-                <button className="secondary-button" type="button" onClick={() => void refreshTopology()}>
-                  <RefreshCwIcon size={16} />
+                <button className="secondary-button" type="button" disabled={topologyRefreshing} onClick={() => void refreshTopology()}>
+                  <RefreshCwIcon className={topologyRefreshing ? "spin" : undefined} size={16} />
                   Refresh
                 </button>
               </div>

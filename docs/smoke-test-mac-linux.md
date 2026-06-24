@@ -102,7 +102,8 @@ Expected result:
 On the Mac dashboard:
 
 1. Select the target network.
-2. Refresh if the pending request is not visible yet.
+2. Wait for the pending request to appear; the dashboard refreshes the selected
+   network automatically while the tab is visible. Use Refresh as a fallback.
 3. Pick an `Approve for` expiry such as `30 days`.
 4. Approve the Linux node.
 5. Confirm the node appears under `Nodes` with the selected expiry.
