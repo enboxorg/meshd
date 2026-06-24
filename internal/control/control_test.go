@@ -354,7 +354,7 @@ func TestNodeRecordToNode(t *testing.T) {
 	})
 }
 
-func TestNodeRecordToNodePrefersOwnerLabelOverHostname(t *testing.T) {
+func TestNodeRecordToNodePreservesOwnerLabelWithHostname(t *testing.T) {
 	didURI, _ := testDIDJWK(t)
 	rec := &NodeRecord{
 		MeshIP: "10.200.0.5",
@@ -366,8 +366,11 @@ func TestNodeRecordToNodePrefersOwnerLabelOverHostname(t *testing.T) {
 	}
 
 	node := nodeRecordToNodeWithThreshold(42, didURI, rec, DefaultPeerStaleThreshold, time.Now().UTC())
-	if node.Name != "server-01" {
-		t.Fatalf("Name = %q, want owner label", node.Name)
+	if node.Name != "old-hostname" {
+		t.Fatalf("Name = %q, want nodeInfo hostname", node.Name)
+	}
+	if node.Label != "server-01" {
+		t.Fatalf("Label = %q, want owner label", node.Label)
 	}
 	if node.OS != "linux" {
 		t.Fatalf("OS = %q, want nodeInfo OS preserved", node.OS)

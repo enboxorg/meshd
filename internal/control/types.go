@@ -25,6 +25,9 @@ type Node struct {
 	// Name is the hostname or label for this node.
 	Name string
 
+	// Label is the owner/dashboard label for this node, when one is set.
+	Label string
+
 	// DID is the node's DID URI.
 	DID string
 
