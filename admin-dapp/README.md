@@ -7,6 +7,11 @@ account. This dapp connects to that wallet, receives delegated DWN grants, and
 then manages networks, invites, pending node approvals, and removals on behalf
 of the owner.
 
+When a node membership expiry is renewed or cleared, the dashboard updates the
+encrypted node record and writes a fresh owner-scoped approval record for that
+node. This lets a CLI device recover with `meshd up` even if it was still
+pending, expired locally, or had stale approval metadata.
+
 Production dashboard:
 
 ```text

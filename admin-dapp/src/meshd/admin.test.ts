@@ -327,12 +327,13 @@ describe("meshd admin DWN operations", () => {
     });
   });
 
-  it("updates node expiry while preserving the existing node payload", async () => {
-    const { session, requests } = createFakeSession({ delegate: true, recordIds: ["node-record"] });
+  it("updates node expiry while preserving the existing node payload and refreshing node approval", async () => {
+    const { session, requests } = createFakeSession({ delegate: true, recordIds: ["node-record", "approval-record"] });
     const network: MeshdNetworkSummary = {
       recordId: "network-record",
       name: "Home mesh",
-      meshCIDR: "10.200.0.0/16"
+      meshCIDR: "10.200.0.0/16",
+      anchorEndpoint: "https://owner.dwn.example"
     };
 
     const node = await updateMeshdNodeExpiry(session, network, {
@@ -394,10 +395,35 @@ describe("meshd admin DWN operations", () => {
         }
       }
     });
+    expect(requests[1]).toMatchObject({
+      messageType: DwnInterface.RecordsWrite,
+      messageParams: {
+        protocol: MESHD_PROTOCOL_URI,
+        protocolPath: "nodeApproval",
+        schema: "https://enbox.id/schemas/wireguard-mesh/node-approval",
+        dataFormat: "application/json",
+        recipient: "did:example:node"
+      }
+    });
+    await expect(blobJson(requests[1].dataStream)).resolves.toMatchObject({
+      ownerDID: "did:example:owner",
+      nodeDID: "did:example:node",
+      networkRecordId: "network-record",
+      networkName: "Home mesh",
+      meshCIDR: "10.200.0.0/16",
+      meshIP: "10.200.0.10",
+      anchorEndpoint: "https://owner.dwn.example",
+      memberRecordId: "member-record",
+      nodeRecordId: "node-record",
+      nodeDateCreated: "2026-06-24T00:00:00Z",
+      label: "server",
+      expiresAt: "2026-07-01T00:00:00Z",
+      approvedAt: expect.any(String)
+    });
   });
 
-  it("clears node expiry when renewing to never", async () => {
-    const { session, requests } = createFakeSession({ recordIds: ["node-record"] });
+  it("clears node expiry when renewing to never and refreshes node approval without expiry", async () => {
+    const { session, requests } = createFakeSession({ recordIds: ["node-record", "approval-record"] });
     const network: MeshdNetworkSummary = {
       recordId: "network-record",
       name: "Home mesh",
@@ -422,6 +448,18 @@ describe("meshd admin DWN operations", () => {
       }
     });
     await expect(blobJson(requests[0].dataStream)).resolves.not.toHaveProperty("expiresAt");
+    await expect(blobJson(requests[1].dataStream)).resolves.toMatchObject({
+      ownerDID: "did:example:owner",
+      nodeDID: "did:example:node",
+      networkRecordId: "network-record",
+      networkName: "Home mesh",
+      meshCIDR: "10.200.0.0/16",
+      meshIP: "10.200.0.10",
+      nodeRecordId: "node-record",
+      nodeDateCreated: "2026-06-24T00:00:00Z",
+      approvedAt: expect.any(String)
+    });
+    await expect(blobJson(requests[1].dataStream)).resolves.not.toHaveProperty("expiresAt");
   });
 
   it("updates node label while preserving expiry and membership metadata", async () => {
