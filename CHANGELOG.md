@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.12.0](https://github.com/enboxorg/meshd/compare/v0.11.0...v0.12.0) (2026-06-24)
+
+
+### Features
+
+* **cli:** show dashboard node labels in status ([5fbd7fe](https://github.com/enboxorg/meshd/commit/5fbd7fe6b90bc571b65a69e2a53a4feef5e8829c))
+
+
+### Bug Fixes
+
+* **control:** keep hostnames distinct from node labels ([587b7f7](https://github.com/enboxorg/meshd/commit/587b7f70ef6a37e980b8e55d0d0a7a5b5b58bffc))
+
 ## [0.11.0](https://github.com/enboxorg/meshd/compare/v0.10.0...v0.11.0) (2026-06-24)
 
 
