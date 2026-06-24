@@ -32,6 +32,7 @@ Thumbs.db
 /dist/
 admin-dapp/dist/
 admin-dapp/node_modules/
+admin-dapp/.vite/
 
 # Config (may contain keys)
 *.key
