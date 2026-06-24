@@ -36,6 +36,10 @@ type Node struct {
 	// under network/member/node.
 	MemberRecordID string
 
+	// ExpiresAt is the owner-controlled membership expiry timestamp.
+	// Empty means the node membership does not expire.
+	ExpiresAt string
+
 	// Key is the WireGuard public key (Curve25519, base64).
 	// Derived from the node's did:jwk identity (Ed25519 → X25519 birational map),
 	// not read from a record field.

@@ -1424,7 +1424,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 	//   - network/member/node (member-associated)
 	encMgr := newEncryptionKeyManager(identity)
 
-	var nodeRecordID, nodeDateCreated, meshIP, memberRecordID string
+	var nodeRecordID, nodeDateCreated, meshIP, memberRecordID, nodeExpiresAt string
 
 	// Query network/node records to find one with our DID as recipient.
 	nodeRecords, queryStatus, err := api.Query(ctx, anchorDID, dwn.QueryParams{
@@ -1442,10 +1442,14 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		nodeRecordID = nodeRecords[0].ID
 		nodeDateCreated = nodeRecords[0].DateCreated
 		var nodeData struct {
-			MeshIP string `json:"meshIP"`
+			MeshIP    string `json:"meshIP"`
+			ExpiresAt string `json:"expiresAt"`
 		}
-		if err := nodeRecords[0].Data().JSON(ctx, &nodeData); err == nil && nodeData.MeshIP != "" {
-			meshIP = nodeData.MeshIP
+		if err := nodeRecords[0].Data().JSON(ctx, &nodeData); err == nil {
+			if nodeData.MeshIP != "" {
+				meshIP = nodeData.MeshIP
+			}
+			nodeExpiresAt = strings.TrimSpace(nodeData.ExpiresAt)
 		}
 		fmt.Printf("  Found node record (owner-provisioned).\n")
 	}
@@ -1488,10 +1492,14 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 				nodeRecordID = memberNodeRecords[0].ID
 				nodeDateCreated = memberNodeRecords[0].DateCreated
 				var nodeData struct {
-					MeshIP string `json:"meshIP"`
+					MeshIP    string `json:"meshIP"`
+					ExpiresAt string `json:"expiresAt"`
 				}
-				if err := memberNodeRecords[0].Data().JSON(ctx, &nodeData); err == nil && nodeData.MeshIP != "" {
-					meshIP = nodeData.MeshIP
+				if err := memberNodeRecords[0].Data().JSON(ctx, &nodeData); err == nil {
+					if nodeData.MeshIP != "" {
+						meshIP = nodeData.MeshIP
+					}
+					nodeExpiresAt = strings.TrimSpace(nodeData.ExpiresAt)
 				}
 				fmt.Printf("  Found node record (member-associated).\n")
 				break
@@ -1590,6 +1598,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		NetworkName:     networkData.Name,
 		MeshCIDR:        networkData.MeshCIDR,
 		MeshIP:          meshIP,
+		NodeExpiresAt:   nodeExpiresAt,
 		NodeDID:         nodeDID,
 		OwnerDID:        ownerDID,
 		MemberDID:       ownerDID,
@@ -2062,6 +2071,7 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 			MeshIP    string `json:"meshIP"`
 			Label     string `json:"label"`
 			MemberDID string `json:"memberDID"`
+			ExpiresAt string `json:"expiresAt"`
 		}
 		if err := r.Data().JSON(ctx, &node); err != nil {
 			// Data may not be inline (encrypted records need context key).
@@ -2071,6 +2081,7 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 				Device:  device,
 				Owner:   peerListOwner(peerDID, "", selfNodeDID, selfOwnerDID),
 				Label:   "(encrypted)",
+				Expires: "unknown",
 				Path:    r.ProtocolPath,
 			})
 			continue
@@ -2081,6 +2092,7 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 			Device:  device,
 			Owner:   peerListOwner(peerDID, node.MemberDID, selfNodeDID, selfOwnerDID),
 			Label:   node.Label,
+			Expires: node.ExpiresAt,
 			Path:    r.ProtocolPath,
 		})
 	}
@@ -2121,6 +2133,7 @@ type peerListRow struct {
 	Device  string
 	Owner   string
 	Label   string
+	Expires string
 	Path    string
 }
 
@@ -2149,6 +2162,7 @@ func peerListRowsFromMapResponse(ns *state.NetworkState, resp *control.MapRespon
 			Device:  peerListDevice(node.DID, selfNodeDID),
 			Owner:   peerListOwner(node.DID, node.MemberDID, selfNodeDID, selfOwnerDID),
 			Label:   node.Name,
+			Expires: node.ExpiresAt,
 			Path:    peerListPath(node),
 		})
 	}
@@ -2161,18 +2175,34 @@ func printPeerListRows(networkName string, rows []peerListRow) {
 		return
 	}
 	fmt.Printf("Peers in %q:\n", networkName)
-	fmt.Printf("%-48s %-16s %-12s %-36s %-12s %s\n", "NODE DID", "MESH IP", "DEVICE", "OWNER", "LABEL", "PATH")
-	fmt.Println(strings.Repeat("-", 132))
+	fmt.Printf("%-44s %-15s %-11s %-28s %-12s %-17s %s\n", "NODE DID", "MESH IP", "DEVICE", "OWNER", "LABEL", "EXPIRES", "PATH")
+	fmt.Println(strings.Repeat("-", 139))
 	for _, row := range rows {
-		fmt.Printf("%-48s %-16s %-12s %-36s %-12s %s\n",
-			truncate(firstNonEmpty(row.NodeDID, "(unknown)"), 48),
+		fmt.Printf("%-44s %-15s %-11s %-28s %-12s %-17s %s\n",
+			truncate(firstNonEmpty(row.NodeDID, "(unknown)"), 44),
 			row.MeshIP,
 			row.Device,
-			truncate(row.Owner, 36),
-			row.Label,
+			truncate(row.Owner, 28),
+			truncate(row.Label, 12),
+			peerListExpiry(row.Expires),
 			row.Path,
 		)
 	}
+}
+
+func peerListExpiry(expiresAt string) string {
+	expiresAt = strings.TrimSpace(expiresAt)
+	if expiresAt == "" {
+		return "never"
+	}
+	parsed, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return truncate(expiresAt, 17)
+	}
+	if time.Now().UTC().After(parsed) {
+		return "expired"
+	}
+	return parsed.UTC().Format("2006-01-02 15:04")
 }
 
 func peerListDevice(peerDID string, selfDID string) string {
@@ -2837,6 +2867,9 @@ func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 	}
 	if ns.MeshIP != "" {
 		fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
+	}
+	if ns.NodeExpiresAt != "" {
+		fmt.Printf("  Membership Expires: %s\n", ns.NodeExpiresAt)
 	}
 	// WireGuard public key is derived from the node DID, not stored.
 	if selfNodeDID != "" {
@@ -4375,6 +4408,7 @@ func refreshPendingOwnerApproval(ctx context.Context, stateDir string, ns *state
 		NetworkName:       firstNonEmpty(approval.NetworkName, "mesh"),
 		MeshCIDR:          firstNonEmpty(approval.MeshCIDR, "10.200.0.0/16"),
 		MeshIP:            approval.MeshIP,
+		NodeExpiresAt:     approval.ExpiresAt,
 		NodeDID:           nodeDID,
 		OwnerDID:          ownerDID,
 		MemberDID:         ownerDID,
@@ -4389,6 +4423,9 @@ func refreshPendingOwnerApproval(ctx context.Context, stateDir string, ns *state
 	fmt.Printf("Owner approval accepted.\n")
 	fmt.Printf("  Network: %s\n", refreshed.NetworkName)
 	fmt.Printf("  Mesh IP: %s\n", refreshed.MeshIP)
+	if refreshed.NodeExpiresAt != "" {
+		fmt.Printf("  Membership Expires: %s\n", refreshed.NodeExpiresAt)
+	}
 	if approvalRecordID != "" {
 		fmt.Printf("  Approval: %s\n", approvalRecordID)
 	}
