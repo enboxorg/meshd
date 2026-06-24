@@ -418,6 +418,16 @@ select:focus {
   min-width: 0;
 }
 
+.inline-control {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.inline-control label {
+  width: min(220px, 100%);
+}
+
 .toggle-field {
   display: inline-flex;
   align-items: center;
@@ -465,6 +475,16 @@ select:focus {
   min-width: 0;
 }
 
+.node-card.expiring {
+  border-color: #d8b25d;
+  background: #fffdf6;
+}
+
+.node-card.expired {
+  border-color: #d36b61;
+  background: #fff8f7;
+}
+
 .node-card-header {
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr) auto;
@@ -504,6 +524,14 @@ dd {
   font-size: 0.78rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.expiry-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 0.5rem;
+  align-items: center;
+  min-width: 0;
 }
 
 .invite-result {

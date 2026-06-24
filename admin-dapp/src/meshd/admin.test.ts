@@ -8,6 +8,7 @@ import {
   createMeshdInvite,
   createMeshdNetwork,
   fetchMeshdNetworks,
+  updateMeshdNodeExpiry,
   type MeshdAdminAgent,
   type MeshdAdminSession,
   type MeshdNetworkSummary
@@ -285,6 +286,103 @@ describe("meshd admin DWN operations", () => {
       secret: "secret-value",
       expiresAt: "2026-06-25T00:00:00Z"
     });
+  });
+
+  it("updates node expiry while preserving the existing node payload", async () => {
+    const { session, requests } = createFakeSession({ delegate: true, recordIds: ["node-record"] });
+    const network: MeshdNetworkSummary = {
+      recordId: "network-record",
+      name: "Home mesh",
+      meshCIDR: "10.200.0.0/16"
+    };
+
+    const node = await updateMeshdNodeExpiry(session, network, {
+      recordId: "node-record",
+      did: "did:example:node",
+      meshIP: "10.200.0.10",
+      allowedIPs: ["10.200.0.10/32", "192.168.1.0/24"],
+      label: "server",
+      ownerDID: "did:example:owner",
+      memberDID: "did:example:owner",
+      delegateDID: "did:example:delegate",
+      memberRecordId: "member-record",
+      addedAt: "2026-06-24T00:00:00Z",
+      expiresAt: "2026-06-25T00:00:00Z",
+      sourceDWN: "https://node.dwn.example",
+      nodeKeyDelivery: {
+        rootKeyId: "did:example:node#1",
+        publicKeyJwk: {
+          kid: "did:example:node#1",
+          kty: "OKP",
+          crv: "X25519",
+          x: "abc"
+        }
+      },
+      createdAt: "2026-06-24T00:00:00Z"
+    }, "2026-07-01T00:00:00Z");
+
+    expect(node.expiresAt).toBe("2026-07-01T00:00:00Z");
+    expect(requests[0]).toMatchObject({
+      encryption: true,
+      messageType: DwnInterface.RecordsWrite,
+      messageParams: {
+        protocol: MESHD_PROTOCOL_URI,
+        protocolPath: "network/member/node",
+        schema: "https://enbox.id/schemas/wireguard-mesh/node",
+        recipient: "did:example:node",
+        parentContextId: "network-record/member-record",
+        recordId: "node-record",
+        dateCreated: "2026-06-24T00:00:00Z"
+      }
+    });
+    await expect(blobJson(requests[0].dataStream)).resolves.toEqual({
+      meshIP: "10.200.0.10",
+      allowedIPs: ["10.200.0.10/32", "192.168.1.0/24"],
+      addedAt: "2026-06-24T00:00:00Z",
+      expiresAt: "2026-07-01T00:00:00Z",
+      label: "server",
+      ownerDID: "did:example:owner",
+      memberDID: "did:example:owner",
+      delegateDID: "did:example:delegate",
+      sourceDWN: "https://node.dwn.example",
+      nodeKeyDelivery: {
+        rootKeyId: "did:example:node#1",
+        publicKeyJwk: {
+          kid: "did:example:node#1",
+          kty: "OKP",
+          crv: "X25519",
+          x: "abc"
+        }
+      }
+    });
+  });
+
+  it("clears node expiry when renewing to never", async () => {
+    const { session, requests } = createFakeSession({ recordIds: ["node-record"] });
+    const network: MeshdNetworkSummary = {
+      recordId: "network-record",
+      name: "Home mesh",
+      meshCIDR: "10.200.0.0/16"
+    };
+
+    const node = await updateMeshdNodeExpiry(session, network, {
+      recordId: "node-record",
+      did: "did:example:node",
+      meshIP: "10.200.0.10",
+      addedAt: "2026-06-24T00:00:00Z",
+      expiresAt: "2026-06-25T00:00:00Z",
+      createdAt: "2026-06-24T00:00:00Z"
+    });
+
+    expect(node.expiresAt).toBeUndefined();
+    expect(requests[0]).toMatchObject({
+      messageParams: {
+        protocolPath: "network/node",
+        parentContextId: "network-record",
+        recordId: "node-record"
+      }
+    });
+    await expect(blobJson(requests[0].dataStream)).resolves.not.toHaveProperty("expiresAt");
   });
 
   it("fetches and sorts network records through delegated records queries", async () => {

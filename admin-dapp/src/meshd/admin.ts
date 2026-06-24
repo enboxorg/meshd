@@ -78,6 +78,7 @@ export type MeshdNodeSummary = {
   recordId: string;
   did: string;
   meshIP?: string;
+  allowedIPs?: string[];
   label?: string;
   ownerDID?: string;
   memberDID?: string;
@@ -85,6 +86,8 @@ export type MeshdNodeSummary = {
   memberRecordId?: string;
   addedAt?: string;
   expiresAt?: string;
+  sourceDWN?: string;
+  nodeKeyDelivery?: MeshdNodeKeyDelivery;
   createdAt?: string;
 };
 
@@ -166,6 +169,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function getString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function getStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value
+    .filter((item): item is string => typeof item === "string" && item.trim() !== "")
+    .map((item) => item.trim());
+  return items.length ? items : undefined;
 }
 
 function base64UrlDecode(value: string): string {
@@ -472,6 +483,7 @@ export function parseMeshdNodeRecord(rawEntry: unknown, memberRecordId?: string)
     recordId,
     did,
     meshIP: getString(data.meshIP),
+    allowedIPs: getStringArray(data.allowedIPs),
     label: getString(data.label),
     ownerDID: getString(data.ownerDID) ?? getString(data.memberDID),
     memberDID: getString(data.memberDID) ?? getString(data.ownerDID),
@@ -479,6 +491,8 @@ export function parseMeshdNodeRecord(rawEntry: unknown, memberRecordId?: string)
     memberRecordId,
     addedAt: getString(data.addedAt),
     expiresAt: getString(data.expiresAt),
+    sourceDWN: getString(data.sourceDWN),
+    nodeKeyDelivery: isObject(data.nodeKeyDelivery) ? data.nodeKeyDelivery as MeshdNodeKeyDelivery : undefined,
     createdAt: getString(descriptor.dateCreated) ?? getString(wrapper.dateCreated)
   };
 }
@@ -1148,7 +1162,8 @@ async function deliverNetworkContextKey(
 export async function approveMeshdNodeRequest(
   session: MeshdAdminSession,
   network: MeshdNetworkSummary,
-  request: MeshdNodeRequestSummary
+  request: MeshdNodeRequestSummary,
+  options: { expiresAt?: string } = {}
 ): Promise<ApproveMeshdNodeRequestResult> {
   const ownerScopedRequest = isOwnerNodeRequest(request);
   if (ownerScopedRequest) {
@@ -1164,6 +1179,9 @@ export async function approveMeshdNodeRequest(
   const requestOwnerDID = nodeOwnerDID(request);
   const member = await ensureMemberRecord(session, network, requestOwnerDID, request.label);
   const meshIP = await allocateMeshIp(network.meshCIDR, request.nodeDID);
+  const expiresAt = Object.prototype.hasOwnProperty.call(options, "expiresAt")
+    ? options.expiresAt?.trim()
+    : request.expiresAt;
 
   const nodeRecord = await writeRecord(
     session,
@@ -1183,7 +1201,7 @@ export async function approveMeshdNodeRequest(
       ownerDID: requestOwnerDID,
       memberDID: requestOwnerDID,
       ...(request.delegateDID ? { delegateDID: request.delegateDID } : {}),
-      ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
+      ...(expiresAt ? { expiresAt } : {}),
       nodeKeyDelivery
     },
     true
@@ -1218,7 +1236,7 @@ export async function approveMeshdNodeRequest(
         nodeRecordId: nodeRecord.recordId,
         ...(nodeRecord.dateCreated ? { nodeDateCreated: nodeRecord.dateCreated } : {}),
         ...(request.label ? { label: request.label } : {}),
-        ...(request.expiresAt ? { expiresAt: request.expiresAt } : {}),
+        ...(expiresAt ? { expiresAt } : {}),
         approvedAt: new Date().toISOString(),
         requestRecordId: request.recordId
       }
@@ -1239,6 +1257,56 @@ export async function rejectMeshdNodeRequest(
   request: MeshdNodeRequestSummary
 ): Promise<void> {
   await deleteRecord(session, MESHD_PROTOCOL_URI, request.recordId, false);
+}
+
+export async function updateMeshdNodeExpiry(
+  session: MeshdAdminSession,
+  network: MeshdNetworkSummary,
+  node: MeshdNodeSummary,
+  expiresAt?: string
+): Promise<MeshdNodeSummary> {
+  const nextExpiresAt = expiresAt?.trim();
+  if (!node.meshIP) {
+    throw new Error("Cannot update expiry for a node without a mesh IP.");
+  }
+
+  const protocolPath = node.memberRecordId ? "network/member/node" : "network/node";
+  const parentContextId = node.memberRecordId ? `${network.recordId}/${node.memberRecordId}` : network.recordId;
+  await writeRecord(
+    session,
+    MESHD_PROTOCOL_URI,
+    {
+      protocol: MESHD_PROTOCOL_URI,
+      protocolPath,
+      schema: "https://enbox.id/schemas/wireguard-mesh/node",
+      dataFormat: "application/json",
+      recipient: node.did,
+      parentContextId,
+      recordId: node.recordId,
+      ...(node.createdAt ? { dateCreated: node.createdAt } : {})
+    },
+    {
+      meshIP: node.meshIP,
+      ...(node.allowedIPs?.length ? { allowedIPs: node.allowedIPs } : {}),
+      addedAt: node.addedAt || new Date().toISOString(),
+      ...(nextExpiresAt ? { expiresAt: nextExpiresAt } : {}),
+      ...(node.label ? { label: node.label } : {}),
+      ...(node.ownerDID ? { ownerDID: node.ownerDID } : {}),
+      ...(node.memberDID ? { memberDID: node.memberDID } : {}),
+      ...(node.delegateDID ? { delegateDID: node.delegateDID } : {}),
+      ...(node.sourceDWN ? { sourceDWN: node.sourceDWN } : {}),
+      ...(node.nodeKeyDelivery ? { nodeKeyDelivery: node.nodeKeyDelivery } : {})
+    },
+    true
+  );
+
+  const nextNode = { ...node };
+  if (nextExpiresAt) {
+    nextNode.expiresAt = nextExpiresAt;
+  } else {
+    delete nextNode.expiresAt;
+  }
+  return nextNode;
 }
 
 function getRecordIdFromEntry(rawEntry: unknown): string | undefined {
