@@ -324,6 +324,51 @@ func TestPeerListRowsFromMapResponse(t *testing.T) {
 	}
 }
 
+func TestRefreshLocalMembershipMetadataFromMap(t *testing.T) {
+	dir := t.TempDir()
+	ns := &state.NetworkState{
+		NetworkRecordID: "network-1",
+		NetworkName:     "home",
+		MeshCIDR:        "10.200.0.0/16",
+		MeshIP:          "10.200.0.5",
+		NodeExpiresAt:   "2026-07-01T00:00:00Z",
+		NodeDID:         "did:jwk:node",
+		OwnerDID:        "did:jwk:old-owner",
+		MemberDID:       "did:jwk:old-owner",
+		NodeRecordID:    "node-1",
+		MemberRecordID:  "member-1",
+	}
+	if err := state.SaveNetworkState(dir, ns); err != nil {
+		t.Fatalf("SaveNetworkState: %v", err)
+	}
+
+	refreshed, changed, err := refreshLocalMembershipMetadataFromMap(dir, ns, &control.MapResponse{
+		Node: &control.Node{
+			DID:            "did:jwk:node",
+			MeshIP:         netip.MustParseAddr("10.200.0.9"),
+			MemberDID:      "did:jwk:wallet",
+			MemberRecordID: "member-2",
+		},
+	})
+	if err != nil {
+		t.Fatalf("refreshLocalMembershipMetadataFromMap: %v", err)
+	}
+	if !changed {
+		t.Fatal("refreshLocalMembershipMetadataFromMap changed = false, want true")
+	}
+	if refreshed.MeshIP != "10.200.0.9" || refreshed.NodeExpiresAt != "" || refreshed.OwnerDID != "did:jwk:wallet" || refreshed.MemberRecordID != "member-2" {
+		t.Fatalf("refreshed state = %+v", refreshed)
+	}
+
+	reloaded, err := state.LoadNetworkState(dir)
+	if err != nil {
+		t.Fatalf("LoadNetworkState: %v", err)
+	}
+	if reloaded.MeshIP != "10.200.0.9" || reloaded.NodeExpiresAt != "" || reloaded.OwnerDID != "did:jwk:wallet" || reloaded.MemberDID != "did:jwk:wallet" || reloaded.MemberRecordID != "member-2" {
+		t.Fatalf("persisted state = %+v", reloaded)
+	}
+}
+
 func TestPeerListExpiry(t *testing.T) {
 	if got := peerListExpiry(""); got != "never" {
 		t.Fatalf("empty expiry = %q, want never", got)
