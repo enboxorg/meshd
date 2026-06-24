@@ -4,11 +4,11 @@ import { ownerSetupCommand, shellQuote } from "./commands";
 
 describe("meshd admin command helpers", () => {
   it("builds the owner setup command", () => {
-    expect(ownerSetupCommand("did:example:owner")).toBe("meshd up --owner 'did:example:owner'");
+    expect(ownerSetupCommand("did:example:owner")).toBe("meshd up 'did:example:owner'");
   });
 
   it("trims the owner DID before building commands", () => {
-    expect(ownerSetupCommand("  did:example:owner  ")).toBe("meshd up --owner 'did:example:owner'");
+    expect(ownerSetupCommand("  did:example:owner  ")).toBe("meshd up 'did:example:owner'");
   });
 
   it("shell-quotes single quotes defensively", () => {

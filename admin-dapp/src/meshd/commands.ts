@@ -7,5 +7,5 @@ export function ownerSetupCommand(ownerDID: string): string {
   if (!did) {
     throw new Error("Owner DID is required.");
   }
-  return `meshd up --owner ${shellQuote(did)}`;
+  return `meshd up ${shellQuote(did)}`;
 }

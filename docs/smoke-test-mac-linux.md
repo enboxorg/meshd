@@ -10,7 +10,7 @@ Assumptions:
 - Both machines may already run Tailscale. meshd uses `10.200.0.0/16`, so it
   should not overlap Tailscale's `100.64.0.0/10` address space.
 - The beta DWN endpoint is `https://dev.aws.dwn.enbox.id`.
-  `meshd up --owner` uses it automatically when the owner DID does not
+  `meshd up <owner-did>` uses it automatically when the owner DID does not
   advertise a DWN endpoint. The dashboard uses the same default when creating
   a network for that owner.
 - The released CLI is installed on both machines.
@@ -84,11 +84,11 @@ On the Linux server, paste the setup command copied from the dashboard:
 
 ```bash
 meshd down || true
-meshd up --owner '<OWNER_DID>'
+meshd up '<OWNER_DID>'
 ```
 
-You can also run `meshd up` without flags and paste the owner DID at the setup
-prompt.
+The older `meshd up --owner '<OWNER_DID>'` form still works. You can also run
+`meshd up` without arguments and paste the owner DID at the setup prompt.
 
 Expected result:
 
