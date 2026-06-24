@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/enboxorg/meshd/compare/v0.5.0...v0.6.0) (2026-06-24)
+
+
+### Features
+
+* add admin node expiry controls ([#137](https://github.com/enboxorg/meshd/issues/137)) ([35f4762](https://github.com/enboxorg/meshd/commit/35f47622c2241768ece58c82d91f497630b3408c))
+* show node membership expiry in CLI ([#139](https://github.com/enboxorg/meshd/issues/139)) ([f7f056e](https://github.com/enboxorg/meshd/commit/f7f056e802ae4353c7d359a040c6ffd632d920f3))
+
 ## [0.5.0](https://github.com/enboxorg/meshd/compare/v0.4.0...v0.5.0) (2026-06-24)
 
 
