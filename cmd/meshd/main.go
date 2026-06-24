@@ -87,6 +87,12 @@ Up flags:
   --foreground      Run in the current terminal instead of background
   -v, --verbose     Enable debug logging
 
+Admin flags:
+  --owner <did>     Open the dashboard for a specific wallet/owner DID
+  --network <id>    Preselect a network record in the dashboard
+  --dashboard <url> Dashboard URL override
+  --print           Print the dashboard URL without opening a browser
+
 Quick start:
   meshd auth connect
   meshd up
@@ -775,8 +781,10 @@ func printWalletURL(rawURL string, autoOpen bool, remoteHandoff bool) {
 }
 
 type adminOptions struct {
-	dashboardURL string
-	printOnly    bool
+	dashboardURL    string
+	printOnly       bool
+	ownerDID        string
+	networkRecordID string
 }
 
 const defaultAdminDashboardURL = "https://meshd-admin.pages.dev"
@@ -790,6 +798,24 @@ func parseAdminArgs(args []string) (adminOptions, error) {
 				return opts, fmt.Errorf("%s requires a URL", args[i])
 			}
 			opts.dashboardURL = args[i+1]
+			i++
+		case "--owner":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--owner requires a DID")
+			}
+			opts.ownerDID = strings.TrimSpace(args[i+1])
+			if opts.ownerDID == "" {
+				return opts, fmt.Errorf("--owner requires a DID")
+			}
+			i++
+		case "--network":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--network requires a record ID")
+			}
+			opts.networkRecordID = strings.TrimSpace(args[i+1])
+			if opts.networkRecordID == "" {
+				return opts, fmt.Errorf("--network requires a record ID")
+			}
 			i++
 		case "--print", "--no-open":
 			opts.printOnly = true
@@ -807,7 +833,7 @@ func cmdAdmin(ctx context.Context, args []string, flagProfile string) error {
 	if err != nil {
 		return err
 	}
-	adminURL := buildAdminURL(opts.dashboardURL, adminContextFromProfile(flagProfile))
+	adminURL := buildAdminURL(opts.dashboardURL, adminContextFromOptions(opts, adminContextFromProfile(flagProfile)))
 	fmt.Printf("meshd admin:\n  %s\n", adminURL)
 	if opts.printOnly || !stdinIsTerminal() {
 		return nil
@@ -823,6 +849,17 @@ func cmdAdmin(ctx context.Context, args []string, flagProfile string) error {
 type adminContext struct {
 	OwnerDID        string
 	NetworkRecordID string
+}
+
+func adminContextFromOptions(opts adminOptions, fallback adminContext) adminContext {
+	ctx := fallback
+	if opts.ownerDID != "" {
+		ctx.OwnerDID = opts.ownerDID
+	}
+	if opts.networkRecordID != "" {
+		ctx.NetworkRecordID = opts.networkRecordID
+	}
+	return ctx
 }
 
 func adminContextFromProfile(flagProfile string) adminContext {
@@ -864,6 +901,24 @@ func buildAdminURL(walletURL string, ctx adminContext) string {
 		adminURL += "?" + encoded
 	}
 	return adminURL
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func adminDashboardCommand(ctx adminContext, printOnly bool) string {
+	args := []string{"meshd", "admin"}
+	if ctx.OwnerDID != "" {
+		args = append(args, "--owner", shellQuote(ctx.OwnerDID))
+	}
+	if ctx.NetworkRecordID != "" {
+		args = append(args, "--network", shellQuote(ctx.NetworkRecordID))
+	}
+	if printOnly {
+		args = append(args, "--print")
+	}
+	return strings.Join(args, " ")
 }
 
 func startWalletResponseCallback() (*walletResponseCallback, error) {
@@ -4392,8 +4447,8 @@ func setupOwnerNodeRequest(ctx context.Context, f upFlags, stateDir string, iden
 		NodeKeyDelivery: nodeKeyDelivery,
 	})
 	if err != nil {
-		adminURL := buildAdminURL(defaultAdminDashboardURL, adminContext{OwnerDID: ownerDID})
-		return nil, fmt.Errorf("submitting owner approval request: %w\nOpen the dashboard once to initialize meshd for this owner: %s", err, adminURL)
+		ctx := adminContext{OwnerDID: ownerDID}
+		return nil, fmt.Errorf("submitting owner approval request: %w\nOpen the dashboard once to initialize meshd for this owner:\n  %s\n  %s", err, adminDashboardCommand(ctx, true), buildAdminURL(defaultAdminDashboardURL, ctx))
 	}
 
 	ns := &state.NetworkState{
@@ -4415,7 +4470,9 @@ func setupOwnerNodeRequest(ctx context.Context, f upFlags, stateDir string, iden
 	fmt.Printf("  Owner DWN: %s\n", endpoint)
 	fmt.Printf("  Node DID:  %s\n", identity.URI)
 	fmt.Printf("  Request:   %s\n", requestID)
-	fmt.Printf("  Dashboard: %s\n", buildAdminURL(defaultAdminDashboardURL, adminContext{OwnerDID: ownerDID}))
+	adminCtx := adminContext{OwnerDID: ownerDID}
+	fmt.Printf("  Dashboard: %s\n", buildAdminURL(defaultAdminDashboardURL, adminCtx))
+	fmt.Printf("  Admin command: %s\n", adminDashboardCommand(adminCtx, true))
 	fmt.Printf("\nApprove this device in the dashboard, then run 'meshd up' again.\n")
 	return ns, nil
 }
@@ -4520,7 +4577,9 @@ func printPendingOwnerApproval(ns *state.NetworkState) {
 	fmt.Printf("Node approval is still pending.\n")
 	if ownerDID != "" {
 		fmt.Printf("  Owner DID: %s\n", ownerDID)
-		fmt.Printf("  Dashboard: %s\n", buildAdminURL(defaultAdminDashboardURL, adminContext{OwnerDID: ownerDID}))
+		adminCtx := adminContext{OwnerDID: ownerDID, NetworkRecordID: ns.NetworkRecordID}
+		fmt.Printf("  Dashboard: %s\n", buildAdminURL(defaultAdminDashboardURL, adminCtx))
+		fmt.Printf("  Admin command: %s\n", adminDashboardCommand(adminCtx, true))
 	}
 	fmt.Printf("\nApprove this device in the dashboard, then run 'meshd up' again.\n")
 }

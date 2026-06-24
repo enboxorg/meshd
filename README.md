@@ -51,7 +51,7 @@ Admin dapp; each machine keeps a local encrypted node DID.
 
 ```bash
 # Open the dashboard once as the owner so the wallet grants meshd Admin access.
-meshd admin --print
+meshd admin
 
 # In the dashboard, copy the setup command from the target network.
 # On a new device, run it to request approval from that owner.
@@ -222,7 +222,10 @@ next command or admin action to try.
 Run `meshd admin` to open the standalone meshd Admin dapp for the active owner and
 network. From there you can create, copy, and revoke invite URLs, approve
 pending nodes, and remove devices without copying record IDs by hand. Use
-`meshd admin --print` on SSH servers when you only want the URL.
+`meshd admin --print` on SSH servers when you only want the URL. On a fresh
+machine or when approving a server from another device, target the owner
+explicitly with `meshd admin --owner <wallet-did>`; add `--network <record-id>`
+when you want the dashboard to preselect a specific network.
 
 For manual admin onboarding, use `meshd peer add <node-did> --owner
 <wallet-or-owner-did>` when the device DID and owning wallet/member DID are

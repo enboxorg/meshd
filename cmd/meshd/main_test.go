@@ -249,18 +249,31 @@ func TestBuildAdminURL(t *testing.T) {
 	if got := buildAdminURL("", adminContext{}); got != "https://meshd-admin.pages.dev" {
 		t.Fatalf("default admin URL = %q", got)
 	}
+	if got := adminDashboardCommand(adminContext{OwnerDID: "did:example:own'er", NetworkRecordID: "network-1"}, true); got != "meshd admin --owner 'did:example:own'\\''er' --network 'network-1' --print" {
+		t.Fatalf("admin dashboard command = %q", got)
+	}
 }
 
 func TestParseAdminArgs(t *testing.T) {
-	opts, err := parseAdminArgs([]string{"--dashboard", "http://127.0.0.1:5173", "--print"})
+	opts, err := parseAdminArgs([]string{"--dashboard", "http://127.0.0.1:5173", "--owner", "did:example:owner", "--network", "network-1", "--print"})
 	if err != nil {
 		t.Fatalf("parseAdminArgs: %v", err)
 	}
-	if opts.dashboardURL != "http://127.0.0.1:5173" || !opts.printOnly {
+	if opts.dashboardURL != "http://127.0.0.1:5173" || opts.ownerDID != "did:example:owner" || opts.networkRecordID != "network-1" || !opts.printOnly {
 		t.Fatalf("admin opts = %+v", opts)
+	}
+	ctx := adminContextFromOptions(opts, adminContext{OwnerDID: "did:example:fallback", NetworkRecordID: "fallback-network"})
+	if ctx.OwnerDID != "did:example:owner" || ctx.NetworkRecordID != "network-1" {
+		t.Fatalf("admin context = %+v", ctx)
 	}
 	if _, err := parseAdminArgs([]string{"--wallet"}); err == nil {
 		t.Fatal("expected missing wallet URL to fail")
+	}
+	if _, err := parseAdminArgs([]string{"--owner"}); err == nil {
+		t.Fatal("expected missing owner DID to fail")
+	}
+	if _, err := parseAdminArgs([]string{"--network", "  "}); err == nil {
+		t.Fatal("expected blank network ID to fail")
 	}
 	if _, err := parseAdminArgs([]string{"--unknown"}); err == nil {
 		t.Fatal("expected unknown flag to fail")
