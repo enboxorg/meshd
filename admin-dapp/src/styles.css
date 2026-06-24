@@ -175,6 +175,21 @@ code {
   min-width: 0;
 }
 
+.target-owner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.65rem;
+  border: 1px solid #d8dfd5;
+  border-radius: 8px;
+  background: #fbfcfa;
+  padding: 0.65rem;
+  min-width: 0;
+  color: #49534e;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
 h1,
 p {
   margin: 0;
@@ -577,6 +592,10 @@ dd {
 
 .state-panel {
   justify-items: start;
+}
+
+.state-panel p {
+  overflow-wrap: anywhere;
 }
 
 .spin {
