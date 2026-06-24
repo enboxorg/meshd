@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/enboxorg/meshd/compare/v0.9.1...v0.10.0) (2026-06-24)
+
+
+### Features
+
+* **cli:** accept pasted owner DID or invite in up wizard ([#152](https://github.com/enboxorg/meshd/issues/152)) ([2ee0627](https://github.com/enboxorg/meshd/commit/2ee0627aa0be8d2d4490cd6e8fa8120f4e760a02))
+
 ## [0.9.1](https://github.com/enboxorg/meshd/compare/v0.9.0...v0.9.1) (2026-06-24)
 
 
