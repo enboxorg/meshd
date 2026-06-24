@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/enboxorg/meshd/compare/v0.3.7...v0.4.0) (2026-06-24)
+
+
+### Features
+
+* add dashboard-owned admin flow ([6b5e48c](https://github.com/enboxorg/meshd/commit/6b5e48c85b8c20d48e05df493d6ba588a8985bb8))
+
+
+### Bug Fixes
+
+* skip admin dapp deploy without cloudflare secrets ([41c9169](https://github.com/enboxorg/meshd/commit/41c91693166d897389efac651529c3929630a2ce))
+
 ## [0.3.7](https://github.com/enboxorg/meshd/compare/v0.3.6...v0.3.7) (2026-06-23)
 
 
