@@ -11,6 +11,7 @@ import {
   SaveIcon,
   ServerIcon,
   ShieldCheckIcon,
+  TerminalIcon,
   Trash2Icon,
   UserPlusIcon,
   XIcon
@@ -23,6 +24,7 @@ import {
   ownerMatchesDashboardContext,
   type MeshdDashboardURLContext
 } from "./meshd/dashboard-url";
+import { ownerSetupCommand } from "./meshd/commands";
 import {
   approveMeshdNodeRequest,
   buildMeshdInviteURL,
@@ -342,6 +344,11 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     await copyToClipboard(url);
   }
 
+  async function handleCopyOwnerSetupCommand() {
+    if (!did) return;
+    await copyToClipboard(ownerSetupCommand(did));
+  }
+
   async function handleRemoveNode(node: MeshdNodeSummary) {
     if (!session || !selectedNetwork) return;
     await runAction(`remove-${node.recordId}`, async () => {
@@ -439,6 +446,10 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
                 <p>{selectedNetwork.meshCIDR}</p>
               </div>
               <div className="header-buttons">
+                <button className="secondary-button" type="button" onClick={() => void handleCopyOwnerSetupCommand()}>
+                  <TerminalIcon size={16} />
+                  Copy Setup Command
+                </button>
                 <button className="secondary-button" type="button" onClick={() => void refreshTopology()}>
                   <RefreshCwIcon size={16} />
                   Refresh
