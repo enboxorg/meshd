@@ -9,6 +9,7 @@ import { DidJwk } from "@enbox/dids";
 import { Message } from "@enbox/dwn-sdk-js";
 
 import {
+  DEFAULT_DWN_ENDPOINT,
   MESHD_KEY_DELIVERY_PROTOCOL_URI,
   MESHD_PROTOCOL_URI
 } from "@/enbox/config";
@@ -638,12 +639,17 @@ export async function fetchMeshdNetworkTopology(
 }
 
 async function ownerDefaultDwnEndpoint(session: MeshdAdminSession): Promise<string> {
-  const endpoints = await session.agent.dwn?.getDwnEndpointUrlsForTarget?.(session.ownerDid);
-  const endpoint = endpoints?.find((candidate) => candidate.trim() !== "");
-  if (!endpoint) {
-    throw new Error("The owner identity does not publish a DWN endpoint.");
+  let endpoints: string[] | undefined;
+  try {
+    endpoints = await session.agent.dwn?.getDwnEndpointUrlsForTarget?.(session.ownerDid);
+  } catch {
+    endpoints = undefined;
   }
-  return endpoint;
+  const endpoint = endpoints?.find((candidate) => candidate.trim() !== "") ?? DEFAULT_DWN_ENDPOINT;
+  if (!endpoint) {
+    throw new Error("No DWN endpoint is configured for this owner.");
+  }
+  return endpoint.trim().replace(/\/+$/, "");
 }
 
 export async function createMeshdNetwork(

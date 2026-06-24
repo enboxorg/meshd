@@ -1,7 +1,7 @@
 import { DwnInterface } from "@enbox/agent";
 import { describe, expect, it, vi } from "vitest";
 
-import { MESHD_PROTOCOL_URI } from "@/enbox/config";
+import { DEFAULT_DWN_ENDPOINT, MESHD_PROTOCOL_URI } from "@/enbox/config";
 
 import {
   buildMeshdInviteURL,
@@ -160,6 +160,23 @@ describe("meshd admin DWN operations", () => {
     ]);
   });
 
+  it("uses the beta DWN endpoint when the owner does not publish one", async () => {
+    const { session, requests } = createFakeSession({
+      endpoints: ["", "   "],
+      recordIds: ["network-record"]
+    });
+
+    const network = await createMeshdNetwork(session, {
+      name: "Home mesh",
+      meshCIDR: "10.200.0.0/16"
+    });
+
+    expect(network.anchorEndpoint).toBe(DEFAULT_DWN_ENDPOINT);
+    await expect(blobJson(requests[0].dataStream)).resolves.toMatchObject({
+      anchorEndpoint: DEFAULT_DWN_ENDPOINT
+    });
+  });
+
   it("normalizes and validates network CIDR before writing network records", async () => {
     const valid = createFakeSession({ recordIds: ["network-record"] });
 
@@ -286,6 +303,27 @@ describe("meshd admin DWN operations", () => {
       tokenId: "invite-record",
       secret: "secret-value",
       expiresAt: "2026-06-25T00:00:00Z"
+    });
+  });
+
+  it("rebuilds invite URLs with the beta endpoint when no network endpoint is stored", async () => {
+    const { session } = createFakeSession({ endpoints: [] });
+    const network: MeshdNetworkSummary = {
+      recordId: "network-record",
+      name: "Home mesh",
+      meshCIDR: "10.200.0.0/16"
+    };
+
+    const url = await buildMeshdInviteURL(session, network, {
+      recordId: "invite-record",
+      key: "secret-value",
+      usedBy: []
+    });
+
+    expect(decodeBase64UrlJson(url.slice("meshd://invite/".length))).toMatchObject({
+      endpoint: DEFAULT_DWN_ENDPOINT,
+      anchorDid: "did:example:owner",
+      networkId: "network-record"
     });
   });
 

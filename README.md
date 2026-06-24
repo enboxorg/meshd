@@ -66,6 +66,8 @@ the network context key, and writes a node approval response that the CLI
 consumes on the next `meshd up`.
 If the owner DID does not advertise a DWN endpoint, meshd uses the beta DWN
 endpoint by default. Use `--endpoint` or `DWN_ENDPOINT` to override it.
+The dashboard uses the same beta endpoint when creating a network for an owner
+without a published DWN endpoint.
 
 The default dashboard is deployed at `https://meshd-admin.pages.dev`.
 
