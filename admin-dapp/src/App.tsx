@@ -27,6 +27,7 @@ import {
   rejectMeshdNodeRequest,
   removeMeshdNode,
   revokeMeshdInvite,
+  updateMeshdNodeExpiry,
   type CreateMeshdInviteResult,
   type MeshdAdminSession,
   type MeshdNetworkSummary,
@@ -37,9 +38,9 @@ import {
 } from "./meshd/admin";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
-type InviteExpiryValue = "1h" | "24h" | "7d" | "30d" | "never";
+type ExpiryValue = "1h" | "24h" | "7d" | "30d" | "never";
 
-const INVITE_EXPIRY_OPTIONS: Array<{ value: InviteExpiryValue; label: string; durationMs?: number }> = [
+const EXPIRY_OPTIONS: Array<{ value: ExpiryValue; label: string; durationMs?: number }> = [
   { value: "1h", label: "1 hour", durationMs: 60 * 60 * 1000 },
   { value: "24h", label: "24 hours", durationMs: 24 * 60 * 60 * 1000 },
   { value: "7d", label: "7 days", durationMs: 7 * 24 * 60 * 60 * 1000 },
@@ -64,13 +65,23 @@ function formatTime(value?: string) {
   }).format(date);
 }
 
+function expiryState(value?: string) {
+  if (!value) return "none";
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return "unknown";
+  const remaining = time - Date.now();
+  if (remaining <= 0) return "expired";
+  if (remaining <= 24 * 60 * 60 * 1000) return "soon";
+  return "active";
+}
+
 async function copyToClipboard(value: string) {
   await navigator.clipboard.writeText(value);
   toast.success("Copied");
 }
 
-function inviteExpiryTimestamp(value: InviteExpiryValue) {
-  const option = INVITE_EXPIRY_OPTIONS.find((item) => item.value === value);
+function expiryTimestamp(value: ExpiryValue) {
+  const option = EXPIRY_OPTIONS.find((item) => item.value === value);
   if (!option?.durationMs) {
     return undefined;
   }
@@ -170,7 +181,8 @@ function Dashboard() {
   const [error, setError] = useState<string>();
   const [inviteResult, setInviteResult] = useState<CreateMeshdInviteResult>();
   const [inviteLabel, setInviteLabel] = useState("");
-  const [inviteExpiry, setInviteExpiry] = useState<InviteExpiryValue>("24h");
+  const [inviteExpiry, setInviteExpiry] = useState<ExpiryValue>("24h");
+  const [approvalExpiry, setApprovalExpiry] = useState<ExpiryValue>("never");
   const [inviteReusable, setInviteReusable] = useState(false);
   const [networkName, setNetworkName] = useState("");
   const [networkCIDR, setNetworkCIDR] = useState("10.200.0.0/16");
@@ -253,7 +265,7 @@ function Dashboard() {
     await runAction("create-invite", async () => {
       const result = await createMeshdInvite(session, selectedNetwork, {
         label: inviteLabel.trim() || selectedNetwork.name,
-        expiresAt: inviteExpiryTimestamp(inviteExpiry),
+        expiresAt: expiryTimestamp(inviteExpiry),
         reusable: inviteReusable
       });
       setInviteLabel("");
@@ -266,7 +278,9 @@ function Dashboard() {
   async function handleApprove(request: MeshdNodeRequestSummary) {
     if (!session || !selectedNetwork) return;
     await runAction(`approve-${request.recordId}`, async () => {
-      const result = await approveMeshdNodeRequest(session, selectedNetwork, request);
+      const result = await approveMeshdNodeRequest(session, selectedNetwork, request, {
+        expiresAt: expiryTimestamp(approvalExpiry)
+      });
       toast.success(`Node approved at ${result.meshIP}`);
       await refreshTopology();
     });
@@ -277,6 +291,15 @@ function Dashboard() {
     await runAction(`reject-${request.recordId}`, async () => {
       await rejectMeshdNodeRequest(session, request);
       toast.success("Request rejected");
+      await refreshTopology();
+    });
+  }
+
+  async function handleUpdateNodeExpiry(node: MeshdNodeSummary, value: ExpiryValue) {
+    if (!session || !selectedNetwork) return;
+    await runAction(`expiry-${node.recordId}`, async () => {
+      await updateMeshdNodeExpiry(session, selectedNetwork, node, expiryTimestamp(value));
+      toast.success(value === "never" ? "Node expiry cleared" : "Node expiry updated");
       await refreshTopology();
     });
   }
@@ -402,8 +425,8 @@ function Dashboard() {
                 </label>
                 <label>
                   Expires
-                  <select value={inviteExpiry} onChange={(event) => setInviteExpiry(event.target.value as InviteExpiryValue)}>
-                    {INVITE_EXPIRY_OPTIONS.map((option) => (
+                  <select value={inviteExpiry} onChange={(event) => setInviteExpiry(event.target.value as ExpiryValue)}>
+                    {EXPIRY_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>{option.label}</option>
                     ))}
                   </select>
@@ -445,6 +468,16 @@ function Dashboard() {
                 <span>Pending</span>
                 <small>{topology?.pendingRequests.length ?? 0}</small>
               </div>
+              <div className="inline-control">
+                <label>
+                  Approve for
+                  <select value={approvalExpiry} onChange={(event) => setApprovalExpiry(event.target.value as ExpiryValue)}>
+                    {EXPIRY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
               <div className="stack">
                 {topology?.pendingRequests.length ? topology.pendingRequests.map((request) => (
                   <PendingRequestRow
@@ -465,7 +498,14 @@ function Dashboard() {
               </div>
               <div className="node-grid">
                 {allNodes.length ? allNodes.map(({ node, member }) => (
-                  <NodeCard key={node.recordId} node={node} owner={member?.did} busyAction={busyAction} onRemove={handleRemoveNode} />
+                  <NodeCard
+                    key={node.recordId}
+                    node={node}
+                    owner={member?.did}
+                    busyAction={busyAction}
+                    onRemove={handleRemoveNode}
+                    onUpdateExpiry={handleUpdateNodeExpiry}
+                  />
                 )) : <EmptyRow icon={<ServerIcon size={18} />} text="No nodes" />}
               </div>
             </section>
@@ -533,16 +573,26 @@ function NodeCard({
   node,
   owner,
   busyAction,
-  onRemove
+  onRemove,
+  onUpdateExpiry
 }: {
   node: MeshdNodeSummary;
   owner?: string;
   busyAction?: string;
   onRemove: (node: MeshdNodeSummary) => Promise<void>;
+  onUpdateExpiry: (node: MeshdNodeSummary, value: ExpiryValue) => Promise<void>;
 }) {
   const removing = busyAction === `remove-${node.recordId}`;
+  const updatingExpiry = busyAction === `expiry-${node.recordId}`;
+  const [expiryChoice, setExpiryChoice] = useState<ExpiryValue>("30d");
+  const state = expiryState(node.expiresAt);
+  const expiryLabel = node.expiresAt
+    ? state === "expired"
+      ? `Expired ${formatTime(node.expiresAt)}`
+      : `Expires ${formatTime(node.expiresAt)}`
+    : "No expiry";
   return (
-    <article className="node-card">
+    <article className={`node-card ${state === "expired" ? "expired" : state === "soon" ? "expiring" : ""}`}>
       <div className="node-card-header">
         <span className="row-icon"><ServerIcon size={17} /></span>
         <strong>{node.label || node.meshIP || truncateDid(node.did, 12, 6)}</strong>
@@ -554,8 +604,25 @@ function NodeCard({
         <div><dt>Mesh IP</dt><dd>{node.meshIP || "unknown"}</dd></div>
         <div><dt>Node</dt><dd title={node.did}>{truncateDid(node.did)}</dd></div>
         {owner ? <div><dt>Owner</dt><dd title={owner}>{truncateDid(owner)}</dd></div> : null}
-        {node.expiresAt ? <div><dt>Expires</dt><dd>{formatTime(node.expiresAt)}</dd></div> : null}
+        <div><dt>Expiry</dt><dd>{expiryLabel}</dd></div>
       </dl>
+      <div className="expiry-editor">
+        <select value={expiryChoice} onChange={(event) => setExpiryChoice(event.target.value as ExpiryValue)}>
+          {EXPIRY_OPTIONS.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+        <button
+          className="icon-button success"
+          type="button"
+          aria-label="Apply node expiry"
+          title="Apply expiry"
+          disabled={updatingExpiry || removing}
+          onClick={() => void onUpdateExpiry(node, expiryChoice)}
+        >
+          {updatingExpiry ? <Loader2Icon className="spin" size={15} /> : <CheckIcon size={15} />}
+        </button>
+      </div>
     </article>
   );
 }
