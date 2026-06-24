@@ -2005,6 +2005,10 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 		_, _, _ = loadLocalContextKeyForCLI(stateDir, ns, encMgr)
 	}
 	if resp, err := loadControlStateForCLI(ctx, ns, identity, operationIdentity, encMgr, readGrantID); err == nil {
+		if refreshed, _, saveErr := refreshLocalMembershipMetadataFromMap(stateDir, ns, resp); saveErr == nil && refreshed != nil {
+			ns = refreshed
+			selfOwnerDID = networkOwnerDID(ns, firstNonEmpty(meta.OwnerDID, identity.URI))
+		}
 		printPeerListRows(ns.NetworkName, peerListRowsFromMapResponse(ns, resp, selfNodeDID, selfOwnerDID))
 		return nil
 	}
@@ -2127,6 +2131,47 @@ func loadControlStateForCLI(ctx context.Context, ns *state.NetworkState, identit
 		control.WithPermissionGrantID(readGrantID),
 	)
 	return client.LoadState(ctx)
+}
+
+func refreshLocalMembershipMetadataFromMap(stateDir string, ns *state.NetworkState, resp *control.MapResponse) (*state.NetworkState, bool, error) {
+	if ns == nil || resp == nil || resp.Node == nil {
+		return ns, false, nil
+	}
+
+	refreshed := *ns
+	changed := false
+
+	if resp.Node.MeshIP.IsValid() {
+		meshIP := resp.Node.MeshIP.String()
+		if refreshed.MeshIP != meshIP {
+			refreshed.MeshIP = meshIP
+			changed = true
+		}
+	}
+
+	expiresAt := strings.TrimSpace(resp.Node.ExpiresAt)
+	if refreshed.NodeExpiresAt != expiresAt {
+		refreshed.NodeExpiresAt = expiresAt
+		changed = true
+	}
+
+	if resp.Node.MemberDID != "" && refreshed.OwnerDID != resp.Node.MemberDID {
+		refreshed.OwnerDID = resp.Node.MemberDID
+		refreshed.MemberDID = resp.Node.MemberDID
+		changed = true
+	}
+	if resp.Node.MemberRecordID != "" && refreshed.MemberRecordID != resp.Node.MemberRecordID {
+		refreshed.MemberRecordID = resp.Node.MemberRecordID
+		changed = true
+	}
+
+	if !changed {
+		return ns, false, nil
+	}
+	if err := state.SaveNetworkState(stateDir, &refreshed); err != nil {
+		return nil, false, fmt.Errorf("saving refreshed membership metadata: %w", err)
+	}
+	return &refreshed, true, nil
 }
 
 type peerListRow struct {
@@ -3932,25 +3977,26 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		return fmt.Errorf("deriving WireGuard keys from identity: %w", err)
 	}
 
-	fmt.Printf("Starting meshd...\n")
-	fmt.Printf("  Network: %s\n", ns.NetworkName)
-	fmt.Printf("  DID: %s\n", nodeIdentity.URI)
-	if operationIdentity.URI != nodeIdentity.URI {
-		fmt.Printf("  DWN delegate: %s\n", operationIdentity.URI)
+	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
+	if err != nil {
+		return err
 	}
-	fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
-	fmt.Printf("  Anchor: %s\n", ns.AnchorEndpoint)
-
+	if resp, refreshErr := loadControlStateForCLI(ctx, ns, nodeIdentity, operationIdentity, encMgr, readGrantID); refreshErr == nil {
+		if refreshed, changed, saveErr := refreshLocalMembershipMetadataFromMap(stateDir, ns, resp); saveErr != nil {
+			logger.Debug("membership metadata refresh save failed", slog.Any("error", saveErr))
+		} else if changed {
+			ns = refreshed
+			fmt.Printf("  Membership metadata refreshed.\n")
+		}
+	} else {
+		logger.Debug("membership metadata refresh skipped", slog.Any("error", refreshErr))
+	}
 	networkOwner := isNetworkOwnerProfile(meta, identity.URI, ns)
 	endpointWriteGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, endpointProtocolPath(ns), ns.NetworkRecordID, false)
 	if err != nil {
 		return err
 	}
 	ownerWriteGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
-	if err != nil {
-		return err
-	}
-	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
 	if err != nil {
 		return err
 	}
@@ -3963,6 +4009,18 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		return err
 	}
 	ownerAutomation := ownerAutomationEnabled(ns, nodeIdentity.URI, networkOwner, readGrantID, ownerWriteGrantID, deleteGrantID, keyDeliveryGrantID)
+
+	fmt.Printf("Starting meshd...\n")
+	fmt.Printf("  Network: %s\n", ns.NetworkName)
+	fmt.Printf("  DID: %s\n", nodeIdentity.URI)
+	if operationIdentity.URI != nodeIdentity.URI {
+		fmt.Printf("  DWN delegate: %s\n", operationIdentity.URI)
+	}
+	fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
+	if ns.NodeExpiresAt != "" {
+		fmt.Printf("  Membership Expires: %s\n", ns.NodeExpiresAt)
+	}
+	fmt.Printf("  Anchor: %s\n", ns.AnchorEndpoint)
 
 	// Write/update endpoint record (encrypted) before starting the engine.
 	if ns.NodeRecordID != "" {

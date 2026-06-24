@@ -121,6 +121,11 @@ Expected result:
 - `meshd peer list` shows both peers with `10.200.x.x` mesh IPs and an
   `EXPIRES` column. Non-expiring nodes show `never`.
 
+If you renew a node or switch it to `Never` in the dashboard, run `meshd up` or
+`meshd peer list` on that node. Both commands refresh the local membership
+metadata from the DWN map, so `meshd status` should then show the updated
+`Membership Expires` value or omit it for non-expiring membership.
+
 ## 5. Ping both directions
 
 From Linux, ping the Mac mesh IP:
