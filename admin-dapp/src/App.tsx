@@ -18,6 +18,11 @@ import { toast } from "sonner";
 
 import { useEnbox } from "./enbox/use-enbox";
 import {
+  dashboardContextFromSearch,
+  ownerMatchesDashboardContext,
+  type MeshdDashboardURLContext
+} from "./meshd/dashboard-url";
+import {
   approveMeshdNodeRequest,
   buildMeshdInviteURL,
   createMeshdInvite,
@@ -90,6 +95,7 @@ function expiryTimestamp(value: ExpiryValue) {
 
 export function App() {
   const enboxState = useEnbox();
+  const [dashboardContext] = useState(() => dashboardContextFromSearch(window.location.search));
 
   return (
     <div className="app-shell">
@@ -123,13 +129,13 @@ export function App() {
       </header>
 
       <main className="workspace">
-        {!enboxState.isConnected ? <ConnectPanel /> : <Dashboard />}
+        {!enboxState.isConnected ? <ConnectPanel context={dashboardContext} /> : <Dashboard context={dashboardContext} />}
       </main>
     </div>
   );
 }
 
-function ConnectPanel() {
+function ConnectPanel({ context }: { context: MeshdDashboardURLContext }) {
   const { connectWallet, isConnecting } = useEnbox();
   const [error, setError] = useState<string>();
 
@@ -154,6 +160,12 @@ function ConnectPanel() {
           <p>Connect an owner wallet to manage networks and node approvals.</p>
         </div>
       </div>
+      {context.ownerDID ? (
+        <div className="target-owner">
+          <span>Owner</span>
+          <code title={context.ownerDID}>{truncateDid(context.ownerDID)}</code>
+        </div>
+      ) : null}
       {error ? <div className="error-banner">{error}</div> : null}
       <button className="primary-button" type="button" disabled={isConnecting} onClick={() => void connect()}>
         {isConnecting ? <Loader2Icon className="spin" size={17} /> : <ShieldCheckIcon size={17} />}
@@ -163,7 +175,7 @@ function ConnectPanel() {
   );
 }
 
-function Dashboard() {
+function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
   const { did, delegateDid, enbox, protocolsInitialized, protocolSetupError } = useEnbox();
   const session = useMemo<MeshdAdminSession | undefined>(() => {
     if (!did || !enbox) return undefined;
@@ -175,7 +187,7 @@ function Dashboard() {
   }, [delegateDid, did, enbox]);
 
   const [networks, setNetworks] = useState<MeshdNetworkSummary[]>([]);
-  const [selectedNetworkId, setSelectedNetworkId] = useState(() => new URLSearchParams(window.location.search).get("network") ?? "");
+  const [selectedNetworkId, setSelectedNetworkId] = useState(() => context.networkRecordID ?? "");
   const [topology, setTopology] = useState<MeshdNetworkTopology>();
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [error, setError] = useState<string>();
@@ -194,7 +206,7 @@ function Dashboard() {
   }, [networks, selectedNetworkId]);
 
   const refreshNetworks = useCallback(async () => {
-    if (!session || !protocolsInitialized) return;
+    if (!session || !protocolsInitialized || !ownerMatchesDashboardContext(context, did)) return;
     setLoadState("loading");
     setError(undefined);
     try {
@@ -208,10 +220,10 @@ function Dashboard() {
       setError(err instanceof Error ? err.message : "Could not load networks.");
       setLoadState("error");
     }
-  }, [protocolsInitialized, selectedNetworkId, session]);
+  }, [context, did, protocolsInitialized, selectedNetworkId, session]);
 
   const refreshTopology = useCallback(async () => {
-    if (!session || !protocolsInitialized || !selectedNetwork) return;
+    if (!session || !protocolsInitialized || !selectedNetwork || !ownerMatchesDashboardContext(context, did)) return;
     setError(undefined);
     try {
       const nextTopology = await fetchMeshdNetworkTopology(session, selectedNetwork);
@@ -219,7 +231,7 @@ function Dashboard() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load network topology.");
     }
-  }, [protocolsInitialized, selectedNetwork, session]);
+  }, [context, did, protocolsInitialized, selectedNetwork, session]);
 
   useEffect(() => {
     void refreshNetworks();
@@ -329,6 +341,15 @@ function Dashboard() {
       toast.success("Node removed");
       await refreshTopology();
     });
+  }
+
+  if (!ownerMatchesDashboardContext(context, did)) {
+    return (
+      <StatePanel
+        title="Wrong owner wallet"
+        detail={`This dashboard URL targets ${context.ownerDID}, but the connected wallet is ${did ?? "unknown"}. Disconnect and connect the owner wallet.`}
+      />
+    );
   }
 
   if (protocolSetupError) {
