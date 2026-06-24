@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/enboxorg/meshd/compare/v0.9.0...v0.9.1) (2026-06-24)
+
+
+### Bug Fixes
+
+* **admin:** refresh node approval on expiry changes ([#150](https://github.com/enboxorg/meshd/issues/150)) ([5ea650d](https://github.com/enboxorg/meshd/commit/5ea650d8dab54927d6e93a5b06a8b34cd0c58730))
+
 ## [0.9.0](https://github.com/enboxorg/meshd/compare/v0.8.0...v0.9.0) (2026-06-24)
 
 
