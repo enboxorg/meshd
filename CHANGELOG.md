@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/enboxorg/meshd/compare/v0.4.0...v0.5.0) (2026-06-24)
+
+
+### Features
+
+* enforce expired node memberships ([bafde17](https://github.com/enboxorg/meshd/commit/bafde17b60fef8fcb76d81db122abe28489a1572))
+
 ## [0.4.0](https://github.com/enboxorg/meshd/compare/v0.3.7...v0.4.0) (2026-06-24)
 
 
