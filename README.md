@@ -52,7 +52,7 @@ meshd admin
 
 # In the dashboard, copy the setup command from the target network.
 # On a new device, run it to request approval from that owner.
-meshd up --owner did:example:owner
+meshd up did:example:owner
 
 # Or run the wizard and paste the owner DID at the setup prompt.
 meshd up
@@ -177,7 +177,7 @@ simplest no-wallet path and is what `meshd auth login` creates today.
 
 **Wallet-owned node.** The wallet DID is the mesh member/owner DID, while each
 machine keeps its own local node DID. The default beta path is dashboard-owned:
-`meshd up --owner <did>` writes a signed node request to the owner's DWN, and
+`meshd up <owner-did>` writes a signed node request to the owner's DWN, and
 the meshd Admin dapp approves that node into a selected network. A separate
 delegate DID can still be used for wallet-issued grants, but it is not required
 for the normal enrollment path.

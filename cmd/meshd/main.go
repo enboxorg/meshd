@@ -75,6 +75,8 @@ Network:
   down              Stop the mesh agent daemon
 
 Up flags:
+  meshd up <owner-did>        Request access from a wallet owner DID
+  meshd up <meshd://invite>   Join from an invite URL
   --create <name>   Create a new network and start (anchor mode)
   --endpoint <url>  DWN endpoint override for create/join/owner requests
   --anchor <did>    Anchor DID when joining a network
@@ -3596,8 +3598,14 @@ func parseUpFlags(args []string) upFlags {
 		case "-v", "--verbose":
 			f.verbose = true
 		default:
-			if !strings.HasPrefix(args[i], "-") && strings.HasPrefix(strings.TrimSpace(args[i]), invite.SchemePrefix) {
-				f.inviteURL = args[i]
+			value := strings.TrimSpace(args[i])
+			if strings.HasPrefix(value, "-") {
+				continue
+			}
+			if strings.HasPrefix(value, invite.SchemePrefix) && f.inviteURL == "" {
+				f.inviteURL = value
+			} else if strings.HasPrefix(strings.ToLower(value), "did:") && f.ownerDID == "" {
+				f.ownerDID = value
 			}
 		}
 	}

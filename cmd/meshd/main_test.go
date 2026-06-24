@@ -50,6 +50,24 @@ func TestParseUpFlagsInviteURL(t *testing.T) {
 	}
 }
 
+func TestParseUpFlagsPositionalOwnerDID(t *testing.T) {
+	flags := parseUpFlags([]string{"did:example:owner", "--no-tun"})
+	if flags.ownerDID != "did:example:owner" {
+		t.Fatalf("ownerDID = %q", flags.ownerDID)
+	}
+	if flags.inviteURL != "" {
+		t.Fatalf("inviteURL = %q, want empty", flags.inviteURL)
+	}
+	if !flags.noTun {
+		t.Fatal("expected --no-tun to be parsed")
+	}
+
+	overridden := parseUpFlags([]string{"did:example:pasted", "--owner", "did:example:explicit"})
+	if overridden.ownerDID != "did:example:explicit" {
+		t.Fatalf("explicit owner should win, got %q", overridden.ownerDID)
+	}
+}
+
 func TestPromptInteractiveJoinAcceptsInviteFirst(t *testing.T) {
 	u, err := invite.Encode(invite.New("https://dwn.example.com", "did:jwk:anchor", "net", "home", "", "", ""))
 	if err != nil {
