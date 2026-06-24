@@ -53,7 +53,7 @@ https://meshd-admin.pages.dev
 ```
 
 Connect the owner wallet and approve meshd Admin. Create a network if one does
-not already exist. Copy the owner DID from the wallet or dashboard header.
+not already exist. Click `Copy Setup Command` in the network header.
 
 If the deployed dashboard is unavailable, run the local fallback from a repo
 checkout:
@@ -67,7 +67,7 @@ meshd admin --dashboard http://127.0.0.1:5173 --print
 
 ## 2. Submit the Linux node request
 
-On the Linux server:
+On the Linux server, paste the setup command copied from the dashboard:
 
 ```bash
 meshd down || true

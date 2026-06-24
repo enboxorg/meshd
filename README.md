@@ -53,7 +53,8 @@ Admin dapp; each machine keeps a local encrypted node DID.
 # Open the dashboard once as the owner so the wallet grants meshd Admin access.
 meshd admin --print
 
-# On a new device, request approval from that owner.
+# In the dashboard, copy the setup command from the target network.
+# On a new device, run it to request approval from that owner.
 meshd up --owner did:example:owner
 
 # Approve the pending device in the dashboard, then start it.
