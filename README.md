@@ -54,7 +54,7 @@ Admin dapp; each machine keeps a local encrypted node DID.
 meshd admin --print
 
 # On a new device, request approval from that owner.
-meshd up --owner did:example:owner --endpoint https://dev.aws.dwn.enbox.id
+meshd up --owner did:example:owner
 
 # Approve the pending device in the dashboard, then start it.
 meshd up
@@ -64,6 +64,8 @@ meshd up
 waits. After approval, the dashboard writes the node membership record, delivers
 the network context key, and writes a node approval response that the CLI
 consumes on the next `meshd up`.
+If the owner DID does not advertise a DWN endpoint, meshd uses the beta DWN
+endpoint by default. Use `--endpoint` or `DWN_ENDPOINT` to override it.
 
 The default dashboard is deployed at `https://meshd-admin.pages.dev`.
 

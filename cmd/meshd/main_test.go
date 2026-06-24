@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -1142,6 +1143,69 @@ func TestParseOwnerDIDArg(t *testing.T) {
 	got = parseOwnerDIDArg([]string{"--member", "did:dht:legacy"})
 	if got != "did:dht:legacy" {
 		t.Fatalf("legacy member alias owner DID = %q", got)
+	}
+}
+
+func TestOwnerDWNEndpointFromInput(t *testing.T) {
+	previous := defaultOwnerRequestEndpoint
+	defaultOwnerRequestEndpoint = "https://default.example.com/"
+	t.Cleanup(func() { defaultOwnerRequestEndpoint = previous })
+
+	got, err := ownerDWNEndpointFromInput("https://explicit.example.com/", "https://resolved.example.com", nil, nil, io.Discard)
+	if err != nil {
+		t.Fatalf("explicit endpoint: %v", err)
+	}
+	if got != "https://explicit.example.com" {
+		t.Fatalf("explicit endpoint = %q", got)
+	}
+
+	got, err = ownerDWNEndpointFromInput("", "https://resolved.example.com/", nil, nil, io.Discard)
+	if err != nil {
+		t.Fatalf("resolved endpoint: %v", err)
+	}
+	if got != "https://resolved.example.com" {
+		t.Fatalf("resolved endpoint = %q", got)
+	}
+
+	got, err = ownerDWNEndpointFromInput("", "", context.Canceled, nil, io.Discard)
+	if err != nil {
+		t.Fatalf("default endpoint: %v", err)
+	}
+	if got != "https://default.example.com" {
+		t.Fatalf("default endpoint = %q", got)
+	}
+}
+
+func TestOwnerDWNEndpointFromInputPromptDefault(t *testing.T) {
+	previous := defaultOwnerRequestEndpoint
+	defaultOwnerRequestEndpoint = "https://default.example.com/"
+	t.Cleanup(func() { defaultOwnerRequestEndpoint = previous })
+
+	var out bytes.Buffer
+	got, err := ownerDWNEndpointFromInput("", "", context.Canceled, bufio.NewScanner(strings.NewReader("\n")), &out)
+	if err != nil {
+		t.Fatalf("prompt default: %v", err)
+	}
+	if got != "https://default.example.com" {
+		t.Fatalf("prompt default endpoint = %q", got)
+	}
+	if !strings.Contains(out.String(), "Owner DWN endpoint URL [https://default.example.com]") {
+		t.Fatalf("prompt output = %q", out.String())
+	}
+}
+
+func TestOwnerDWNEndpointFromInputPromptOverride(t *testing.T) {
+	previous := defaultOwnerRequestEndpoint
+	defaultOwnerRequestEndpoint = "https://default.example.com/"
+	t.Cleanup(func() { defaultOwnerRequestEndpoint = previous })
+
+	var out bytes.Buffer
+	got, err := ownerDWNEndpointFromInput("", "", nil, bufio.NewScanner(strings.NewReader("https://custom.example.com/\n")), &out)
+	if err != nil {
+		t.Fatalf("prompt override: %v", err)
+	}
+	if got != "https://custom.example.com" {
+		t.Fatalf("prompt override endpoint = %q", got)
 	}
 }
 
