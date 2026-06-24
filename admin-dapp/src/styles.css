@@ -549,6 +549,14 @@ dd {
   min-width: 0;
 }
 
+.label-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 0.5rem;
+  align-items: end;
+  min-width: 0;
+}
+
 .invite-result {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

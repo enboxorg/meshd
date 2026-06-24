@@ -8,6 +8,7 @@ import {
   NetworkIcon,
   PlusIcon,
   RefreshCwIcon,
+  SaveIcon,
   ServerIcon,
   ShieldCheckIcon,
   Trash2Icon,
@@ -33,6 +34,7 @@ import {
   removeMeshdNode,
   revokeMeshdInvite,
   updateMeshdNodeExpiry,
+  updateMeshdNodeLabel,
   type CreateMeshdInviteResult,
   type MeshdAdminSession,
   type MeshdNetworkSummary,
@@ -316,6 +318,15 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     });
   }
 
+  async function handleUpdateNodeLabel(node: MeshdNodeSummary, label: string) {
+    if (!session || !selectedNetwork) return;
+    await runAction(`label-${node.recordId}`, async () => {
+      await updateMeshdNodeLabel(session, selectedNetwork, node, label);
+      toast.success(label.trim() ? "Node label updated" : "Node label cleared");
+      await refreshTopology();
+    });
+  }
+
   async function handleRevokeInvite(key: MeshdPreAuthKeySummary) {
     if (!session) return;
     await runAction(`revoke-${key.recordId}`, async () => {
@@ -526,6 +537,7 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
                     busyAction={busyAction}
                     onRemove={handleRemoveNode}
                     onUpdateExpiry={handleUpdateNodeExpiry}
+                    onUpdateLabel={handleUpdateNodeLabel}
                   />
                 )) : <EmptyRow icon={<ServerIcon size={18} />} text="No nodes" />}
               </div>
@@ -595,16 +607,20 @@ function NodeCard({
   owner,
   busyAction,
   onRemove,
-  onUpdateExpiry
+  onUpdateExpiry,
+  onUpdateLabel
 }: {
   node: MeshdNodeSummary;
   owner?: string;
   busyAction?: string;
   onRemove: (node: MeshdNodeSummary) => Promise<void>;
   onUpdateExpiry: (node: MeshdNodeSummary, value: ExpiryValue) => Promise<void>;
+  onUpdateLabel: (node: MeshdNodeSummary, label: string) => Promise<void>;
 }) {
   const removing = busyAction === `remove-${node.recordId}`;
+  const updatingLabel = busyAction === `label-${node.recordId}`;
   const updatingExpiry = busyAction === `expiry-${node.recordId}`;
+  const [labelValue, setLabelValue] = useState(node.label ?? "");
   const [expiryChoice, setExpiryChoice] = useState<ExpiryValue>("30d");
   const state = expiryState(node.expiresAt);
   const expiryLabel = node.expiresAt
@@ -612,6 +628,9 @@ function NodeCard({
       ? `Expired ${formatTime(node.expiresAt)}`
       : `Expires ${formatTime(node.expiresAt)}`
     : "No expiry";
+  useEffect(() => {
+    setLabelValue(node.label ?? "");
+  }, [node.label]);
   return (
     <article className={`node-card ${state === "expired" ? "expired" : state === "soon" ? "expiring" : ""}`}>
       <div className="node-card-header">
@@ -627,6 +646,22 @@ function NodeCard({
         {owner ? <div><dt>Owner</dt><dd title={owner}>{truncateDid(owner)}</dd></div> : null}
         <div><dt>Expiry</dt><dd>{expiryLabel}</dd></div>
       </dl>
+      <div className="label-editor">
+        <label>
+          Label
+          <input value={labelValue} onChange={(event) => setLabelValue(event.target.value)} placeholder={node.meshIP || "Node label"} />
+        </label>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label="Apply node label"
+          title="Apply label"
+          disabled={updatingLabel || removing}
+          onClick={() => void onUpdateLabel(node, labelValue)}
+        >
+          {updatingLabel ? <Loader2Icon className="spin" size={15} /> : <SaveIcon size={15} />}
+        </button>
+      </div>
       <div className="expiry-editor">
         <select value={expiryChoice} onChange={(event) => setExpiryChoice(event.target.value as ExpiryValue)}>
           {EXPIRY_OPTIONS.map((option) => (
