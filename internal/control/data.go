@@ -28,6 +28,7 @@ type NodeRecord struct {
 	MeshIP          string                       `json:"meshIP"`
 	AllowedIPs      []string                     `json:"allowedIPs,omitempty"`
 	AddedAt         string                       `json:"addedAt"`
+	ExpiresAt       string                       `json:"expiresAt,omitempty"`
 	Label           string                       `json:"label,omitempty"`
 	MemberDID       string                       `json:"memberDID,omitempty"`
 	OwnerDID        string                       `json:"ownerDID,omitempty"`

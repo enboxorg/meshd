@@ -184,6 +184,80 @@ func TestBuildMapResponseFallsBackToDeterministicMeshIP(t *testing.T) {
 	}
 }
 
+func TestBuildMapResponseSkipsExpiredPeer(t *testing.T) {
+	selfDID, _ := testDIDJWK(t)
+	expiredPeerDID, _ := testDIDJWK(t)
+	activePeerDID, _ := testDIDJWK(t)
+	c := NewDWNClient("https://dwn.example", "did:example:anchor", "network-1", selfDID, nil)
+	c.network = &NetworkConfig{Name: "test", MeshCIDR: "10.200.0.0/16"}
+	c.nodes[selfDID] = &NodeRecord{DID: selfDID, MeshIP: "10.200.0.2", RecordID: "self-record"}
+	c.nodes[expiredPeerDID] = &NodeRecord{
+		DID:       expiredPeerDID,
+		MeshIP:    "10.200.0.3",
+		RecordID:  "expired-peer-record",
+		ExpiresAt: time.Now().UTC().Add(-time.Minute).Format(time.RFC3339),
+	}
+	c.nodes[activePeerDID] = &NodeRecord{
+		DID:       activePeerDID,
+		MeshIP:    "10.200.0.4",
+		RecordID:  "active-peer-record",
+		ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}
+
+	resp := c.buildMapResponse()
+	if resp == nil {
+		t.Fatal("buildMapResponse returned nil")
+	}
+	if len(resp.Peers) != 1 {
+		t.Fatalf("peers = %d, want 1", len(resp.Peers))
+	}
+	if resp.Peers[0].DID != activePeerDID {
+		t.Fatalf("peer DID = %s, want active peer %s", resp.Peers[0].DID, activePeerDID)
+	}
+}
+
+func TestBuildMapResponseReturnsNilWhenSelfExpired(t *testing.T) {
+	selfDID, _ := testDIDJWK(t)
+	peerDID, _ := testDIDJWK(t)
+	c := NewDWNClient("https://dwn.example", "did:example:anchor", "network-1", selfDID, nil)
+	c.network = &NetworkConfig{Name: "test", MeshCIDR: "10.200.0.0/16"}
+	c.nodes[selfDID] = &NodeRecord{
+		DID:       selfDID,
+		MeshIP:    "10.200.0.2",
+		RecordID:  "self-record",
+		ExpiresAt: time.Now().UTC().Add(-time.Minute).Format(time.RFC3339),
+	}
+	c.nodes[peerDID] = &NodeRecord{DID: peerDID, MeshIP: "10.200.0.3", RecordID: "peer-record"}
+
+	if resp := c.buildMapResponse(); resp != nil {
+		t.Fatalf("buildMapResponse returned %#v, want nil", resp)
+	}
+}
+
+func TestNodeRecordExpired(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	tests := map[string]struct {
+		expiresAt string
+		want      bool
+	}{
+		"empty":     {expiresAt: "", want: false},
+		"future":    {expiresAt: now.Add(time.Minute).Format(time.RFC3339), want: false},
+		"exact now": {expiresAt: now.Format(time.RFC3339), want: false},
+		"past":      {expiresAt: now.Add(-time.Minute).Format(time.RFC3339), want: true},
+		"malformed": {expiresAt: "not-a-time", want: false},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := nodeRecordExpired(&NodeRecord{ExpiresAt: tc.expiresAt}, now)
+			if got != tc.want {
+				t.Fatalf("nodeRecordExpired(%q) = %v, want %v", tc.expiresAt, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNodeRecordToNode(t *testing.T) {
 	now := time.Now().UTC()
 	recentUpdate := now.Add(-2 * time.Minute).Format(time.RFC3339)

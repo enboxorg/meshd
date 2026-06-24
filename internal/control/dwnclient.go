@@ -664,9 +664,24 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 	}
 	sort.Strings(dids)
 
+	now := time.Now().UTC()
 	var nodeID int64 = 1
 	for _, did := range dids {
 		rec := c.nodes[did]
+		if nodeRecordExpired(rec, now) {
+			if did == c.selfDID {
+				c.logger.Debug("self node membership is expired",
+					slog.String("did", did),
+					slog.String("expiresAt", rec.ExpiresAt),
+				)
+				return nil
+			}
+			c.logger.Debug("skipping expired peer in network map",
+				slog.String("did", did),
+				slog.String("expiresAt", rec.ExpiresAt),
+			)
+			continue
+		}
 		node := nodeRecordToNode(nodeID, did, rec)
 		nodeID++
 		c.applyFallbackMeshIP(node)
@@ -701,6 +716,17 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 	}
 
 	return resp
+}
+
+func nodeRecordExpired(rec *NodeRecord, now time.Time) bool {
+	if rec == nil || rec.ExpiresAt == "" {
+		return false
+	}
+	expiresAt, err := time.Parse(time.RFC3339, rec.ExpiresAt)
+	if err != nil {
+		return false
+	}
+	return now.After(expiresAt)
 }
 
 func (c *DWNClient) applyFallbackMeshIP(node *Node) {
