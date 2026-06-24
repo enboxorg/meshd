@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.0](https://github.com/enboxorg/meshd/compare/v0.6.0...v0.7.0) (2026-06-24)
+
+
+### Features
+
+* default owner requests to beta DWN ([#143](https://github.com/enboxorg/meshd/issues/143)) ([76877a8](https://github.com/enboxorg/meshd/commit/76877a8f8bf821a450d0abbd8e33196f6ed4c414))
+* edit admin node labels ([#142](https://github.com/enboxorg/meshd/issues/142)) ([3217127](https://github.com/enboxorg/meshd/commit/3217127139067b2e0343565cfd7af63b12b6fdcb))
+* honor admin dashboard owner URL ([#140](https://github.com/enboxorg/meshd/issues/140)) ([0a3d122](https://github.com/enboxorg/meshd/commit/0a3d122db7a1f86ff41a96c650e3e86a02899432))
+
 ## [0.6.0](https://github.com/enboxorg/meshd/compare/v0.5.0...v0.6.0) (2026-06-24)
 
 
