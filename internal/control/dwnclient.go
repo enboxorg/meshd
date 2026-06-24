@@ -770,6 +770,7 @@ func nodeRecordToNodeWithThreshold(id int64, nodeDID string, rec *NodeRecord, st
 		DID:            nodeDID,
 		MemberDID:      rec.EffectiveOwnerDID(),
 		MemberRecordID: rec.MemberRecordID,
+		ExpiresAt:      rec.ExpiresAt,
 		KeyDelivery:    rec.NodeKeyDelivery,
 	}
 

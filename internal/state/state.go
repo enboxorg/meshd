@@ -65,6 +65,10 @@ type NetworkState struct {
 	// MeshIP is this node's allocated IP within the mesh.
 	MeshIP string `json:"meshIp,omitempty"`
 
+	// NodeExpiresAt is the owner-controlled expiry for this node's membership.
+	// Empty means the membership does not expire.
+	NodeExpiresAt string `json:"nodeExpiresAt,omitempty"`
+
 	// NodeDID is this machine's device DID. It is the DID used for WireGuard
 	// key derivation, node records, endpoint writes, and "this device" UI.
 	// Older state files omit it; callers should fall back to the local profile

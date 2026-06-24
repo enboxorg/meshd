@@ -1,7 +1,7 @@
 # Mac/Linux beta smoke test
 
-Use this runbook to validate the current wallet-owned, dashboard-approved flow
-before adding node membership expiry or edit controls.
+Use this runbook to validate the current wallet-owned, dashboard-approved flow,
+including dashboard-managed node membership expiry.
 
 Assumptions:
 
@@ -26,7 +26,7 @@ meshd --version
 Expected result:
 
 ```text
-meshd 0.4.0
+meshd <latest release>
 ```
 
 If your shell has not picked up the installer PATH update yet, run:
@@ -84,8 +84,9 @@ On the Mac dashboard:
 
 1. Select the target network.
 2. Refresh if the pending request is not visible yet.
-3. Approve the Linux node.
-4. Confirm the node appears under `Nodes`.
+3. Pick an `Approve for` expiry such as `30 days`.
+4. Approve the Linux node.
+5. Confirm the node appears under `Nodes` with the selected expiry.
 
 The dashboard should write the member/node record, deliver the network context
 key to the node, and write a node approval response.
@@ -111,8 +112,11 @@ meshd peer list
 Expected result:
 
 - `meshd status` shows `Daemon: Running: yes`.
+- If an approval expiry was selected, the joining node's `meshd status` shows
+  `Membership Expires`.
 - Both machines show the same network name.
-- `meshd peer list` shows both peers with `10.200.x.x` mesh IPs.
+- `meshd peer list` shows both peers with `10.200.x.x` mesh IPs and an
+  `EXPIRES` column. Non-expiring nodes show `never`.
 
 ## 5. Ping both directions
 

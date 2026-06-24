@@ -268,6 +268,7 @@ func TestNodeRecordToNode(t *testing.T) {
 		MeshIP:          "10.200.0.5",
 		AllowedIPs:      []string{"192.168.1.0/24"},
 		AddedAt:         "2026-01-01T00:00:00Z",
+		ExpiresAt:       "2026-07-01T00:00:00Z",
 		OwnerDID:        "did:jwk:wallet",
 		NodeKeyDelivery: &dwncrypto.KeyDeliveryPublic{RootKeyID: didURI + "#1"},
 		Info: &NodeInfoData{
@@ -298,6 +299,7 @@ func TestNodeRecordToNode(t *testing.T) {
 		"Key":           {got: node.Key, want: wantKey},
 		"MeshIP":        {got: node.MeshIP, want: netip.MustParseAddr("10.200.0.5")},
 		"MemberDID":     {got: node.MemberDID, want: "did:jwk:wallet"},
+		"ExpiresAt":     {got: node.ExpiresAt, want: "2026-07-01T00:00:00Z"},
 		"Name":          {got: node.Name, want: "myhost"},
 		"PreferredDERP": {got: node.PreferredDERP, want: 2},
 		"Online":        {got: node.Online, want: true},

@@ -291,6 +291,7 @@ func TestPeerListRowsFromMapResponse(t *testing.T) {
 			MemberDID: "did:jwk:wallet",
 			Name:      "laptop",
 			MeshIP:    netip.MustParseAddr("10.200.0.5"),
+			ExpiresAt: "2026-07-01T00:00:00Z",
 		},
 		Peers: []*control.Node{
 			{
@@ -299,6 +300,7 @@ func TestPeerListRowsFromMapResponse(t *testing.T) {
 				MemberRecordID: "member-record",
 				Name:           "server",
 				MeshIP:         netip.MustParseAddr("10.200.0.8"),
+				ExpiresAt:      "2026-07-02T00:00:00Z",
 			},
 		},
 	}
@@ -315,6 +317,28 @@ func TestPeerListRowsFromMapResponse(t *testing.T) {
 	}
 	if rows[1].MeshIP != "10.200.0.8" || rows[1].Label != "server" {
 		t.Fatalf("peer row data = %+v", rows[1])
+	}
+	if rows[0].Expires != "2026-07-01T00:00:00Z" || rows[1].Expires != "2026-07-02T00:00:00Z" {
+		t.Fatalf("peer row expiry = %+v", rows)
+	}
+}
+
+func TestPeerListExpiry(t *testing.T) {
+	if got := peerListExpiry(""); got != "never" {
+		t.Fatalf("empty expiry = %q, want never", got)
+	}
+	if got := peerListExpiry("unknown"); got != "unknown" {
+		t.Fatalf("unknown expiry = %q", got)
+	}
+	future := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+	if got, want := peerListExpiry(future.Format(time.RFC3339)), future.Format("2006-01-02 15:04"); got != want {
+		t.Fatalf("future expiry = %q", got)
+	}
+	if got := peerListExpiry("2020-01-01T00:00:00Z"); got != "expired" {
+		t.Fatalf("past expiry = %q, want expired", got)
+	}
+	if got := peerListExpiry("not-a-valid-rfc3339-date"); got != "not-a-valid-rf..." {
+		t.Fatalf("malformed expiry = %q", got)
 	}
 }
 
