@@ -1266,9 +1266,33 @@ export async function updateMeshdNodeExpiry(
   expiresAt?: string
 ): Promise<MeshdNodeSummary> {
   const nextExpiresAt = expiresAt?.trim();
+  return writeUpdatedMeshdNode(session, network, node, { expiresAt: nextExpiresAt });
+}
+
+export async function updateMeshdNodeLabel(
+  session: MeshdAdminSession,
+  network: MeshdNetworkSummary,
+  node: MeshdNodeSummary,
+  label?: string
+): Promise<MeshdNodeSummary> {
+  const nextLabel = label?.trim();
+  return writeUpdatedMeshdNode(session, network, node, { label: nextLabel });
+}
+
+async function writeUpdatedMeshdNode(
+  session: MeshdAdminSession,
+  network: MeshdNetworkSummary,
+  node: MeshdNodeSummary,
+  updates: { expiresAt?: string; label?: string }
+): Promise<MeshdNodeSummary> {
   if (!node.meshIP) {
-    throw new Error("Cannot update expiry for a node without a mesh IP.");
+    throw new Error("Cannot update a node without a mesh IP.");
   }
+
+  const hasExpiresAtUpdate = Object.prototype.hasOwnProperty.call(updates, "expiresAt");
+  const hasLabelUpdate = Object.prototype.hasOwnProperty.call(updates, "label");
+  const nextExpiresAt = hasExpiresAtUpdate ? updates.expiresAt?.trim() : node.expiresAt?.trim();
+  const nextLabel = hasLabelUpdate ? updates.label?.trim() : node.label?.trim();
 
   const protocolPath = node.memberRecordId ? "network/member/node" : "network/node";
   const parentContextId = node.memberRecordId ? `${network.recordId}/${node.memberRecordId}` : network.recordId;
@@ -1290,7 +1314,7 @@ export async function updateMeshdNodeExpiry(
       ...(node.allowedIPs?.length ? { allowedIPs: node.allowedIPs } : {}),
       addedAt: node.addedAt || new Date().toISOString(),
       ...(nextExpiresAt ? { expiresAt: nextExpiresAt } : {}),
-      ...(node.label ? { label: node.label } : {}),
+      ...(nextLabel ? { label: nextLabel } : {}),
       ...(node.ownerDID ? { ownerDID: node.ownerDID } : {}),
       ...(node.memberDID ? { memberDID: node.memberDID } : {}),
       ...(node.delegateDID ? { delegateDID: node.delegateDID } : {}),
@@ -1301,10 +1325,19 @@ export async function updateMeshdNodeExpiry(
   );
 
   const nextNode = { ...node };
-  if (nextExpiresAt) {
-    nextNode.expiresAt = nextExpiresAt;
-  } else {
-    delete nextNode.expiresAt;
+  if (hasExpiresAtUpdate) {
+    if (nextExpiresAt) {
+      nextNode.expiresAt = nextExpiresAt;
+    } else {
+      delete nextNode.expiresAt;
+    }
+  }
+  if (hasLabelUpdate) {
+    if (nextLabel) {
+      nextNode.label = nextLabel;
+    } else {
+      delete nextNode.label;
+    }
   }
   return nextNode;
 }

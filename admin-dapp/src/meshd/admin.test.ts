@@ -9,6 +9,7 @@ import {
   createMeshdNetwork,
   fetchMeshdNetworks,
   updateMeshdNodeExpiry,
+  updateMeshdNodeLabel,
   type MeshdAdminAgent,
   type MeshdAdminSession,
   type MeshdNetworkSummary
@@ -383,6 +384,77 @@ describe("meshd admin DWN operations", () => {
       }
     });
     await expect(blobJson(requests[0].dataStream)).resolves.not.toHaveProperty("expiresAt");
+  });
+
+  it("updates node label while preserving expiry and membership metadata", async () => {
+    const { session, requests } = createFakeSession({ recordIds: ["node-record"] });
+    const network: MeshdNetworkSummary = {
+      recordId: "network-record",
+      name: "Home mesh",
+      meshCIDR: "10.200.0.0/16"
+    };
+
+    const node = await updateMeshdNodeLabel(session, network, {
+      recordId: "node-record",
+      did: "did:example:node",
+      meshIP: "10.200.0.10",
+      allowedIPs: ["10.200.0.10/32"],
+      label: "old label",
+      ownerDID: "did:example:owner",
+      memberDID: "did:example:owner",
+      memberRecordId: "member-record",
+      addedAt: "2026-06-24T00:00:00Z",
+      expiresAt: "2026-06-25T00:00:00Z",
+      createdAt: "2026-06-24T00:00:00Z"
+    }, "new label");
+
+    expect(node.label).toBe("new label");
+    expect(node.expiresAt).toBe("2026-06-25T00:00:00Z");
+    expect(requests[0]).toMatchObject({
+      messageParams: {
+        protocolPath: "network/member/node",
+        parentContextId: "network-record/member-record",
+        recordId: "node-record",
+        dateCreated: "2026-06-24T00:00:00Z"
+      }
+    });
+    await expect(blobJson(requests[0].dataStream)).resolves.toEqual({
+      meshIP: "10.200.0.10",
+      allowedIPs: ["10.200.0.10/32"],
+      addedAt: "2026-06-24T00:00:00Z",
+      expiresAt: "2026-06-25T00:00:00Z",
+      label: "new label",
+      ownerDID: "did:example:owner",
+      memberDID: "did:example:owner"
+    });
+  });
+
+  it("clears node label without clearing expiry", async () => {
+    const { session, requests } = createFakeSession({ recordIds: ["node-record"] });
+    const network: MeshdNetworkSummary = {
+      recordId: "network-record",
+      name: "Home mesh",
+      meshCIDR: "10.200.0.0/16"
+    };
+
+    const node = await updateMeshdNodeLabel(session, network, {
+      recordId: "node-record",
+      did: "did:example:node",
+      meshIP: "10.200.0.10",
+      label: "old label",
+      addedAt: "2026-06-24T00:00:00Z",
+      expiresAt: "2026-06-25T00:00:00Z",
+      createdAt: "2026-06-24T00:00:00Z"
+    }, "   ");
+
+    expect(node.label).toBeUndefined();
+    expect(node.expiresAt).toBe("2026-06-25T00:00:00Z");
+    await expect(blobJson(requests[0].dataStream)).resolves.toMatchObject({
+      meshIP: "10.200.0.10",
+      addedAt: "2026-06-24T00:00:00Z",
+      expiresAt: "2026-06-25T00:00:00Z"
+    });
+    await expect(blobJson(requests[0].dataStream)).resolves.not.toHaveProperty("label");
   });
 
   it("fetches and sorts network records through delegated records queries", async () => {
