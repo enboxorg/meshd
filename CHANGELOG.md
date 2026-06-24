@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/enboxorg/meshd/compare/v0.10.0...v0.11.0) (2026-06-24)
+
+
+### Features
+
+* **cli:** accept owner DID as up argument ([9feeded](https://github.com/enboxorg/meshd/commit/9feeded716d569126bb335e421e61c0a9db4b60e))
+
 ## [0.10.0](https://github.com/enboxorg/meshd/compare/v0.9.1...v0.10.0) (2026-06-24)
 
 
