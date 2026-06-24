@@ -94,11 +94,9 @@ Admin flags:
   --print           Print the dashboard URL without opening a browser
 
 Quick start:
-  meshd auth connect
   meshd up
-  meshd up --create my-network --endpoint https://dwn.example.com
   meshd invite create
-  meshd join meshd://invite/<token>
+  meshd up meshd://invite/<token>
 
 Global flags:
   --profile <name>  Use a specific identity profile
@@ -4630,30 +4628,70 @@ func refreshPendingJoin(ctx context.Context, stateDir string, ns *state.NetworkS
 func setupInteractive(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string) (*state.NetworkState, error) {
 	fmt.Println("No network configured. What would you like to do?")
 	fmt.Println()
+	fmt.Println("  Paste an owner DID or invite URL, or choose:")
+	fmt.Println()
 	fmt.Println("  1) Request access from an owner DID")
 	fmt.Println("  2) Create a new local-vault network")
 	fmt.Println("  3) Join with an invite URL")
 	fmt.Println()
-	fmt.Print("Choice [1/2/3]: ")
+	fmt.Print("Setup [owner DID/invite URL/1/2/3, default 1]: ")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	if !scanner.Scan() {
 		return nil, fmt.Errorf("no input received")
 	}
-	choice := strings.TrimSpace(scanner.Text())
+	choice, pastedValue, err := parseInteractiveSetupChoice(scanner.Text())
+	if err != nil {
+		return nil, err
+	}
 
 	fmt.Println()
 
 	switch choice {
-	case "1":
+	case interactiveSetupOwner:
+		if pastedValue != "" {
+			f.ownerDID = pastedValue
+		}
 		return setupOwnerNodeRequest(ctx, f, stateDir, identity, scanner)
-	case "2":
+	case interactiveSetupCreate:
 		return interactiveCreate(ctx, f, stateDir, identity, flagProfile, scanner)
-	case "3":
+	case interactiveSetupJoin:
+		if pastedValue != "" {
+			f.inviteURL = pastedValue
+			return setupJoinInvite(ctx, f, stateDir, identity, flagProfile)
+		}
 		return interactiveJoin(ctx, f, stateDir, identity, flagProfile, scanner)
 	default:
-		return nil, fmt.Errorf("invalid choice %q (expected 1, 2, or 3)", choice)
+		return nil, fmt.Errorf("invalid setup choice %q", choice)
 	}
+}
+
+type interactiveSetupChoice string
+
+const (
+	interactiveSetupOwner  interactiveSetupChoice = "owner"
+	interactiveSetupCreate interactiveSetupChoice = "create"
+	interactiveSetupJoin   interactiveSetupChoice = "join"
+)
+
+func parseInteractiveSetupChoice(input string) (interactiveSetupChoice, string, error) {
+	value := strings.TrimSpace(input)
+	lower := strings.ToLower(value)
+	switch lower {
+	case "", "1", "owner", "request", "access":
+		return interactiveSetupOwner, "", nil
+	case "2", "create", "new":
+		return interactiveSetupCreate, "", nil
+	case "3", "join", "invite":
+		return interactiveSetupJoin, "", nil
+	}
+	if strings.HasPrefix(value, invite.SchemePrefix) {
+		return interactiveSetupJoin, value, nil
+	}
+	if strings.HasPrefix(lower, "did:") {
+		return interactiveSetupOwner, value, nil
+	}
+	return "", "", fmt.Errorf("invalid choice %q (paste an owner DID, paste a meshd://invite URL, or choose 1, 2, or 3)", value)
 }
 
 func stdinIsTerminal() bool {
