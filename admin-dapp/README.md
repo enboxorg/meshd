@@ -7,6 +7,12 @@ account. This dapp connects to that wallet, receives delegated DWN grants, and
 then manages networks, invites, pending node approvals, and removals on behalf
 of the owner.
 
+Production dashboard:
+
+```text
+https://meshd-admin.pages.dev
+```
+
 ## Local development
 
 ```bash
@@ -65,7 +71,9 @@ protocol readiness checks. `npm run build` typechecks and builds the static app.
 ## Cloudflare Pages
 
 The repository workflow `.github/workflows/admin-dapp.yml` builds this app on
-PRs and deploys it on pushes to `main`.
+PRs and on pushes to `main`. On `main`, it deploys only when the Cloudflare
+secrets below are configured; otherwise it leaves build/test green and skips
+the Pages deployment step.
 
 Required GitHub secrets:
 
@@ -78,4 +86,13 @@ The workflow deploys `admin-dapp/dist` to the Cloudflare Pages project:
 
 ```text
 meshd-admin
+```
+
+For a manual deploy with a locally authenticated Wrangler CLI:
+
+```bash
+npm ci
+npm test
+npm run build
+wrangler pages deploy dist --project-name=meshd-admin --branch=main
 ```

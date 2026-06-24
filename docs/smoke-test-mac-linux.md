@@ -10,26 +10,57 @@ Assumptions:
 - Both machines may already run Tailscale. meshd uses `10.200.0.0/16`, so it
   should not overlap Tailscale's `100.64.0.0/10` address space.
 - The beta DWN endpoint is `https://dev.aws.dwn.enbox.id`.
-- You have the standalone meshd Admin dapp available locally or deployed.
+- The released CLI is installed on both machines.
+- The standalone meshd Admin dapp is deployed at
+  `https://meshd-admin.pages.dev`.
 
-## 1. Start the admin dashboard on the Mac
+## 0. Install or update meshd
 
-From the repository checkout:
+On both the Mac and the Linux server:
+
+```bash
+curl -fsSL https://meshd.sh/install | bash
+meshd --version
+```
+
+Expected result:
+
+```text
+meshd 0.4.0
+```
+
+If your shell has not picked up the installer PATH update yet, run:
+
+```bash
+~/.meshd/bin/meshd --version
+```
+
+## 1. Open the admin dashboard on the Mac
+
+Use the deployed dashboard:
+
+```bash
+meshd admin --print
+```
+
+Open the printed URL. It should use:
+
+```text
+https://meshd-admin.pages.dev
+```
+
+Connect the owner wallet and approve meshd Admin. Create a network if one does
+not already exist. Copy the owner DID from the wallet or dashboard header.
+
+If the deployed dashboard is unavailable, run the local fallback from a repo
+checkout:
 
 ```bash
 cd ~/src/enboxorg/meshd/admin-dapp
 npm ci
 npm run dev -- --host 127.0.0.1
+meshd admin --dashboard http://127.0.0.1:5173 --print
 ```
-
-Open the printed Vite URL, usually:
-
-```text
-http://127.0.0.1:5173/
-```
-
-Connect the owner wallet and approve meshd Admin. Create a network if one does
-not already exist. Copy the owner DID from the wallet or dashboard header.
 
 ## 2. Submit the Linux node request
 

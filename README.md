@@ -16,6 +16,13 @@ DWN. See [DESIGN.md](DESIGN.md) for the full architecture.
 
 ## Quick start
 
+Install the latest release:
+
+```bash
+curl -fsSL https://meshd.sh/install | bash
+meshd --version
+```
+
 ```bash
 # On your first machine
 meshd up --create my-network --endpoint https://dwn.example.com
@@ -57,6 +64,8 @@ meshd up
 waits. After approval, the dashboard writes the node membership record, delivers
 the network context key, and writes a node approval response that the CLI
 consumes on the next `meshd up`.
+
+The default dashboard is deployed at `https://meshd-admin.pages.dev`.
 
 For a full Mac/Linux validation pass, see
 [docs/smoke-test-mac-linux.md](docs/smoke-test-mac-linux.md).
