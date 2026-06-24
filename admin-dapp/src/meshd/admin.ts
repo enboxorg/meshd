@@ -1272,7 +1272,9 @@ export async function updateMeshdNodeExpiry(
   expiresAt?: string
 ): Promise<MeshdNodeSummary> {
   const nextExpiresAt = expiresAt?.trim();
-  return writeUpdatedMeshdNode(session, network, node, { expiresAt: nextExpiresAt });
+  const nextNode = await writeUpdatedMeshdNode(session, network, node, { expiresAt: nextExpiresAt });
+  await writeNodeApprovalRefresh(session, network, nextNode);
+  return nextNode;
 }
 
 export async function updateMeshdNodeLabel(
@@ -1346,6 +1348,43 @@ async function writeUpdatedMeshdNode(
     }
   }
   return nextNode;
+}
+
+async function writeNodeApprovalRefresh(
+  session: MeshdAdminSession,
+  network: MeshdNetworkSummary,
+  node: MeshdNodeSummary
+): Promise<void> {
+  if (!node.meshIP) {
+    throw new Error("Cannot refresh node approval without a mesh IP.");
+  }
+
+  await writeRecord(
+    session,
+    MESHD_PROTOCOL_URI,
+    {
+      protocol: MESHD_PROTOCOL_URI,
+      protocolPath: "nodeApproval",
+      schema: "https://enbox.id/schemas/wireguard-mesh/node-approval",
+      dataFormat: "application/json",
+      recipient: node.did
+    },
+    {
+      ownerDID: session.ownerDid,
+      nodeDID: node.did,
+      networkRecordId: network.recordId,
+      networkName: network.name,
+      meshCIDR: network.meshCIDR,
+      meshIP: node.meshIP,
+      ...(network.anchorEndpoint ? { anchorEndpoint: network.anchorEndpoint } : {}),
+      ...(node.memberRecordId ? { memberRecordId: node.memberRecordId } : {}),
+      nodeRecordId: node.recordId,
+      ...(node.createdAt ? { nodeDateCreated: node.createdAt } : {}),
+      ...(node.label ? { label: node.label } : {}),
+      ...(node.expiresAt ? { expiresAt: node.expiresAt } : {}),
+      approvedAt: new Date().toISOString()
+    }
+  );
 }
 
 function getRecordIdFromEntry(rawEntry: unknown): string | undefined {
