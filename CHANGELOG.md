@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/enboxorg/meshd/compare/v0.7.0...v0.8.0) (2026-06-24)
+
+
+### Features
+
+* **admin:** copy owner setup command ([#145](https://github.com/enboxorg/meshd/issues/145)) ([97371ba](https://github.com/enboxorg/meshd/commit/97371ba2e8b26175c6edb291eafe099b5ead1e82))
+
+
+### Bug Fixes
+
+* **cli:** refresh membership expiry metadata ([#147](https://github.com/enboxorg/meshd/issues/147)) ([b45b00e](https://github.com/enboxorg/meshd/commit/b45b00ef3d9f4307af8fdf89b833113087c6a82c))
+
 ## [0.7.0](https://github.com/enboxorg/meshd/compare/v0.6.0...v0.7.0) (2026-06-24)
 
 
