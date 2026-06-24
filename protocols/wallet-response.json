@@ -1,0 +1,19 @@
+{
+  "protocol": "https://enbox.id/protocols/meshd-wallet-response",
+  "published": false,
+  "types": {
+    "response": {
+      "schema": "https://enbox.id/schemas/meshd-wallet-response/response",
+      "dataFormats": ["application/json"]
+    }
+  },
+  "structure": {
+    "response": {
+      "$actions": [
+        { "who": "anyone", "can": ["create"] },
+        { "who": "recipient", "of": "response", "can": ["read"] },
+        { "who": "author", "of": "response", "can": ["read"] }
+      ]
+    }
+  }
+}

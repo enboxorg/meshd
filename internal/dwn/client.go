@@ -112,8 +112,8 @@ type RecordsReadResult struct {
 }
 
 // RecordsRead reads a single record from the target DWN.
-func (c *Client) RecordsRead(ctx context.Context, target string, filter RecordsFilter, protocolRole string) (*RecordsReadResult, error) {
-	msg, err := BuildRecordsRead(c.signer, filter, protocolRole)
+func (c *Client) RecordsRead(ctx context.Context, target string, filter RecordsFilter, protocolRole string, permissionGrantID ...string) (*RecordsReadResult, error) {
+	msg, err := BuildRecordsRead(c.signer, filter, protocolRole, optionalString(permissionGrantID))
 	if err != nil {
 		return nil, fmt.Errorf("building RecordsRead: %w", err)
 	}
@@ -130,8 +130,8 @@ func (c *Client) RecordsRead(ctx context.Context, target string, filter RecordsF
 }
 
 // RecordsQuery queries records on the target DWN.
-func (c *Client) RecordsQuery(ctx context.Context, target string, filter RecordsFilter, dateSort string, pagination *Pagination, protocolRole string) (*DwnReply, error) {
-	msg, err := BuildRecordsQuery(c.signer, filter, dateSort, pagination, protocolRole)
+func (c *Client) RecordsQuery(ctx context.Context, target string, filter RecordsFilter, dateSort string, pagination *Pagination, protocolRole string, permissionGrantID ...string) (*DwnReply, error) {
+	msg, err := BuildRecordsQuery(c.signer, filter, dateSort, pagination, protocolRole, optionalString(permissionGrantID))
 	if err != nil {
 		return nil, fmt.Errorf("building RecordsQuery: %w", err)
 	}
@@ -145,8 +145,8 @@ func (c *Client) RecordsQuery(ctx context.Context, target string, filter Records
 }
 
 // RecordsDelete deletes a record on the target DWN.
-func (c *Client) RecordsDelete(ctx context.Context, target string, recordID string, prune bool, protocolRole string) (*DwnReply, error) {
-	msg, err := BuildRecordsDelete(c.signer, recordID, prune, protocolRole)
+func (c *Client) RecordsDelete(ctx context.Context, target string, recordID string, prune bool, protocolRole string, permissionGrantID ...string) (*DwnReply, error) {
+	msg, err := BuildRecordsDelete(c.signer, recordID, prune, protocolRole, optionalString(permissionGrantID))
 	if err != nil {
 		return nil, fmt.Errorf("building RecordsDelete: %w", err)
 	}
@@ -218,5 +218,3 @@ func ReadEntry(reply *DwnReply) (json.RawMessage, error) {
 	}
 	return reply.Entry, nil
 }
-
-

@@ -127,6 +127,20 @@ func TestNewDWNClientProtocolRoleDefaults(t *testing.T) {
 			t.Fatalf("protocolRole = %q, want network/member", c.protocolRole)
 		}
 	})
+
+	t.Run("explicit permission grant is stored", func(t *testing.T) {
+		c := NewDWNClient(
+			"https://dwn.example",
+			"did:example:anchor",
+			"network",
+			"did:example:member",
+			nil,
+			WithPermissionGrantID("grant-123"),
+		)
+		if c.grantID != "grant-123" {
+			t.Fatalf("grantID = %q, want grant-123", c.grantID)
+		}
+	})
 }
 
 func TestBuildMapResponseFallsBackToDeterministicMeshIP(t *testing.T) {
@@ -177,9 +191,11 @@ func TestNodeRecordToNode(t *testing.T) {
 	didURI, wantKey := testDIDJWK(t)
 
 	rec := &NodeRecord{
-		MeshIP:     "10.200.0.5",
-		AllowedIPs: []string{"192.168.1.0/24"},
-		AddedAt:    "2026-01-01T00:00:00Z",
+		MeshIP:          "10.200.0.5",
+		AllowedIPs:      []string{"192.168.1.0/24"},
+		AddedAt:         "2026-01-01T00:00:00Z",
+		OwnerDID:        "did:jwk:wallet",
+		NodeKeyDelivery: &dwncrypto.KeyDeliveryPublic{RootKeyID: didURI + "#1"},
 		Info: &NodeInfoData{
 			Hostname:     "myhost",
 			OS:           "linux",
@@ -207,6 +223,7 @@ func TestNodeRecordToNode(t *testing.T) {
 		"DID":           {got: node.DID, want: didURI},
 		"Key":           {got: node.Key, want: wantKey},
 		"MeshIP":        {got: node.MeshIP, want: netip.MustParseAddr("10.200.0.5")},
+		"MemberDID":     {got: node.MemberDID, want: "did:jwk:wallet"},
 		"Name":          {got: node.Name, want: "myhost"},
 		"PreferredDERP": {got: node.PreferredDERP, want: 2},
 		"Online":        {got: node.Online, want: true},
@@ -246,6 +263,10 @@ func TestNodeRecordToNode(t *testing.T) {
 			t.Errorf("[1] = %q", node.Endpoints[1])
 		}
 	})
+
+	if node.KeyDelivery == nil || node.KeyDelivery.RootKeyID != didURI+"#1" {
+		t.Fatalf("KeyDelivery = %+v, want root %s", node.KeyDelivery, didURI+"#1")
+	}
 
 	t.Run("non-jwk DID yields empty key", func(t *testing.T) {
 		// nodeRecordToNode should not panic on a non-jwk DID.
@@ -376,6 +397,24 @@ func TestNodeOnlineStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNodeRecordOwnerDIDCompatibility(t *testing.T) {
+	t.Run("owner alias populates legacy member", func(t *testing.T) {
+		rec := &NodeRecord{OwnerDID: "did:jwk:wallet"}
+		rec.NormalizeOwnerDID()
+		if rec.MemberDID != "did:jwk:wallet" || rec.EffectiveOwnerDID() != "did:jwk:wallet" {
+			t.Fatalf("record = %+v", rec)
+		}
+	})
+
+	t.Run("legacy member populates owner alias", func(t *testing.T) {
+		rec := &NodeRecord{MemberDID: "did:jwk:wallet"}
+		rec.NormalizeOwnerDID()
+		if rec.OwnerDID != "did:jwk:wallet" || rec.EffectiveOwnerDID() != "did:jwk:wallet" {
+			t.Fatalf("record = %+v", rec)
+		}
+	})
 }
 
 func TestDefaultPeerStaleThreshold(t *testing.T) {

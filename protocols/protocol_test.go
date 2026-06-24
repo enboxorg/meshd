@@ -28,8 +28,9 @@ func TestProtocolDoesNotUseUnsupportedRecordLimitStrategies(t *testing.T) {
 
 func protocolFixtures() map[string][]byte {
 	return map[string][]byte{
-		"wireguard-mesh": MeshProtocolJSON,
-		"key-delivery":   KeyDeliveryProtocolJSON,
+		"wireguard-mesh":  MeshProtocolJSON,
+		"key-delivery":    KeyDeliveryProtocolJSON,
+		"wallet-response": WalletResponseProtocolJSON,
 	}
 }
 

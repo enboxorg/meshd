@@ -112,6 +112,14 @@ type Config struct {
 	// Non-anchor nodes use "network/node".
 	ProtocolRole string
 
+	// PermissionGrantID invokes a DWN permission grant for control-plane
+	// read/query operations.
+	PermissionGrantID string
+
+	// WritePermissionGrantID invokes a DWN permission grant for this node's
+	// runtime endpoint writes.
+	WritePermissionGrantID string
+
 	// AutoKeyDelivery enables automatic context key delivery to new nodes.
 	// Only active when this node is the anchor and has the root private key.
 	// If nil, auto delivery is disabled.
@@ -205,6 +213,9 @@ func New(cfg Config) (*Engine, error) {
 	}
 	if cfg.ProtocolRole != "" {
 		controlOpts = append(controlOpts, control.WithProtocolRole(cfg.ProtocolRole))
+	}
+	if cfg.PermissionGrantID != "" {
+		controlOpts = append(controlOpts, control.WithPermissionGrantID(cfg.PermissionGrantID))
 	}
 	dwnClient := control.NewDWNClient(
 		cfg.AnchorEndpoint,
@@ -632,6 +643,7 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 			DiscoKey:             discoKeyB64,
 			NATType:              "unknown",
 			UseContextEncryption: cfg.UseContextEncryption,
+			PermissionGrantID:    cfg.WritePermissionGrantID,
 		})
 		if err != nil {
 			l.Warn("failed to publish endpoints to DWN",

@@ -375,14 +375,20 @@ func MapResponseFunc(client *control.DWNClient, converter *Converter, autoDelive
 		// If auto key delivery is active, extract node DIDs from
 		// the response and deliver context keys to any new nodes.
 		if autoDelivery != nil && resp != nil {
-			var nodeDIDs []string
+			var recipients []KeyDeliveryRecipient
 			if resp.Node != nil {
-				nodeDIDs = append(nodeDIDs, resp.Node.DID)
+				recipients = append(recipients, KeyDeliveryRecipient{
+					DID:         resp.Node.DID,
+					KeyDelivery: resp.Node.KeyDelivery,
+				})
 			}
 			for _, p := range resp.Peers {
-				nodeDIDs = append(nodeDIDs, p.DID)
+				recipients = append(recipients, KeyDeliveryRecipient{
+					DID:         p.DID,
+					KeyDelivery: p.KeyDelivery,
+				})
 			}
-			autoDelivery.OnNodesUpdated(ctx, nodeDIDs)
+			autoDelivery.OnRecipientsUpdated(ctx, recipients)
 		}
 
 		return converter.Convert(resp)

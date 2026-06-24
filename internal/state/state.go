@@ -65,6 +65,25 @@ type NetworkState struct {
 	// MeshIP is this node's allocated IP within the mesh.
 	MeshIP string `json:"meshIp,omitempty"`
 
+	// NodeDID is this machine's device DID. It is the DID used for WireGuard
+	// key derivation, node records, endpoint writes, and "this device" UI.
+	// Older state files omit it; callers should fall back to the local profile
+	// DID when empty.
+	NodeDID string `json:"nodeDid,omitempty"`
+
+	// OwnerDID is the durable wallet/member DID that owns this node. In
+	// local-vault mode it is usually the same as NodeDID. In wallet-connected
+	// mode it is the wallet identity while NodeDID remains device-local.
+	OwnerDID string `json:"ownerDid,omitempty"`
+
+	// MemberDID is the pre-beta JSON name for OwnerDID. Keep writing and reading
+	// it so existing network.json files and tooling continue to work.
+	MemberDID string `json:"memberDid,omitempty"`
+
+	// DelegateDID is the local control/session DID with wallet-issued grants for
+	// this node. Older state may omit it and grant directly to NodeDID.
+	DelegateDID string `json:"delegateDid,omitempty"`
+
 	// NodeRecordID is the record ID of this node's node record on the anchor DWN.
 	NodeRecordID string `json:"nodeRecordId,omitempty"`
 
@@ -81,6 +100,14 @@ type NetworkState struct {
 	// record write. Required for updates because dateCreated is immutable.
 	MemberDateCreated string `json:"memberDateCreated,omitempty"`
 
+	// PendingOwnerRequestID is set while this node is waiting for a wallet
+	// owner to approve it from the dashboard. During this state
+	// NetworkRecordID and NodeRecordID are intentionally empty.
+	PendingOwnerRequestID string `json:"pendingOwnerRequestId,omitempty"`
+
+	// PendingOwnerRequestAt is when the owner-scoped node request was written.
+	PendingOwnerRequestAt string `json:"pendingOwnerRequestAt,omitempty"`
+
 	// ContextKey is a legacy plaintext cache of the Protocol Context
 	// encryption key (base64-encoded X25519 private key). New encrypted
 	// identity profiles store context keys in secrets.vault.json instead.
@@ -90,6 +117,48 @@ type NetworkState struct {
 	ContextKey string `json:"contextKey,omitempty"`
 }
 
+// NormalizeOwnerDID keeps the newer ownerDid field and the older memberDid
+// field interchangeable while local state files transition.
+func (ns *NetworkState) NormalizeOwnerDID() {
+	if ns == nil {
+		return
+	}
+	if ns.OwnerDID == "" {
+		ns.OwnerDID = ns.MemberDID
+	}
+	if ns.MemberDID == "" {
+		ns.MemberDID = ns.OwnerDID
+	}
+}
+
+// EffectiveNodeDID returns the node/device DID, applying the legacy fallback.
+func (ns *NetworkState) EffectiveNodeDID(fallback string) string {
+	if ns != nil && ns.NodeDID != "" {
+		return ns.NodeDID
+	}
+	return fallback
+}
+
+// EffectiveOwnerDID returns the wallet owner/member DID, applying local defaults.
+func (ns *NetworkState) EffectiveOwnerDID(fallback string) string {
+	if ns != nil {
+		if ns.OwnerDID != "" {
+			return ns.OwnerDID
+		}
+		if ns.MemberDID != "" {
+			return ns.MemberDID
+		}
+	}
+	return fallback
+}
+
+// EffectiveMemberDID returns the wallet/member DID, applying local defaults.
+//
+// Deprecated: use EffectiveOwnerDID.
+func (ns *NetworkState) EffectiveMemberDID(fallback string) string {
+	return ns.EffectiveOwnerDID(fallback)
+}
+
 const networkFile = "network.json"
 
 // SaveNetworkState persists network membership state.
@@ -97,6 +166,7 @@ func SaveNetworkState(stateDir string, ns *NetworkState) error {
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
 	}
+	ns.NormalizeOwnerDID()
 
 	data, err := json.MarshalIndent(ns, "", "  ")
 	if err != nil {
@@ -131,6 +201,7 @@ func LoadNetworkState(stateDir string) (*NetworkState, error) {
 	if err := json.Unmarshal(data, &ns); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
+	ns.NormalizeOwnerDID()
 	return &ns, nil
 }
 

@@ -1,0 +1,42 @@
+{
+  "name": "@enbox/meshd-admin-dapp",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "test": "vitest run",
+    "preview": "vite preview"
+  },
+  "overrides": {
+    "esbuild": "0.28.1",
+    "lodash": "4.18.1"
+  },
+  "dependencies": {
+    "@enbox/agent": "0.8.6",
+    "@enbox/api": "0.6.44",
+    "@enbox/auth": "0.6.52",
+    "@enbox/browser": "0.3.30",
+    "@enbox/common": "0.1.1",
+    "@enbox/crypto": "0.1.1",
+    "@enbox/dids": "0.1.1",
+    "@enbox/dwn-sdk-js": "0.4.4",
+    "@enbox/protocols": "0.2.71",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.407.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sonner": "^1.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/react": "^18.3.1",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "typescript": "^5.2.2",
+    "vite": "^7.3.5",
+    "vite-plugin-node-polyfills": "^0.28.0",
+    "vitest": "^3.2.6"
+  }
+}

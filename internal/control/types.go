@@ -12,6 +12,8 @@ package control
 import (
 	"net/netip"
 	"time"
+
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 )
 
 // Node represents a peer in the mesh network.
@@ -25,6 +27,14 @@ type Node struct {
 
 	// DID is the node's DID URI.
 	DID string
+
+	// MemberDID is the wallet/member DID that owns this node, when distinct
+	// from the node DID.
+	MemberDID string
+
+	// MemberRecordID is the parent member record when this node is stored
+	// under network/member/node.
+	MemberRecordID string
 
 	// Key is the WireGuard public key (Curve25519, base64).
 	// Derived from the node's did:jwk identity (Ed25519 → X25519 birational map),
@@ -61,6 +71,11 @@ type Node struct {
 
 	// Capabilities advertised by this node.
 	Capabilities []string
+
+	// KeyDelivery is the node's key-delivery ProtocolPath public key, when
+	// supplied during wallet/preauth joins. Anchors use it to encrypt context
+	// keys to this device.
+	KeyDelivery *dwncrypto.KeyDeliveryPublic
 }
 
 // DERPRegion represents a DERP relay region.

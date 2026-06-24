@@ -290,6 +290,29 @@ func TestBuildRecordsWrite(t *testing.T) {
 		}
 	})
 
+	t.Run("permissionGrantId in descriptor and signature payload", func(t *testing.T) {
+		result, err := BuildRecordsWrite(s, RecordsWriteOptions{
+			Protocol:          "https://example.com/test",
+			ProtocolPath:      "root",
+			DataFormat:        "application/json",
+			Data:              []byte(`{}`),
+			PermissionGrantID: "grant-123",
+		})
+		if err != nil {
+			t.Fatalf("BuildRecordsWrite: %v", err)
+		}
+
+		if result.Message.Descriptor["permissionGrantId"] != "grant-123" {
+			t.Fatalf("descriptor permissionGrantId = %v", result.Message.Descriptor["permissionGrantId"])
+		}
+		payloadBytes, _ := base64.RawURLEncoding.DecodeString(result.Message.Authorization.Signature.Payload)
+		var payload map[string]any
+		json.Unmarshal(payloadBytes, &payload)
+		if payload["permissionGrantId"] != "grant-123" {
+			t.Fatalf("signature permissionGrantId = %v", payload["permissionGrantId"])
+		}
+	})
+
 	t.Run("missing protocol returns error", func(t *testing.T) {
 		_, err := BuildRecordsWrite(s, RecordsWriteOptions{
 			DataFormat: "application/json",
@@ -357,6 +380,26 @@ func TestBuildRecordsWrite(t *testing.T) {
 			t.Errorf("parentId = %q, want %q", parentID, rootID)
 		}
 	})
+}
+
+func TestBuildRecordsQueryWithPermissionGrant(t *testing.T) {
+	s := newTestSigner(t)
+	msg, err := BuildRecordsQuery(s, RecordsFilter{
+		Protocol: "https://example.com/test",
+	}, "", nil, "", "grant-123")
+	if err != nil {
+		t.Fatalf("BuildRecordsQuery: %v", err)
+	}
+
+	if msg.Descriptor["permissionGrantId"] != "grant-123" {
+		t.Fatalf("descriptor permissionGrantId = %v", msg.Descriptor["permissionGrantId"])
+	}
+	payloadBytes, _ := base64.RawURLEncoding.DecodeString(msg.Authorization.Signature.Payload)
+	var payload map[string]any
+	json.Unmarshal(payloadBytes, &payload)
+	if payload["permissionGrantId"] != "grant-123" {
+		t.Fatalf("signature permissionGrantId = %v", payload["permissionGrantId"])
+	}
 }
 
 func TestBuildRecordsQuery(t *testing.T) {

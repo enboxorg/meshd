@@ -14,8 +14,8 @@ import (
 )
 
 // AutoKeyDelivery monitors the mesh node list and automatically delivers
-// context keys to new nodes. This is only active on the anchor node
-// (the network owner who holds the root private key).
+// context keys to new nodes. This is active on a local anchor node or a
+// wallet-authorized owner node that has a cached network context key.
 //
 // When the engine polls DWN state and discovers nodes that don't yet have
 // a context key, it delivers one to each of them. This removes the need for
@@ -39,14 +39,25 @@ type AutoKeyDelivery struct {
 	// Logger for output.
 	Logger *slog.Logger
 
+	// PermissionGrantID invokes a wallet/member grant for contextKey writes.
+	PermissionGrantID string
+
 	mu        sync.Mutex
 	delivered map[string]bool // DID → true if context key already delivered
 }
 
+// KeyDeliveryRecipient identifies a node that may need a delivered context key.
+type KeyDeliveryRecipient struct {
+	DID         string
+	KeyDelivery *dwncrypto.KeyDeliveryPublic
+}
+
 // NewAutoKeyDelivery creates a new auto key delivery instance.
-// Returns nil if the EncryptionKeyManager is not an owner (doesn't have root private key).
+// Returns nil if the EncryptionKeyManager cannot resolve this network's
+// context key.
 func NewAutoKeyDelivery(cfg AutoKeyDeliveryConfig) *AutoKeyDelivery {
-	if cfg.EncryptionKeyManager == nil || !cfg.EncryptionKeyManager.IsOwner() {
+	if cfg.EncryptionKeyManager == nil ||
+		(!cfg.EncryptionKeyManager.IsOwner() && !cfg.EncryptionKeyManager.HasContextKey(cfg.NetworkRecordID)) {
 		return nil
 	}
 
@@ -62,6 +73,7 @@ func NewAutoKeyDelivery(cfg AutoKeyDeliveryConfig) *AutoKeyDelivery {
 		Signer:               cfg.Signer,
 		EncryptionKeyManager: cfg.EncryptionKeyManager,
 		Logger:               l,
+		PermissionGrantID:    cfg.PermissionGrantID,
 		delivered:            make(map[string]bool),
 	}
 }
@@ -74,6 +86,7 @@ type AutoKeyDeliveryConfig struct {
 	Signer               *dwn.Signer
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 	Logger               *slog.Logger
+	PermissionGrantID    string
 }
 
 // OnNodesUpdated should be called after each poll that discovers node DIDs.
@@ -83,15 +96,29 @@ type AutoKeyDeliveryConfig struct {
 // nodeDIDs is the full set of node DIDs from the current mesh state.
 // It is safe to call concurrently.
 func (a *AutoKeyDelivery) OnNodesUpdated(ctx context.Context, nodeDIDs []string) {
+	recipients := make([]KeyDeliveryRecipient, 0, len(nodeDIDs))
+	for _, did := range nodeDIDs {
+		recipients = append(recipients, KeyDeliveryRecipient{DID: did})
+	}
+	a.OnRecipientsUpdated(ctx, recipients)
+}
+
+// OnRecipientsUpdated should be called after each poll that discovers nodes.
+// It delivers context keys to nodes that have not yet received them, using
+// recipient key-delivery public keys when available.
+func (a *AutoKeyDelivery) OnRecipientsUpdated(ctx context.Context, recipients []KeyDeliveryRecipient) {
 	if a == nil {
 		return
 	}
 
 	a.mu.Lock()
-	var pending []string
-	for _, did := range nodeDIDs {
-		if !a.delivered[did] {
-			pending = append(pending, did)
+	var pending []KeyDeliveryRecipient
+	for _, recipient := range recipients {
+		if recipient.DID == "" {
+			continue
+		}
+		if !a.delivered[recipient.DID] {
+			pending = append(pending, recipient)
 		}
 	}
 	a.mu.Unlock()
@@ -107,27 +134,29 @@ func (a *AutoKeyDelivery) OnNodesUpdated(ctx context.Context, nodeDIDs []string)
 		Logger:               a.Logger,
 	}
 
-	for _, did := range pending {
+	for _, recipient := range pending {
 		err := kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
-			AnchorDID:      a.AnchorDID,
-			RecipientDID:   did,
-			SourceProtocol: protocols.MeshProtocolURI,
-			ContextID:      a.NetworkRecordID,
+			AnchorDID:            a.AnchorDID,
+			RecipientDID:         recipient.DID,
+			SourceProtocol:       protocols.MeshProtocolURI,
+			ContextID:            a.NetworkRecordID,
+			PermissionGrantID:    a.PermissionGrantID,
+			RecipientKeyDelivery: recipient.KeyDelivery,
 		})
 		if err != nil {
 			a.Logger.Warn("auto key delivery failed",
-				slog.String("recipient", did),
+				slog.String("recipient", recipient.DID),
 				slog.Any("error", err),
 			)
 			continue
 		}
 
 		a.mu.Lock()
-		a.delivered[did] = true
+		a.delivered[recipient.DID] = true
 		a.mu.Unlock()
 
 		a.Logger.Info("auto-delivered context key",
-			slog.String("recipient", did),
+			slog.String("recipient", recipient.DID),
 		)
 	}
 }

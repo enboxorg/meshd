@@ -30,6 +30,8 @@ Thumbs.db
 
 # Build
 /dist/
+admin-dapp/dist/
+admin-dapp/node_modules/
 
 # Config (may contain keys)
 *.key

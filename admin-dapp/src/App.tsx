@@ -1,0 +1,614 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  CheckIcon,
+  ClipboardIcon,
+  KeyRoundIcon,
+  Loader2Icon,
+  LogOutIcon,
+  NetworkIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  ServerIcon,
+  ShieldCheckIcon,
+  Trash2Icon,
+  UserPlusIcon,
+  XIcon
+} from "lucide-react";
+import { toast } from "sonner";
+
+import { useEnbox } from "./enbox/use-enbox";
+import {
+  approveMeshdNodeRequest,
+  buildMeshdInviteURL,
+  createMeshdInvite,
+  createMeshdNetwork,
+  fetchMeshdNetworkTopology,
+  fetchMeshdNetworks,
+  rejectMeshdNodeRequest,
+  removeMeshdNode,
+  revokeMeshdInvite,
+  type CreateMeshdInviteResult,
+  type MeshdAdminSession,
+  type MeshdNetworkSummary,
+  type MeshdNetworkTopology,
+  type MeshdNodeRequestSummary,
+  type MeshdNodeSummary,
+  type MeshdPreAuthKeySummary
+} from "./meshd/admin";
+
+type LoadState = "idle" | "loading" | "ready" | "error";
+type InviteExpiryValue = "1h" | "24h" | "7d" | "30d" | "never";
+
+const INVITE_EXPIRY_OPTIONS: Array<{ value: InviteExpiryValue; label: string; durationMs?: number }> = [
+  { value: "1h", label: "1 hour", durationMs: 60 * 60 * 1000 },
+  { value: "24h", label: "24 hours", durationMs: 24 * 60 * 60 * 1000 },
+  { value: "7d", label: "7 days", durationMs: 7 * 24 * 60 * 60 * 1000 },
+  { value: "30d", label: "30 days", durationMs: 30 * 24 * 60 * 60 * 1000 },
+  { value: "never", label: "Never" }
+];
+
+function truncateDid(did: string, head = 18, tail = 10) {
+  if (did.length <= head + tail + 3) return did;
+  return `${did.slice(0, head)}...${did.slice(-tail)}`;
+}
+
+function formatTime(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
+async function copyToClipboard(value: string) {
+  await navigator.clipboard.writeText(value);
+  toast.success("Copied");
+}
+
+function inviteExpiryTimestamp(value: InviteExpiryValue) {
+  const option = INVITE_EXPIRY_OPTIONS.find((item) => item.value === value);
+  if (!option?.durationMs) {
+    return undefined;
+  }
+  return new Date(Date.now() + option.durationMs).toISOString();
+}
+
+export function App() {
+  const enboxState = useEnbox();
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <button className="brand" type="button" aria-label="meshd Admin">
+          <span className="brand-mark"><NetworkIcon size={20} /></span>
+          <span className="brand-copy">
+            <span>meshd</span>
+            <small>Admin</small>
+          </span>
+        </button>
+        <div className="topbar-actions">
+          {enboxState.did ? (
+            <>
+              <span className="identity-pill" title={enboxState.did}>
+                <ShieldCheckIcon size={15} />
+                {truncateDid(enboxState.did, 14, 8)}
+              </span>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="Disconnect"
+                title="Disconnect"
+                onClick={() => void enboxState.disconnect({ clearStorage: true })}
+              >
+                <LogOutIcon size={17} />
+              </button>
+            </>
+          ) : null}
+        </div>
+      </header>
+
+      <main className="workspace">
+        {!enboxState.isConnected ? <ConnectPanel /> : <Dashboard />}
+      </main>
+    </div>
+  );
+}
+
+function ConnectPanel() {
+  const { connectWallet, isConnecting } = useEnbox();
+  const [error, setError] = useState<string>();
+
+  async function connect() {
+    setError(undefined);
+    try {
+      await connectWallet();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Wallet connection failed.";
+      if (!message.toLowerCase().includes("cancel")) {
+        setError(message);
+      }
+    }
+  }
+
+  return (
+    <section className="connect-panel">
+      <div className="connect-title">
+        <span className="panel-icon"><KeyRoundIcon size={22} /></span>
+        <div>
+          <h1>meshd Admin</h1>
+          <p>Connect an owner wallet to manage networks and node approvals.</p>
+        </div>
+      </div>
+      {error ? <div className="error-banner">{error}</div> : null}
+      <button className="primary-button" type="button" disabled={isConnecting} onClick={() => void connect()}>
+        {isConnecting ? <Loader2Icon className="spin" size={17} /> : <ShieldCheckIcon size={17} />}
+        Connect Wallet
+      </button>
+    </section>
+  );
+}
+
+function Dashboard() {
+  const { did, delegateDid, enbox, protocolsInitialized, protocolSetupError } = useEnbox();
+  const session = useMemo<MeshdAdminSession | undefined>(() => {
+    if (!did || !enbox) return undefined;
+    return {
+      ownerDid: did,
+      delegateDid,
+      agent: enbox.agent as never
+    };
+  }, [delegateDid, did, enbox]);
+
+  const [networks, setNetworks] = useState<MeshdNetworkSummary[]>([]);
+  const [selectedNetworkId, setSelectedNetworkId] = useState(() => new URLSearchParams(window.location.search).get("network") ?? "");
+  const [topology, setTopology] = useState<MeshdNetworkTopology>();
+  const [loadState, setLoadState] = useState<LoadState>("idle");
+  const [error, setError] = useState<string>();
+  const [inviteResult, setInviteResult] = useState<CreateMeshdInviteResult>();
+  const [inviteLabel, setInviteLabel] = useState("");
+  const [inviteExpiry, setInviteExpiry] = useState<InviteExpiryValue>("24h");
+  const [inviteReusable, setInviteReusable] = useState(false);
+  const [networkName, setNetworkName] = useState("");
+  const [networkCIDR, setNetworkCIDR] = useState("10.200.0.0/16");
+  const [busyAction, setBusyAction] = useState<string>();
+
+  const selectedNetwork = useMemo(() => {
+    if (networks.length === 0) return undefined;
+    return networks.find((network) => network.recordId === selectedNetworkId) ?? networks[0];
+  }, [networks, selectedNetworkId]);
+
+  const refreshNetworks = useCallback(async () => {
+    if (!session || !protocolsInitialized) return;
+    setLoadState("loading");
+    setError(undefined);
+    try {
+      const nextNetworks = await fetchMeshdNetworks(session);
+      setNetworks(nextNetworks);
+      if (!selectedNetworkId && nextNetworks[0]) {
+        setSelectedNetworkId(nextNetworks[0].recordId);
+      }
+      setLoadState("ready");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load networks.");
+      setLoadState("error");
+    }
+  }, [protocolsInitialized, selectedNetworkId, session]);
+
+  const refreshTopology = useCallback(async () => {
+    if (!session || !protocolsInitialized || !selectedNetwork) return;
+    setError(undefined);
+    try {
+      const nextTopology = await fetchMeshdNetworkTopology(session, selectedNetwork);
+      setTopology(nextTopology);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load network topology.");
+    }
+  }, [protocolsInitialized, selectedNetwork, session]);
+
+  useEffect(() => {
+    void refreshNetworks();
+  }, [refreshNetworks]);
+
+  useEffect(() => {
+    void refreshTopology();
+  }, [refreshTopology]);
+
+  useEffect(() => {
+    if (!selectedNetwork) return;
+    const params = new URLSearchParams(window.location.search);
+    params.set("network", selectedNetwork.recordId);
+    if (did) params.set("owner", did);
+    window.history.replaceState(null, "", `?${params.toString()}`);
+  }, [did, selectedNetwork]);
+
+  async function runAction(label: string, action: () => Promise<void>) {
+    setBusyAction(label);
+    setError(undefined);
+    try {
+      await action();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Action failed.");
+    } finally {
+      setBusyAction(undefined);
+    }
+  }
+
+  async function handleCreateNetwork() {
+    if (!session) return;
+    await runAction("create-network", async () => {
+      const network = await createMeshdNetwork(session, { name: networkName, meshCIDR: networkCIDR });
+      setNetworkName("");
+      setNetworks((current) => [network, ...current]);
+      setSelectedNetworkId(network.recordId);
+      toast.success("Network created");
+    });
+  }
+
+  async function handleCreateInvite() {
+    if (!session || !selectedNetwork) return;
+    await runAction("create-invite", async () => {
+      const result = await createMeshdInvite(session, selectedNetwork, {
+        label: inviteLabel.trim() || selectedNetwork.name,
+        expiresAt: inviteExpiryTimestamp(inviteExpiry),
+        reusable: inviteReusable
+      });
+      setInviteLabel("");
+      setInviteResult(result);
+      toast.success("Invite created");
+      await refreshTopology();
+    });
+  }
+
+  async function handleApprove(request: MeshdNodeRequestSummary) {
+    if (!session || !selectedNetwork) return;
+    await runAction(`approve-${request.recordId}`, async () => {
+      const result = await approveMeshdNodeRequest(session, selectedNetwork, request);
+      toast.success(`Node approved at ${result.meshIP}`);
+      await refreshTopology();
+    });
+  }
+
+  async function handleReject(request: MeshdNodeRequestSummary) {
+    if (!session) return;
+    await runAction(`reject-${request.recordId}`, async () => {
+      await rejectMeshdNodeRequest(session, request);
+      toast.success("Request rejected");
+      await refreshTopology();
+    });
+  }
+
+  async function handleRevokeInvite(key: MeshdPreAuthKeySummary) {
+    if (!session) return;
+    await runAction(`revoke-${key.recordId}`, async () => {
+      await revokeMeshdInvite(session, key);
+      toast.success("Invite revoked");
+      await refreshTopology();
+    });
+  }
+
+  async function handleCopyExistingInvite(key: MeshdPreAuthKeySummary) {
+    if (!session || !selectedNetwork) return;
+    const url = await buildMeshdInviteURL(session, selectedNetwork, key);
+    await copyToClipboard(url);
+  }
+
+  async function handleRemoveNode(node: MeshdNodeSummary) {
+    if (!session || !selectedNetwork) return;
+    await runAction(`remove-${node.recordId}`, async () => {
+      const result = await removeMeshdNode(session, selectedNetwork, node);
+      if (result.contextKeyCleanupError) {
+        toast.warning(result.contextKeyCleanupError);
+      }
+      toast.success("Node removed");
+      await refreshTopology();
+    });
+  }
+
+  if (protocolSetupError) {
+    return <StatePanel title="Protocol setup failed" detail={protocolSetupError} />;
+  }
+
+  if (!protocolsInitialized) {
+    return <StatePanel title="Initializing" detail="Preparing meshd protocols for this wallet session." loading />;
+  }
+
+  const allNodes = [
+    ...(topology?.members.flatMap((member) => member.nodes.map((node) => ({ node, member }))) ?? []),
+    ...(topology?.legacyNodes.map((node) => ({ node, member: undefined })) ?? [])
+  ];
+
+  return (
+    <div className="dashboard-grid">
+      <aside className="sidebar">
+        <div className="section-heading">
+          <span>Networks</span>
+          <button className="icon-button small" type="button" aria-label="Refresh networks" title="Refresh" onClick={() => void refreshNetworks()}>
+            <RefreshCwIcon size={15} />
+          </button>
+        </div>
+        {loadState === "loading" ? <div className="muted-row"><Loader2Icon className="spin" size={15} /> Loading</div> : null}
+        <div className="network-list">
+          {networks.map((network) => (
+            <button
+              key={network.recordId}
+              type="button"
+              className={`network-row ${network.recordId === selectedNetwork?.recordId ? "active" : ""}`}
+              onClick={() => setSelectedNetworkId(network.recordId)}
+            >
+              <NetworkIcon size={16} />
+              <span>
+                <strong>{network.name}</strong>
+                <small>{network.meshCIDR}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <div className="create-box">
+          <div className="section-heading">
+            <span>Create</span>
+          </div>
+          <label>
+            Name
+            <input value={networkName} onChange={(event) => setNetworkName(event.target.value)} placeholder="home" />
+          </label>
+          <label>
+            CIDR
+            <input value={networkCIDR} onChange={(event) => setNetworkCIDR(event.target.value)} />
+          </label>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={busyAction === "create-network" || networkName.trim() === ""}
+            onClick={() => void handleCreateNetwork()}
+          >
+            {busyAction === "create-network" ? <Loader2Icon className="spin" size={16} /> : <PlusIcon size={16} />}
+            Create Network
+          </button>
+        </div>
+      </aside>
+
+      <section className="main-panel">
+        {error ? <div className="error-banner">{error}</div> : null}
+        {!selectedNetwork ? (
+          <StatePanel title="No networks" detail="Create a mesh network to start approving nodes." />
+        ) : (
+          <>
+            <div className="network-header">
+              <div>
+                <h1>{selectedNetwork.name}</h1>
+                <p>{selectedNetwork.meshCIDR}</p>
+              </div>
+              <div className="header-buttons">
+                <button className="secondary-button" type="button" onClick={() => void refreshTopology()}>
+                  <RefreshCwIcon size={16} />
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            <section className="invite-composer">
+              <div className="section-heading">
+                <span>New Invite</span>
+              </div>
+              <div className="invite-fields">
+                <label>
+                  Label
+                  <input value={inviteLabel} onChange={(event) => setInviteLabel(event.target.value)} placeholder={selectedNetwork.name} />
+                </label>
+                <label>
+                  Expires
+                  <select value={inviteExpiry} onChange={(event) => setInviteExpiry(event.target.value as InviteExpiryValue)}>
+                    {INVITE_EXPIRY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="toggle-field">
+                  <input
+                    type="checkbox"
+                    checked={inviteReusable}
+                    onChange={(event) => setInviteReusable(event.target.checked)}
+                  />
+                  Reusable
+                </label>
+                <button
+                  className="primary-button"
+                  type="button"
+                  disabled={busyAction === "create-invite"}
+                  onClick={() => void handleCreateInvite()}
+                >
+                  {busyAction === "create-invite" ? <Loader2Icon className="spin" size={16} /> : <UserPlusIcon size={16} />}
+                  Create Invite
+                </button>
+              </div>
+            </section>
+
+            {inviteResult ? (
+              <div className="invite-result">
+                <div>
+                  <strong>Invite URL</strong>
+                  <code>{inviteResult.url}</code>
+                </div>
+                <button className="icon-button" type="button" aria-label="Copy invite URL" title="Copy" onClick={() => void copyToClipboard(inviteResult.url)}>
+                  <ClipboardIcon size={16} />
+                </button>
+              </div>
+            ) : null}
+
+            <section className="content-section">
+              <div className="section-heading">
+                <span>Pending</span>
+                <small>{topology?.pendingRequests.length ?? 0}</small>
+              </div>
+              <div className="stack">
+                {topology?.pendingRequests.length ? topology.pendingRequests.map((request) => (
+                  <PendingRequestRow
+                    key={request.recordId}
+                    request={request}
+                    busyAction={busyAction}
+                    onApprove={handleApprove}
+                    onReject={handleReject}
+                  />
+                )) : <EmptyRow icon={<ShieldCheckIcon size={18} />} text="No pending approvals" />}
+              </div>
+            </section>
+
+            <section className="content-section">
+              <div className="section-heading">
+                <span>Nodes</span>
+                <small>{allNodes.length}</small>
+              </div>
+              <div className="node-grid">
+                {allNodes.length ? allNodes.map(({ node, member }) => (
+                  <NodeCard key={node.recordId} node={node} owner={member?.did} busyAction={busyAction} onRemove={handleRemoveNode} />
+                )) : <EmptyRow icon={<ServerIcon size={18} />} text="No nodes" />}
+              </div>
+            </section>
+
+            <section className="content-section">
+              <div className="section-heading">
+                <span>Invites</span>
+                <small>{topology?.preAuthKeys.length ?? 0}</small>
+              </div>
+              <div className="stack">
+                {topology?.preAuthKeys.length ? topology.preAuthKeys.map((key) => (
+                  <InviteRow
+                    key={key.recordId}
+                    invite={key}
+                    busyAction={busyAction}
+                    onCopy={handleCopyExistingInvite}
+                    onRevoke={handleRevokeInvite}
+                  />
+                )) : <EmptyRow icon={<UserPlusIcon size={18} />} text="No active invites" />}
+              </div>
+            </section>
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function PendingRequestRow({
+  request,
+  busyAction,
+  onApprove,
+  onReject
+}: {
+  request: MeshdNodeRequestSummary;
+  busyAction?: string;
+  onApprove: (request: MeshdNodeRequestSummary) => Promise<void>;
+  onReject: (request: MeshdNodeRequestSummary) => Promise<void>;
+}) {
+  const approving = busyAction === `approve-${request.recordId}`;
+  const rejecting = busyAction === `reject-${request.recordId}`;
+  return (
+    <article className="data-row">
+      <div className="row-main">
+        <span className="row-icon"><ServerIcon size={17} /></span>
+        <span>
+          <strong>{request.label || truncateDid(request.nodeDID)}</strong>
+          <small>{request.requestKind === "owner-node" || request.protocolPath === "nodeRequest" ? "Owner request" : "Invite request"}</small>
+        </span>
+      </div>
+      <code title={request.nodeDID}>{truncateDid(request.nodeDID)}</code>
+      <div className="row-actions">
+        <button className="icon-button success" type="button" aria-label="Approve" title="Approve" disabled={approving || rejecting} onClick={() => void onApprove(request)}>
+          {approving ? <Loader2Icon className="spin" size={16} /> : <CheckIcon size={16} />}
+        </button>
+        <button className="icon-button danger" type="button" aria-label="Reject" title="Reject" disabled={approving || rejecting} onClick={() => void onReject(request)}>
+          {rejecting ? <Loader2Icon className="spin" size={16} /> : <XIcon size={16} />}
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function NodeCard({
+  node,
+  owner,
+  busyAction,
+  onRemove
+}: {
+  node: MeshdNodeSummary;
+  owner?: string;
+  busyAction?: string;
+  onRemove: (node: MeshdNodeSummary) => Promise<void>;
+}) {
+  const removing = busyAction === `remove-${node.recordId}`;
+  return (
+    <article className="node-card">
+      <div className="node-card-header">
+        <span className="row-icon"><ServerIcon size={17} /></span>
+        <strong>{node.label || node.meshIP || truncateDid(node.did, 12, 6)}</strong>
+        <button className="icon-button danger small" type="button" aria-label="Remove node" title="Remove" disabled={removing} onClick={() => void onRemove(node)}>
+          {removing ? <Loader2Icon className="spin" size={15} /> : <Trash2Icon size={15} />}
+        </button>
+      </div>
+      <dl>
+        <div><dt>Mesh IP</dt><dd>{node.meshIP || "unknown"}</dd></div>
+        <div><dt>Node</dt><dd title={node.did}>{truncateDid(node.did)}</dd></div>
+        {owner ? <div><dt>Owner</dt><dd title={owner}>{truncateDid(owner)}</dd></div> : null}
+        {node.expiresAt ? <div><dt>Expires</dt><dd>{formatTime(node.expiresAt)}</dd></div> : null}
+      </dl>
+    </article>
+  );
+}
+
+function InviteRow({
+  invite,
+  busyAction,
+  onCopy,
+  onRevoke
+}: {
+  invite: MeshdPreAuthKeySummary;
+  busyAction?: string;
+  onCopy: (invite: MeshdPreAuthKeySummary) => Promise<void>;
+  onRevoke: (invite: MeshdPreAuthKeySummary) => Promise<void>;
+}) {
+  const revoking = busyAction === `revoke-${invite.recordId}`;
+  return (
+    <article className="data-row">
+      <div className="row-main">
+        <span className="row-icon"><UserPlusIcon size={17} /></span>
+        <span>
+          <strong>{invite.label || truncateDid(invite.recordId, 12, 6)}</strong>
+          <small>{invite.expiresAt ? `Expires ${formatTime(invite.expiresAt)}` : "No expiry"}</small>
+        </span>
+      </div>
+      <code>{invite.usedBy.length} used</code>
+      <div className="row-actions">
+        <button className="icon-button" type="button" aria-label="Copy invite" title="Copy" onClick={() => void onCopy(invite)}>
+          <ClipboardIcon size={16} />
+        </button>
+        <button className="icon-button danger" type="button" aria-label="Revoke invite" title="Revoke" disabled={revoking} onClick={() => void onRevoke(invite)}>
+          {revoking ? <Loader2Icon className="spin" size={16} /> : <Trash2Icon size={16} />}
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function StatePanel({ title, detail, loading }: { title: string; detail: string; loading?: boolean }) {
+  return (
+    <section className="state-panel">
+      {loading ? <Loader2Icon className="spin" size={24} /> : <NetworkIcon size={24} />}
+      <h1>{title}</h1>
+      <p>{detail}</p>
+    </section>
+  );
+}
+
+function EmptyRow({ icon, text }: { icon: React.ReactNode; text: string }) {
+  return (
+    <div className="empty-row">
+      {icon}
+      <span>{text}</span>
+    </div>
+  );
+}

@@ -122,6 +122,85 @@ func TestUpsertProfileFirstIsDefault(t *testing.T) {
 	if cfg.Profiles["first"] == nil {
 		t.Fatal("profile 'first' missing")
 	}
+	if cfg.Profiles["first"].AuthType != AuthTypeLocalVault {
+		t.Errorf("authType = %q, want %q", cfg.Profiles["first"].AuthType, AuthTypeLocalVault)
+	}
+	if cfg.Profiles["first"].OwnerDID != "did:dht:111" {
+		t.Errorf("ownerDID = %q", cfg.Profiles["first"].OwnerDID)
+	}
+	if cfg.Profiles["first"].ConnectedDID != "did:dht:111" {
+		t.Errorf("connectedDid = %q", cfg.Profiles["first"].ConnectedDID)
+	}
+	if cfg.Profiles["first"].NodeDID != "did:dht:111" {
+		t.Errorf("nodeDid = %q", cfg.Profiles["first"].NodeDID)
+	}
+}
+
+func TestEntryEffectiveIdentityDefaults(t *testing.T) {
+	entry := &Entry{DID: "did:jwk:local"}
+	if got := entry.EffectiveAuthType(); got != AuthTypeLocalVault {
+		t.Fatalf("EffectiveAuthType = %q, want %q", got, AuthTypeLocalVault)
+	}
+	if got := entry.EffectiveOwnerDID(); got != "did:jwk:local" {
+		t.Fatalf("EffectiveOwnerDID = %q", got)
+	}
+	if got := entry.EffectiveNodeDID(); got != "did:jwk:local" {
+		t.Fatalf("EffectiveNodeDID = %q", got)
+	}
+}
+
+func TestEntryEffectiveAuthTypeNormalizesLegacyWalletDelegate(t *testing.T) {
+	entry := &Entry{
+		DID:      "did:jwk:node",
+		AuthType: AuthTypeWalletDelegate,
+	}
+	if got := entry.EffectiveAuthType(); got != AuthTypeWalletAuthorizedNode {
+		t.Fatalf("EffectiveAuthType = %q, want %q", got, AuthTypeWalletAuthorizedNode)
+	}
+}
+
+func TestUpsertProfileEntryWalletAuthorizedNode(t *testing.T) {
+	withEnboxHome(t)
+	err := UpsertProfileEntry(&Entry{
+		Name:         "cli",
+		DID:          "did:jwk:delegate",
+		AuthType:     AuthTypeWalletAuthorizedNode,
+		OwnerDID:     "did:dht:wallet",
+		DelegateDID:  "did:jwk:delegate",
+		NodeDID:      "did:jwk:node",
+		WalletOrigin: "https://wallet.enbox.id",
+		ExpiresAt:    "2026-07-23T00:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("UpsertProfileEntry: %v", err)
+	}
+
+	cfg, err := ReadConfig()
+	if err != nil {
+		t.Fatalf("ReadConfig: %v", err)
+	}
+	got := cfg.Profiles["cli"]
+	if got == nil {
+		t.Fatal("profile missing")
+	}
+	if got.AuthType != AuthTypeWalletAuthorizedNode {
+		t.Fatalf("stored authType = %q, want %q", got.AuthType, AuthTypeWalletAuthorizedNode)
+	}
+	if got.EffectiveAuthType() != AuthTypeWalletAuthorizedNode {
+		t.Fatalf("authType = %q", got.AuthType)
+	}
+	if got.EffectiveOwnerDID() != "did:dht:wallet" {
+		t.Fatalf("ownerDID = %q", got.EffectiveOwnerDID())
+	}
+	if got.ConnectedDID != "did:dht:wallet" {
+		t.Fatalf("legacy connectedDid = %q", got.ConnectedDID)
+	}
+	if got.EffectiveNodeDID() != "did:jwk:node" {
+		t.Fatalf("nodeDid = %q", got.EffectiveNodeDID())
+	}
+	if got.DelegateDID != "did:jwk:delegate" || got.WalletOrigin != "https://wallet.enbox.id" {
+		t.Fatalf("wallet metadata not preserved: %+v", got)
+	}
 }
 
 func TestUpsertProfileSecondDoesNotChangeDefault(t *testing.T) {

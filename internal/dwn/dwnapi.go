@@ -40,10 +40,11 @@ func (api *DwnAPI) Agent() Agent {
 // Protocol Path of the role (e.g., "network/node").
 func (api *DwnAPI) Write(ctx context.Context, target string, params WriteParams) (*Record, *Status, error) {
 	resp, err := api.agent.SendDwnRequest(ctx, DwnRequest{
-		Target:       target,
-		MessageType:  InterfaceRecordsWrite,
-		MessageParams: &params,
-		ProtocolRole: params.ProtocolRole,
+		Target:            target,
+		MessageType:       InterfaceRecordsWrite,
+		MessageParams:     &params,
+		ProtocolRole:      params.ProtocolRole,
+		PermissionGrantID: params.PermissionGrantID,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -94,12 +95,13 @@ func (api *DwnAPI) Write(ctx context.Context, target string, params WriteParams)
 // Read reads a single record by filter.
 //
 // Returns the Record with its data available via record.Data().
-func (api *DwnAPI) Read(ctx context.Context, target string, filter RecordsFilter, protocolRole string) (*Record, *Status, error) {
+func (api *DwnAPI) Read(ctx context.Context, target string, filter RecordsFilter, protocolRole string, permissionGrantID ...string) (*Record, *Status, error) {
 	resp, err := api.agent.SendDwnRequest(ctx, DwnRequest{
-		Target:       target,
-		MessageType:  InterfaceRecordsRead,
-		MessageParams: &ReadParams{Filter: filter},
-		ProtocolRole: protocolRole,
+		Target:            target,
+		MessageType:       InterfaceRecordsRead,
+		MessageParams:     &ReadParams{Filter: filter},
+		ProtocolRole:      protocolRole,
+		PermissionGrantID: optionalString(permissionGrantID),
 	})
 	if err != nil {
 		return nil, nil, err
@@ -124,10 +126,11 @@ func (api *DwnAPI) Read(ctx context.Context, target string, filter RecordsFilter
 // call record.Data() on each to fetch data lazily.
 func (api *DwnAPI) Query(ctx context.Context, target string, params QueryParams, protocolRole string) ([]*Record, *Status, error) {
 	resp, err := api.agent.SendDwnRequest(ctx, DwnRequest{
-		Target:       target,
-		MessageType:  InterfaceRecordsQuery,
-		MessageParams: &params,
-		ProtocolRole: protocolRole,
+		Target:            target,
+		MessageType:       InterfaceRecordsQuery,
+		MessageParams:     &params,
+		ProtocolRole:      protocolRole,
+		PermissionGrantID: params.PermissionGrantID,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -156,15 +159,16 @@ func (api *DwnAPI) Query(ctx context.Context, target string, params QueryParams,
 }
 
 // Delete deletes a record.
-func (api *DwnAPI) Delete(ctx context.Context, target string, recordID string, prune bool, protocolRole string) (*Status, error) {
+func (api *DwnAPI) Delete(ctx context.Context, target string, recordID string, prune bool, protocolRole string, permissionGrantID ...string) (*Status, error) {
 	resp, err := api.agent.SendDwnRequest(ctx, DwnRequest{
-		Target:       target,
-		MessageType:  InterfaceRecordsDelete,
+		Target:      target,
+		MessageType: InterfaceRecordsDelete,
 		MessageParams: &DeleteParams{
 			RecordID: recordID,
 			Prune:    prune,
 		},
-		ProtocolRole: protocolRole,
+		ProtocolRole:      protocolRole,
+		PermissionGrantID: optionalString(permissionGrantID),
 	})
 	if err != nil {
 		return nil, err
