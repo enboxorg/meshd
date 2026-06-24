@@ -43,13 +43,26 @@ If your shell has not picked up the installer PATH update yet, run:
 Use the deployed dashboard:
 
 ```bash
+meshd admin
+```
+
+If you only want the URL, for example over SSH, use:
+
+```bash
 meshd admin --print
 ```
 
-Open the printed URL. It should use:
+The dashboard URL should use:
 
 ```text
 https://meshd-admin.pages.dev
+```
+
+If you are opening the dashboard from a machine without the owner profile,
+target the owner explicitly:
+
+```bash
+meshd admin --owner '<OWNER_DID>' --print
 ```
 
 Connect the owner wallet and approve meshd Admin. Create a network if one does
