@@ -774,16 +774,17 @@ func nodeRecordToNodeWithThreshold(id int64, nodeDID string, rec *NodeRecord, st
 		KeyDelivery:    rec.NodeKeyDelivery,
 	}
 
-	// Populate operational fields from the nodeInfo child record if available.
-	if rec.Info != nil {
-		node.Name = rec.Info.Hostname
-		node.OS = rec.Info.OS
-		node.Capabilities = rec.Info.Capabilities
+	if rec.Label != "" {
+		node.Name = rec.Label
 	}
 
-	// Fall back to node label if no hostname from nodeInfo.
-	if node.Name == "" && rec.Label != "" {
-		node.Name = rec.Label
+	// Populate operational fields from the nodeInfo child record if available.
+	if rec.Info != nil {
+		if node.Name == "" {
+			node.Name = rec.Info.Hostname
+		}
+		node.OS = rec.Info.OS
+		node.Capabilities = rec.Info.Capabilities
 	}
 
 	// Derive WireGuard public key from did:jwk.

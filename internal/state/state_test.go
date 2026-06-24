@@ -15,6 +15,7 @@ func TestNetworkStateOwnerDIDCompatibility(t *testing.T) {
 			OwnerDID:        "did:dht:wallet",
 			NodeDID:         "did:jwk:node",
 			NodeExpiresAt:   "2026-07-01T00:00:00Z",
+			NodeLabel:       "server-01",
 		}); err != nil {
 			t.Fatalf("SaveNetworkState: %v", err)
 		}
@@ -32,6 +33,9 @@ func TestNetworkStateOwnerDIDCompatibility(t *testing.T) {
 		}
 		if raw["nodeExpiresAt"] != "2026-07-01T00:00:00Z" {
 			t.Fatalf("raw nodeExpiresAt = %v", raw["nodeExpiresAt"])
+		}
+		if raw["nodeLabel"] != "server-01" {
+			t.Fatalf("raw nodeLabel = %v", raw["nodeLabel"])
 		}
 	})
 
