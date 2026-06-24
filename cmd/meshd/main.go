@@ -76,7 +76,7 @@ Network:
 
 Up flags:
   --create <name>   Create a new network and start (anchor mode)
-  --endpoint <url>  DWN endpoint for local-vault creation/join (or DWN_ENDPOINT)
+  --endpoint <url>  DWN endpoint override for create/join/owner requests
   --anchor <did>    Anchor DID when joining a network
   --network <id>    Network record ID when joining a network
   --owner <did>     Wallet owner DID for this local node when joining
@@ -107,7 +107,7 @@ Environment:
                      Unlock/create vault non-interactively
   MESHD_VAULT_CACHE_TTL
                      Cache interactive vault unlocks for this duration (default: 5m, 0 disables)
-  DWN_ENDPOINT       Default DWN endpoint URL
+  DWN_ENDPOINT       Default DWN endpoint URL override
   MESHD_WALLET_RESPONSE_ENDPOINT
                      DWN endpoint for wallet approval handoff on headless devices
 `
@@ -124,6 +124,8 @@ const (
 	walletResponseEndpointEnv     = "MESHD_WALLET_RESPONSE_ENDPOINT"
 	defaultWalletResponseEndpoint = "https://dev.aws.dwn.enbox.id"
 )
+
+var defaultOwnerRequestEndpoint = defaultWalletResponseEndpoint
 
 func main() {
 	if len(os.Args) < 2 {
@@ -4352,6 +4354,7 @@ func setupOwnerNodeRequest(ctx context.Context, f upFlags, stateDir string, iden
 
 	fmt.Printf("Node approval request submitted.\n")
 	fmt.Printf("  Owner DID: %s\n", ownerDID)
+	fmt.Printf("  Owner DWN: %s\n", endpoint)
 	fmt.Printf("  Node DID:  %s\n", identity.URI)
 	fmt.Printf("  Request:   %s\n", requestID)
 	fmt.Printf("  Dashboard: %s\n", buildAdminURL(defaultAdminDashboardURL, adminContext{OwnerDID: ownerDID}))
@@ -4360,21 +4363,40 @@ func setupOwnerNodeRequest(ctx context.Context, f upFlags, stateDir string, iden
 }
 
 func ownerDWNEndpointForRequest(ctx context.Context, ownerDID, explicitEndpoint string, scanner *bufio.Scanner) (string, error) {
-	endpoint := strings.TrimSpace(explicitEndpoint)
-	if endpoint != "" {
-		return endpoint, nil
+	if strings.TrimSpace(explicitEndpoint) != "" {
+		return ownerDWNEndpointFromInput(explicitEndpoint, "", nil, scanner, os.Stdout)
 	}
 	resolved, err := control.ResolvePeerDWNEndpoint(ctx, universalResolver{}, ownerDID, nil)
-	if err == nil && strings.TrimSpace(resolved) != "" {
-		return strings.TrimSpace(resolved), nil
+	return ownerDWNEndpointFromInput(explicitEndpoint, resolved, err, scanner, os.Stdout)
+}
+
+func ownerDWNEndpointFromInput(explicitEndpoint, resolvedEndpoint string, resolveErr error, scanner *bufio.Scanner, out io.Writer) (string, error) {
+	endpoint := strings.TrimSpace(explicitEndpoint)
+	if endpoint != "" {
+		return strings.TrimRight(endpoint, "/"), nil
+	}
+	resolved := strings.TrimSpace(resolvedEndpoint)
+	if resolved != "" {
+		return strings.TrimRight(resolved, "/"), nil
+	}
+	fallback := strings.TrimRight(strings.TrimSpace(defaultOwnerRequestEndpoint), "/")
+	if fallback == "" {
+		return "", fmt.Errorf("default owner DWN endpoint is empty")
 	}
 	if scanner != nil {
-		if err != nil {
-			fmt.Printf("Could not resolve an owner DWN endpoint automatically: %v\n", err)
+		if resolveErr != nil {
+			fmt.Fprintf(out, "Could not resolve an owner DWN endpoint automatically: %v\n", resolveErr)
 		}
-		return promptRequired(scanner, "Owner DWN endpoint URL")
+		fmt.Fprintf(out, "Owner DWN endpoint URL [%s]: ", fallback)
+		if !scanner.Scan() {
+			return "", fmt.Errorf("no input received")
+		}
+		if value := strings.TrimSpace(scanner.Text()); value != "" {
+			return strings.TrimRight(value, "/"), nil
+		}
+		return fallback, nil
 	}
-	return "", fmt.Errorf("--endpoint (or DWN_ENDPOINT env) is required because no DWN endpoint could be resolved for owner DID %s", ownerDID)
+	return fallback, nil
 }
 
 func refreshPendingOwnerApproval(ctx context.Context, stateDir string, ns *state.NetworkState, identity *did.DID) (*state.NetworkState, error) {
