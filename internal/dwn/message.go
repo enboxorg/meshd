@@ -143,10 +143,14 @@ type RecordsWriteOptions struct {
 	ProtocolPath string
 	Schema       string
 	Recipient    string
-	Tags       map[string]any
-	Data       []byte
-	DataFormat string
-	Published  *bool
+	Tags         map[string]any
+	Data         []byte
+	DataFormat   string
+	Published    *bool
+
+	// PermissionGrantID invokes a DWN permission grant for delegated
+	// authorization. It is included in both the descriptor and signed payload.
+	PermissionGrantID string
 
 	// For updates: set RecordID to the existing record's ID.
 	// Leave empty for initial writes.
@@ -279,6 +283,9 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteR
 	if opts.Squash {
 		desc["squash"] = true
 	}
+	if opts.PermissionGrantID != "" {
+		desc["permissionGrantId"] = opts.PermissionGrantID
+	}
 
 	// Compute record ID.
 	recordID := opts.RecordID
@@ -316,10 +323,11 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteR
 
 	// RecordsWrite uses the extended signature payload.
 	sigPayload := recordsWriteSignaturePayload{
-		DescriptorCID: descriptorCID,
-		RecordID:      recordID,
-		ContextID:     contextID,
-		ProtocolRole:  opts.ProtocolRole,
+		DescriptorCID:     descriptorCID,
+		RecordID:          recordID,
+		ContextID:         contextID,
+		PermissionGrantID: opts.PermissionGrantID,
+		ProtocolRole:      opts.ProtocolRole,
 	}
 
 	// If encryption is present, compute its CID for the signature payload.
@@ -376,24 +384,32 @@ func structToMap(v any) (map[string]any, error) {
 }
 
 // BuildRecordsRead constructs and signs a RecordsRead message.
-func BuildRecordsRead(s *Signer, filter RecordsFilter, protocolRole string) (*Message, error) {
+func BuildRecordsRead(s *Signer, filter RecordsFilter, protocolRole string, permissionGrantID ...string) (*Message, error) {
+	grantID := optionalString(permissionGrantID)
 	desc := map[string]any{
 		"interface":        "Records",
 		"method":           "Read",
 		"messageTimestamp": Now(),
 		"filter":           filterToMap(filter),
 	}
+	if grantID != "" {
+		desc["permissionGrantId"] = grantID
+	}
 
-	return signGenericMessage(s, desc, protocolRole)
+	return signGenericMessage(s, desc, protocolRole, grantID)
 }
 
 // BuildRecordsQuery constructs and signs a RecordsQuery message.
-func BuildRecordsQuery(s *Signer, filter RecordsFilter, dateSort string, pagination *Pagination, protocolRole string) (*Message, error) {
+func BuildRecordsQuery(s *Signer, filter RecordsFilter, dateSort string, pagination *Pagination, protocolRole string, permissionGrantID ...string) (*Message, error) {
+	grantID := optionalString(permissionGrantID)
 	desc := map[string]any{
 		"interface":        "Records",
 		"method":           "Query",
 		"messageTimestamp": Now(),
 		"filter":           filterToMap(filter),
+	}
+	if grantID != "" {
+		desc["permissionGrantId"] = grantID
 	}
 	if dateSort != "" {
 		desc["dateSort"] = dateSort
@@ -409,11 +425,12 @@ func BuildRecordsQuery(s *Signer, filter RecordsFilter, dateSort string, paginat
 		desc["pagination"] = p
 	}
 
-	return signGenericMessage(s, desc, protocolRole)
+	return signGenericMessage(s, desc, protocolRole, grantID)
 }
 
 // BuildRecordsDelete constructs and signs a RecordsDelete message.
-func BuildRecordsDelete(s *Signer, recordID string, prune bool, protocolRole string) (*Message, error) {
+func BuildRecordsDelete(s *Signer, recordID string, prune bool, protocolRole string, permissionGrantID ...string) (*Message, error) {
+	grantID := optionalString(permissionGrantID)
 	desc := map[string]any{
 		"interface":        "Records",
 		"method":           "Delete",
@@ -421,8 +438,11 @@ func BuildRecordsDelete(s *Signer, recordID string, prune bool, protocolRole str
 		"recordId":         recordID,
 		"prune":            prune, // required field per SDK
 	}
+	if grantID != "" {
+		desc["permissionGrantId"] = grantID
+	}
 
-	return signGenericMessage(s, desc, protocolRole)
+	return signGenericMessage(s, desc, protocolRole, grantID)
 }
 
 // BuildProtocolsConfigure constructs and signs a ProtocolsConfigure message.
@@ -459,15 +479,16 @@ func BuildProtocolsQuery(s *Signer, protocolURI string) (*Message, error) {
 
 // signGenericMessage signs a non-RecordsWrite message with the generic
 // signature payload (descriptorCid only, no recordId/contextId).
-func signGenericMessage(s *Signer, desc map[string]any, protocolRole string) (*Message, error) {
+func signGenericMessage(s *Signer, desc map[string]any, protocolRole string, permissionGrantID ...string) (*Message, error) {
 	descriptorCID, err := ComputeCID(desc)
 	if err != nil {
 		return nil, fmt.Errorf("computing descriptor CID: %w", err)
 	}
 
 	sigPayload := genericSignaturePayload{
-		DescriptorCID: descriptorCID,
-		ProtocolRole:  protocolRole,
+		DescriptorCID:     descriptorCID,
+		PermissionGrantID: optionalString(permissionGrantID),
+		ProtocolRole:      protocolRole,
 	}
 
 	jws, err := SignJWS(sigPayload, s.KeyID(), s.PrivateKey)
@@ -481,6 +502,13 @@ func signGenericMessage(s *Signer, desc map[string]any, protocolRole string) (*M
 			Signature: jws,
 		},
 	}, nil
+}
+
+func optionalString(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
 }
 
 // filterToMap converts a RecordsFilter to a map, omitting zero-value fields.

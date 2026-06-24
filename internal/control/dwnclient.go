@@ -37,6 +37,7 @@ type dwnClientOptions struct {
 	resolver     Resolver
 	encManager   *dwncrypto.EncryptionKeyManager
 	protocolRole string
+	grantID      string
 }
 
 // Option configures a DWNClient.
@@ -74,6 +75,13 @@ func WithProtocolRole(role string) Option {
 	}
 }
 
+// WithPermissionGrantID sets the DWN permission grant used for read queries.
+func WithPermissionGrantID(grantID string) Option {
+	return func(o *dwnClientOptions) {
+		o.grantID = grantID
+	}
+}
+
 // DWNClient reads mesh state from DWN records and produces MapResponse
 // snapshots for the networking engine.
 type DWNClient struct {
@@ -90,6 +98,9 @@ type DWNClient struct {
 	// The anchor (network author) leaves this empty (reads as author).
 	// Non-anchor nodes default to "network/node" unless explicitly set.
 	protocolRole string
+
+	// grantID is an optional DWN permission grant invoked for read queries.
+	grantID string
 
 	mu      sync.RWMutex
 	network *NetworkConfig
@@ -133,6 +144,7 @@ func NewDWNClient(
 		resolver:        options.resolver,
 		encManager:      options.encManager,
 		protocolRole:    protocolRole,
+		grantID:         options.grantID,
 		members:         make(map[string]*MemberRecord),
 		nodes:           make(map[string]*NodeRecord),
 		peerEndpoints:   make(map[string]*PeerEndpointInfo),
@@ -163,7 +175,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 
 	netResp, err := c.anchorDWN.RecordsRead(ctx, c.anchorTenant, dwn.RecordsFilter{
 		RecordID: c.networkRecordID,
-	}, role)
+	}, role, c.grantID)
 	if err != nil {
 		return nil, fmt.Errorf("reading network: %w", err)
 	}
@@ -193,7 +205,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/node",
 		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, role)
+	}, "createdAscending", nil, role, c.grantID)
 	if err != nil {
 		return nil, fmt.Errorf("querying nodes: %w", err)
 	}
@@ -220,7 +232,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/member",
 		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, role)
+	}, "createdAscending", nil, role, c.grantID)
 	if err != nil {
 		// Non-fatal: members are optional (a simple personal mesh may have none).
 		c.logger.DebugContext(ctx, "querying members failed", slog.Any("error", err))
@@ -271,7 +283,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 			Protocol:     protocols.MeshProtocolURI,
 			ProtocolPath: "network/member/node",
 			ContextID:    query.ParentContextID,
-		}, "createdAscending", nil, role)
+		}, "createdAscending", nil, role, c.grantID)
 		if err != nil {
 			// Non-fatal: member nodes are optional.
 			c.logger.DebugContext(ctx, "querying member nodes failed",
@@ -305,7 +317,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/relay",
 		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, role)
+	}, "createdAscending", nil, role, c.grantID)
 	if err != nil {
 		return nil, fmt.Errorf("querying relays: %w", err)
 	}
@@ -333,7 +345,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/aclPolicy",
 		ContextID:    c.networkRecordID,
-	}, "createdDescending", nil, role)
+	}, "createdDescending", nil, role, c.grantID)
 	if err != nil {
 		// Non-fatal: ACL policy is optional. Default to allow-all.
 		c.logger.DebugContext(ctx, "querying ACL policy failed", slog.Any("error", err))
@@ -430,6 +442,7 @@ func (c *DWNClient) loadNodeEntry(ctx context.Context, entry json.RawMessage, de
 		}
 		return
 	}
+	node.NormalizeOwnerDID()
 	node.DID = nodeDID
 	node.RecordID = meta.RecordID
 	node.MemberRecordID = memberRecordID
@@ -493,7 +506,7 @@ func (c *DWNClient) loadChildRecords(ctx context.Context, protocolPath string, p
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: protocolPath,
 		ContextID:    parentContextID,
-	}, "createdDescending", nil, role)
+	}, "createdDescending", nil, role, c.grantID)
 	if err != nil {
 		c.logger.DebugContext(ctx, "querying child records failed",
 			slog.String("path", protocolPath),
@@ -727,8 +740,11 @@ func nodeRecordToNode(id int64, did string, rec *NodeRecord) *Node {
 // the Key field is left empty and logged.
 func nodeRecordToNodeWithThreshold(id int64, nodeDID string, rec *NodeRecord, staleThreshold time.Duration, now time.Time) *Node {
 	node := &Node{
-		ID:  id,
-		DID: nodeDID,
+		ID:             id,
+		DID:            nodeDID,
+		MemberDID:      rec.EffectiveOwnerDID(),
+		MemberRecordID: rec.MemberRecordID,
+		KeyDelivery:    rec.NodeKeyDelivery,
 	}
 
 	// Populate operational fields from the nodeInfo child record if available.

@@ -35,6 +35,13 @@ type PrivateKeyJWK struct {
 	D   string `json:"d"`   // base64url private key
 }
 
+// KeyDeliveryPublic is the recipient public-key material needed to encrypt a
+// contextKey record to the recipient's key-delivery ProtocolPath key.
+type KeyDeliveryPublic struct {
+	RootKeyID    string       `json:"rootKeyId"`
+	PublicKeyJWK PublicKeyJWK `json:"publicKeyJwk"`
+}
+
 // NewDerivedPrivateJwk creates a DerivedPrivateJwk from raw key bytes
 // and derivation metadata.
 func NewDerivedPrivateJwk(
@@ -142,4 +149,33 @@ func DeriveKeyDeliveryDecryptionKey(
 		return nil, fmt.Errorf("deriving key-delivery decryption key: %w", err)
 	}
 	return privKey, nil
+}
+
+// DeriveKeyDeliveryPublicJWK derives the recipient-side ProtocolPath public
+// key used by owners to encrypt future contextKey records to this identity.
+func DeriveKeyDeliveryPublicJWK(rootPrivateKey []byte, rootKeyID string, keyDeliveryProtocolURI string) (PublicKeyJWK, error) {
+	fullPath := BuildProtocolPathDerivation(keyDeliveryProtocolURI, "contextKey")
+	_, publicKey, err := DerivePrivateKey(rootPrivateKey, fullPath)
+	if err != nil {
+		return PublicKeyJWK{}, fmt.Errorf("deriving key-delivery public key: %w", err)
+	}
+	return PublicKeyJWK{
+		KTY: "OKP",
+		CRV: "X25519",
+		X:   base64.RawURLEncoding.EncodeToString(publicKey),
+		KID: rootKeyID,
+	}, nil
+}
+
+// NewKeyDeliveryPublic derives the public key descriptor that another party
+// can use to encrypt contextKey records to this identity.
+func NewKeyDeliveryPublic(rootPrivateKey []byte, rootKeyID string, keyDeliveryProtocolURI string) (*KeyDeliveryPublic, error) {
+	publicJWK, err := DeriveKeyDeliveryPublicJWK(rootPrivateKey, rootKeyID, keyDeliveryProtocolURI)
+	if err != nil {
+		return nil, err
+	}
+	return &KeyDeliveryPublic{
+		RootKeyID:    rootKeyID,
+		PublicKeyJWK: publicJWK,
+	}, nil
 }

@@ -1,5 +1,7 @@
 package control
 
+import dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
+
 // NetworkConfig is the parsed network record data.
 type NetworkConfig struct {
 	Name           string   `json:"name"`
@@ -12,7 +14,7 @@ type NetworkConfig struct {
 // A member represents a person/entity that has been invited to the network.
 // Their DID comes from the recipient descriptor field.
 type MemberRecord struct {
-	DID      string `json:"-"`               // did:jwk from the recipient descriptor field
+	DID      string `json:"-"` // did:jwk from the recipient descriptor field
 	Label    string `json:"label,omitempty"`
 	AddedAt  string `json:"addedAt"`
 	RecordID string `json:"-"`
@@ -22,12 +24,16 @@ type MemberRecord struct {
 // The WireGuard public key is NOT stored here — it is derived from
 // the DID (did:jwk → X25519 birational map) at conversion time.
 type NodeRecord struct {
-	DID        string `json:"-"`                  // did:jwk from the recipient descriptor field
-	MeshIP     string `json:"meshIP"`
-	AllowedIPs []string `json:"allowedIPs,omitempty"`
-	AddedAt    string `json:"addedAt"`
-	Label      string `json:"label,omitempty"`
-	SourceDWN  string `json:"sourceDWN,omitempty"` // for cross-DWN member devices
+	DID             string                       `json:"-"` // did:jwk from the recipient descriptor field
+	MeshIP          string                       `json:"meshIP"`
+	AllowedIPs      []string                     `json:"allowedIPs,omitempty"`
+	AddedAt         string                       `json:"addedAt"`
+	Label           string                       `json:"label,omitempty"`
+	MemberDID       string                       `json:"memberDID,omitempty"`
+	OwnerDID        string                       `json:"ownerDID,omitempty"`
+	DelegateDID     string                       `json:"delegateDID,omitempty"`
+	SourceDWN       string                       `json:"sourceDWN,omitempty"` // for cross-DWN member devices
+	NodeKeyDelivery *dwncrypto.KeyDeliveryPublic `json:"nodeKeyDelivery,omitempty"`
 
 	// Fields populated from child records (not from this record's data).
 	Info      *NodeInfoData  `json:"-"`
@@ -38,6 +44,30 @@ type NodeRecord struct {
 	// under a member (network/member/node path). Empty for owner-provisioned
 	// top-level nodes (network/node path).
 	MemberRecordID string `json:"-"`
+}
+
+// NormalizeOwnerDID keeps the newer ownerDID field and the older memberDID
+// field interchangeable while records transition.
+func (n *NodeRecord) NormalizeOwnerDID() {
+	if n == nil {
+		return
+	}
+	if n.OwnerDID == "" {
+		n.OwnerDID = n.MemberDID
+	}
+	if n.MemberDID == "" {
+		n.MemberDID = n.OwnerDID
+	}
+}
+
+func (n *NodeRecord) EffectiveOwnerDID() string {
+	if n == nil {
+		return ""
+	}
+	if n.OwnerDID != "" {
+		return n.OwnerDID
+	}
+	return n.MemberDID
 }
 
 // NodeInfoData is the parsed nodeInfo record data (device-controlled).
@@ -75,10 +105,10 @@ type RelayData struct {
 
 // ACLPolicyData is the parsed ACL policy record data.
 type ACLPolicyData struct {
-	Version       int                `json:"version"`
-	DefaultAction string             `json:"defaultAction,omitempty"`
+	Version       int                 `json:"version"`
+	DefaultAction string              `json:"defaultAction,omitempty"`
 	Groups        map[string][]string `json:"groups,omitempty"`
-	Rules         []ACLRule          `json:"rules"`
+	Rules         []ACLRule           `json:"rules"`
 }
 
 // ACLRule is a single ACL rule.

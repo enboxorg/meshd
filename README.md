@@ -36,6 +36,31 @@ meshd up
 # through encrypted WireGuard tunnels. NAT traversal is automatic.
 ```
 
+### Dashboard-owned enrollment
+
+For wallet-owned meshes, the CLI does not need to connect directly to the
+wallet. The wallet identity acts as the account/owner in the standalone meshd
+Admin dapp; each machine keeps a local encrypted node DID.
+
+```bash
+# Open the dashboard once as the owner so the wallet grants meshd Admin access.
+meshd admin --print
+
+# On a new device, request approval from that owner.
+meshd up --owner did:example:owner --endpoint https://dev.aws.dwn.enbox.id
+
+# Approve the pending device in the dashboard, then start it.
+meshd up
+```
+
+`meshd up` stores the pending owner request locally and exits cleanly while it
+waits. After approval, the dashboard writes the node membership record, delivers
+the network context key, and writes a node approval response that the CLI
+consumes on the next `meshd up`.
+
+For a full Mac/Linux validation pass, see
+[docs/smoke-test-mac-linux.md](docs/smoke-test-mac-linux.md).
+
 ## What is this?
 
 meshd is a WireGuard mesh network where there is no coordination server.
@@ -89,6 +114,7 @@ meshd <command> [arguments]
 Identity:
   init              Generate DID identity and store locally
   auth login        Create a named identity profile
+  auth connect      Connect a CLI profile to an Enbox Wallet
   auth list         List all profiles
   auth use <name>   Set the default profile
   auth logout       Remove a profile from config
@@ -102,18 +128,96 @@ Network:
   network leave     Leave the current mesh network
   invite create     Create an invite URL for joining this network
   join <url>        Join a network from a meshd://invite URL
-  peer add          Add a peer to the mesh (anchor only)
+  peer add          Add a peer node to the mesh (anchor only)
+  peer remove       Remove a peer node from the mesh (anchor only)
   peer list         List all peers in the mesh
   peer approve      Deliver encryption keys to a peer (anchor only)
   acl set <file>    Set ACL policy from a JSON file (anchor only)
   acl show          Show the current ACL policy
+  admin             Open the meshd admin dashboard
   status            Show mesh status and identity info
+  doctor            Diagnose identity, wallet, daemon, TUN, and routes
   up                Start the mesh agent daemon
   down              Stop the mesh agent daemon
 ```
 
 Run `meshd network create` or `meshd network join` without all arguments in
 an interactive terminal and meshd will prompt for the missing values.
+`meshd up` also acts as the first-run wizard: it can create a local node DID,
+request access from a wallet owner DID, create a local-vault network, or join
+with an invite URL.
+The join path asks for a `meshd://invite/...` URL first and only falls back to
+manual DWN endpoint, anchor DID, and network ID prompts if you leave it blank.
+For wallet-connected profiles, creating a network opens the wallet approval
+flow instead of asking for a DWN endpoint.
+
+## Identity modes
+
+meshd supports two identity modes:
+
+**Local vault.** The device DID is also the mesh member DID. This is the
+simplest no-wallet path and is what `meshd auth login` creates today.
+
+**Wallet-owned node.** The wallet DID is the mesh member/owner DID, while each
+machine keeps its own local node DID. The default beta path is dashboard-owned:
+`meshd up --owner <did>` writes a signed node request to the owner's DWN, and
+the meshd Admin dapp approves that node into a selected network. A separate
+delegate DID can still be used for wallet-issued grants, but it is not required
+for the normal enrollment path.
+
+The intended beta model is:
+
+```
+wallet/member DID  -- owns mesh membership and approves nodes
+       |
+       +-- node DID     -- local device identity, WireGuard identity, mesh IP
+       |
+       +-- delegate DID -- optional local session key for wallet-granted operations
+```
+
+The CLI records this split in profile and network state, imports legacy wallet
+permission grants when present, and caches wallet-provided network context keys
+in the encrypted local secrets vault. The dashboard-owned path avoids direct
+CLI-to-wallet approval pages for normal enrollment. The older wallet-connected
+network creation flow is still accepted for compatibility: the wallet owns the DWN
+encryption root, writes the network, member, and member-owned node records,
+derives the initial network context key, and sends the response back to the
+waiting CLI over a short-lived localhost callback or a node DID
+wallet-response record on a DWN endpoint. The DWN handoff lets an SSH/server
+install print a wallet URL that you can approve from another machine without
+relying on that other browser reaching the server's `127.0.0.1`. If both
+delivery channels fail, the wallet still shows a JSON response that can be
+imported with `meshd network create --response <response.json>`. Local-vault
+profiles can continue to create networks directly from the CLI. Set
+`MESHD_WALLET_RESPONSE_ENDPOINT` to choose the node DID mailbox DWN; otherwise
+meshd uses `DWN_ENDPOINT` or the beta default.
+
+New wallet responses use `ownerDID` for the wallet/member identity,
+`delegateDid` for the local grant recipient, and `nodeContextKeys` for keys
+delivered to the local CLI node. The older `connectedDid` and
+`delegateContextKeys` fields are still accepted for compatibility.
+New wallet-connected imports require `delegateDid` to be present and distinct
+from `nodeDid`; direct node-DID grants are only a legacy fallback for older
+sessions that do not have a delegate key.
+
+Run `meshd doctor` when setup or connectivity does not look right. It checks
+the active profile, vault, wallet owner/delegate session, network state,
+daemon socket, TUN device, and the route to a discovered peer, then prints the
+next command or admin action to try.
+
+Run `meshd admin` to open the standalone meshd Admin dapp for the active owner and
+network. From there you can create, copy, and revoke invite URLs, approve
+pending nodes, and remove devices without copying record IDs by hand. Use
+`meshd admin --print` on SSH servers when you only want the URL.
+
+For manual admin onboarding, use `meshd peer add <node-did> --owner
+<wallet-or-owner-did>` when the device DID and owning wallet/member DID are
+different. Omitting `--owner` keeps the local-vault behavior where the node
+owns itself. `--member` is still accepted as a compatibility alias. Use
+`meshd peer remove <node-did>` to remove a device from peer discovery and
+delete delivered context-key records for that node. Rotate network context
+keys before re-adding that node if you need strong cryptographic revocation of
+locally cached keys.
 
 ## If you already have a DID and DWN
 
@@ -181,6 +285,9 @@ on the anchor's DWN:
 
 ```
 network
+  +-- nodeRequest                              -- device asks wallet owner for approval
+  +-- nodeApproval                             -- owner tells device which network it joined
+  |
   +-- node ($role, recipient = device DID)    -- owner-provisioned devices
   |     +-- nodeInfo                          -- device writes: hostname, OS
   |     +-- endpoint                          -- device writes: IPs, NAT type

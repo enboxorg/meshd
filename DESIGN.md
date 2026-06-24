@@ -214,15 +214,91 @@ You'd invite someone into your mesh when:
 
 ## Technical Design
 
+### Identity and Ownership Model
+
+meshd should keep wallet identity, delegated authority, and node identity as
+separate concepts.
+
+| Concept | What it is | Where the private key lives | What it controls |
+| ------- | ---------- | --------------------------- | ---------------- |
+| Owner DID | The user, wallet, or organization identity; represented by the DWN `network/member` role | Wallet or local vault | Mesh ownership, membership, revocation, policy |
+| Node DID | A specific installed device | Local meshd vault on that device | WireGuard identity, endpoint updates, node liveness |
+| Delegate DID | A local session/control identity associated with one node | Local meshd delegate vault on that device | DWN operations authorized by wallet grants; not WireGuard or node liveness |
+| Permission grant | Wallet-issued authority for a delegate DID, with legacy node-DID grant fallback | Stored as DWN permission records | What the local delegate may do on behalf of the member DID |
+
+The wallet should not generate the device's node DID for normal CLI use. The
+CLI creates and stores the node DID and a separate delegate DID locally, then
+asks the wallet to authorize the delegate for that node. This preserves a few
+important properties:
+
+- A server install can generate its identity without a browser.
+- A pasted wallet response does not need to contain private key material.
+- The wallet can revoke or rotate local authority without rotating the
+  wallet/member DID or the node DID.
+- Device records can be audited as node DID activity owned by a member DID.
+- A compromised node is scoped to grants and mesh records, not the wallet key.
+
+The connection flow is:
+
+1. `meshd auth connect` creates a local node DID and delegate DID if needed.
+2. The CLI signs a challenge with the node DID, binds the delegate DID into the
+   signed payload, and emits a `meshd://connect` request.
+3. The wallet verifies the node proof, lets the user pick the owning member
+   DID, then writes permission grants for the delegate DID.
+4. The CLI imports the wallet response and stores the member DID, node DID,
+   delegate DID, grant records, wallet origin, and any wallet-provided network
+   context keys in encrypted local state.
+5. Mesh commands target the member DID's DWN, sign grant-backed DWN operations
+   as the delegate DID, and continue using the node DID for WireGuard identity,
+   key delivery, and node membership proofs.
+
+Local-vault profiles are still valid. In that mode the member DID and node DID
+are the same value, so no permission grant is needed.
+
+For wallet-owned meshes, the CLI creates a signed `meshd://network-create`
+request and opens the wallet/admin surface to create the network root under
+the wallet DID. The wallet verifies the node proof, writes the network,
+wallet/member, and member-owned node records, derives and delivers the
+Protocol Context key, issues grants to the delegate DID, and returns the response
+to the CLI over either a short-lived localhost callback or a node DID
+wallet-response record on a DWN endpoint. The response endpoint and token are
+included in the signed node request so they cannot be redirected without
+invalidating the proof. JSON copy/import remains the final fallback. The node
+can hold a local delegate, grant references, and context keys after approval,
+but it cannot derive new
+wallet-owned Protocol Context keys without wallet participation.
+
+Wallet responses should name the wallet/member identity as `ownerDID` and CLI
+device material as node-owned material: `nodeContextKeys` and
+`nodeMultiPartyProtocols`. Older `connectedDid` and `delegateContextKeys`
+responses remain accepted as compatibility fallbacks. New responses should also
+echo the authorized `delegateDid` so the CLI can verify that the wallet granted
+the local delegate generated for this node.
+
+Wallet-created networks should place even the owner's first device under a
+member record:
+
+```
+network
+  member recipient = wallet/member DID
+    node recipient = local node DID
+```
+
+Top-level `network/node` records remain readable and removable for
+compatibility, but the beta wallet flow should prefer `network/member/node`
+so every device has an explicit owning member DID.
+
 ### DWN Primitive Mapping
 
 | Mesh Concept            | DWN Primitive                                                    |
 | ----------------------- | ---------------------------------------------------------------- |
-| Node identity           | DID (`did:dht`)                                                  |
+| Member identity         | Wallet/local DID (`did:jwk` today, `did:dht` when available)     |
+| Node identity           | Local device DID (`did:jwk` today, `did:dht` when available)     |
 | Mesh coordination       | Anchor DWN + per-node DWNs                                       |
 | Key exchange             | `RecordsWrite` (encrypted)                                       |
 | Key distribution        | Protocol `$actions` + Protocol Context key delivery              |
 | Membership              | Protocol roles (`$role: true`)                                   |
+| Wallet authorization    | DWN permission grants from member DID to node DID                |
 | ACL policies            | Protocol `$actions` rules + encrypted ACL records                |
 | Endpoint updates        | `RecordsWrite` updates (mutable, encrypted)                      |
 | Real-time peer discovery| `RecordsSubscribe` (live event streams via EventLog)             |
@@ -351,7 +427,7 @@ decrypt everything.
 
 Since all members need to read each other's encrypted data, the DWN owner
 distributes **context keys** to members using the key-delivery protocol
-(`https://enbox.id/protocols/key-delivery`):
+(`https://identity.foundation/protocols/key-delivery`):
 
 1. When a new member is added, the anchor DWN owner derives the context
    private key using the Protocol Context scheme for that network's context.
@@ -438,7 +514,8 @@ When a member is removed:
 2. All members receive this change via `RecordsSubscribe`
 3. Each member removes the revoked peer from their WireGuard configuration
 4. The revoked peer's `peerAuth` role on each node's DWN is deleted
-5. Context keys should be rotated for forward secrecy
+5. Delivered key-delivery `contextKey` records for the removed node are deleted
+6. Context keys should be rotated for forward secrecy against locally cached keys
 
 ### Threat Model
 
@@ -579,9 +656,9 @@ interactions. ACLs enforce who can reach what.
 ```
 1. Node runs `meshd init` (generates device DID + WireGuard keys)
 2. Node starts local DWN, installs wireguard-node protocol
-3. Admin runs `meshd peer add <node-did>` on anchor
-   a. Writes member role record (recipient = node DID)
-   b. Delivers context encryption key to the new member
+3. Admin runs `meshd peer add <node-did> --owner <owner-did>` on anchor
+   a. Writes node role record (recipient = node DID, owner/member = owner DID)
+   b. Delivers context encryption key to the new node
 4. Node runs `meshd network join <admin-did> <network-id>`
    a. Reads network config from anchor DWN (decrypts with context key)
    b. Reads member list, discovers peer DIDs

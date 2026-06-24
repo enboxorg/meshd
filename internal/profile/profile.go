@@ -60,6 +60,94 @@ type Entry struct {
 	Name      string `json:"name"`
 	DID       string `json:"did"`
 	CreatedAt string `json:"createdAt"`
+
+	// AuthType identifies how this profile's local credentials were created.
+	// Empty means local-vault for backwards compatibility with older configs.
+	AuthType string `json:"authType,omitempty"`
+
+	// OwnerDID is the durable wallet/member DID this profile acts for.
+	// Local-only profiles default this to DID.
+	OwnerDID string `json:"ownerDID,omitempty"`
+
+	// ConnectedDID is the pre-beta name for OwnerDID. Keep writing and reading
+	// it while wallet-connected profiles transition.
+	ConnectedDID string `json:"connectedDid,omitempty"`
+
+	// DelegateDID is the local control/session DID that receives wallet-issued
+	// grants for this node. Legacy wallet sessions may leave it empty and grant
+	// directly to NodeDID instead.
+	DelegateDID string `json:"delegateDid,omitempty"`
+
+	// NodeDID is the machine/device DID used for WireGuard keys and node
+	// records. Local-only profiles default this to DID.
+	NodeDID string `json:"nodeDid,omitempty"`
+
+	// WalletOrigin records the wallet origin that granted this profile.
+	WalletOrigin string `json:"walletOrigin,omitempty"`
+
+	// ExpiresAt records the wallet delegate/session expiry, if any.
+	ExpiresAt string `json:"expiresAt,omitempty"`
+}
+
+const (
+	AuthTypeLocalVault           = "local-vault"
+	AuthTypeWalletAuthorizedNode = "wallet-authorized-node"
+
+	// AuthTypeWalletDelegate is the pre-beta name for wallet-authorized node
+	// profiles. Keep accepting it so existing config files continue to work.
+	AuthTypeWalletDelegate = "wallet-delegate"
+)
+
+// NormalizeAuthType returns the canonical auth type, applying legacy aliases.
+func NormalizeAuthType(authType string) string {
+	switch authType {
+	case "", AuthTypeLocalVault:
+		return AuthTypeLocalVault
+	case AuthTypeWalletDelegate, AuthTypeWalletAuthorizedNode:
+		return AuthTypeWalletAuthorizedNode
+	default:
+		return authType
+	}
+}
+
+// EffectiveAuthType returns the auth type, applying the legacy default.
+func (e *Entry) EffectiveAuthType() string {
+	if e == nil {
+		return AuthTypeLocalVault
+	}
+	return NormalizeAuthType(e.AuthType)
+}
+
+// EffectiveOwnerDID returns the wallet/member DID, applying local defaults.
+func (e *Entry) EffectiveOwnerDID() string {
+	if e == nil {
+		return ""
+	}
+	if e.OwnerDID != "" {
+		return e.OwnerDID
+	}
+	if e.ConnectedDID != "" {
+		return e.ConnectedDID
+	}
+	return e.DID
+}
+
+// EffectiveConnectedDID returns the wallet/member DID, applying local defaults.
+//
+// Deprecated: use EffectiveOwnerDID.
+func (e *Entry) EffectiveConnectedDID() string {
+	return e.EffectiveOwnerDID()
+}
+
+// EffectiveNodeDID returns the node/device DID, applying local defaults.
+func (e *Entry) EffectiveNodeDID() string {
+	if e == nil {
+		return ""
+	}
+	if e.NodeDID != "" {
+		return e.NodeDID
+	}
+	return e.DID
 }
 
 // EnboxHome returns the base directory for enbox data.
@@ -149,8 +237,28 @@ func WriteConfig(cfg *Config) error {
 // UpsertProfile adds or updates a profile entry in config.json.
 // If this is the first profile, it becomes the default.
 func UpsertProfile(name, did string) error {
+	return UpsertProfileEntry(&Entry{
+		Name:         name,
+		DID:          did,
+		AuthType:     AuthTypeLocalVault,
+		OwnerDID:     did,
+		ConnectedDID: did,
+		NodeDID:      did,
+	})
+}
+
+// UpsertProfileEntry adds or updates a profile entry in config.json.
+// If this is the first profile, it becomes the default.
+func UpsertProfileEntry(entry *Entry) error {
+	if entry == nil {
+		return fmt.Errorf("profile entry is required")
+	}
+	name := entry.Name
 	if err := ValidateName(name); err != nil {
 		return err
+	}
+	if entry.DID == "" {
+		return fmt.Errorf("profile DID is required")
 	}
 
 	cfg, err := ReadConfig()
@@ -159,18 +267,28 @@ func UpsertProfile(name, did string) error {
 	}
 
 	isNew := cfg.Profiles[name] == nil
-	entry := &Entry{
-		Name:      name,
-		DID:       did,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	next := *entry
+	next.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	next.AuthType = NormalizeAuthType(next.AuthType)
+	if next.OwnerDID == "" {
+		next.OwnerDID = next.ConnectedDID
+	}
+	if next.ConnectedDID == "" {
+		next.ConnectedDID = next.OwnerDID
+	}
+	if next.OwnerDID == "" {
+		next.OwnerDID = next.DID
+		next.ConnectedDID = next.DID
+	}
+	if next.NodeDID == "" {
+		next.NodeDID = next.DID
 	}
 	if !isNew {
 		// Preserve original createdAt on updates.
-		entry.CreatedAt = cfg.Profiles[name].CreatedAt
-		entry.DID = did
+		next.CreatedAt = cfg.Profiles[name].CreatedAt
 	}
 
-	cfg.Profiles[name] = entry
+	cfg.Profiles[name] = &next
 
 	// First profile becomes the default.
 	if len(cfg.Profiles) == 1 || cfg.DefaultProfile == "" {

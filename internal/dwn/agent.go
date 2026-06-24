@@ -70,6 +70,10 @@ type DwnRequest struct {
 	// ProtocolRole for role-based authorization.
 	ProtocolRole string
 
+	// PermissionGrantID invokes a DWN permission grant for delegated
+	// authorization.
+	PermissionGrantID string
+
 	// Store controls whether to persist the result locally.
 	Store bool
 }
@@ -100,13 +104,14 @@ type DwnResponse struct {
 
 // WriteParams configures a RecordsWrite operation.
 type WriteParams struct {
-	Protocol     string
-	ProtocolPath string
-	Schema       string
-	Recipient    string
-	Tags         map[string]any
-	DataFormat   string
-	Published    *bool
+	Protocol          string
+	ProtocolPath      string
+	Schema            string
+	Recipient         string
+	Tags              map[string]any
+	DataFormat        string
+	Published         *bool
+	PermissionGrantID string
 
 	// Data is the record payload. For the DwnRequest, this should also
 	// be set on DwnRequest.DataStream for large payloads.
@@ -143,20 +148,23 @@ type WriteParams struct {
 
 // ReadParams configures a RecordsRead operation.
 type ReadParams struct {
-	Filter RecordsFilter
+	Filter            RecordsFilter
+	PermissionGrantID string
 }
 
 // QueryParams configures a RecordsQuery operation.
 type QueryParams struct {
-	Filter     RecordsFilter
-	DateSort   string
-	Pagination *Pagination
+	Filter            RecordsFilter
+	DateSort          string
+	Pagination        *Pagination
+	PermissionGrantID string
 }
 
 // DeleteParams configures a RecordsDelete operation.
 type DeleteParams struct {
-	RecordID string
-	Prune    bool
+	RecordID          string
+	Prune             bool
+	PermissionGrantID string
 }
 
 // SubscribeParams configures a RecordsSubscribe operation.
@@ -258,13 +266,14 @@ func (a *SimpleAgent) sendRecordsWrite(ctx context.Context, target string, req D
 		ProtocolPath:         params.ProtocolPath,
 		Schema:               params.Schema,
 		Recipient:            params.Recipient,
-		ParentContextID:     params.ParentContextID,
+		ParentContextID:      params.ParentContextID,
 		Tags:                 params.Tags,
 		DataFormat:           params.DataFormat,
 		Published:            params.Published,
+		PermissionGrantID:    firstNonEmpty(params.PermissionGrantID, req.PermissionGrantID),
 		Data:                 data,
 		RecordID:             params.RecordID,
-		DateCreated:         params.DateCreated,
+		DateCreated:          params.DateCreated,
 		ProtocolRole:         req.ProtocolRole,
 		Squash:               params.Squash,
 		EncryptionRecipients: params.EncryptionRecipients,
@@ -286,7 +295,7 @@ func (a *SimpleAgent) sendRecordsRead(ctx context.Context, target string, req Dw
 		return nil, fmt.Errorf("RecordsRead requires *ReadParams, got %T", req.MessageParams)
 	}
 
-	result, err := a.client.RecordsRead(ctx, target, params.Filter, req.ProtocolRole)
+	result, err := a.client.RecordsRead(ctx, target, params.Filter, req.ProtocolRole, firstNonEmpty(params.PermissionGrantID, req.PermissionGrantID))
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +313,7 @@ func (a *SimpleAgent) sendRecordsQuery(ctx context.Context, target string, req D
 		return nil, fmt.Errorf("RecordsQuery requires *QueryParams, got %T", req.MessageParams)
 	}
 
-	reply, err := a.client.RecordsQuery(ctx, target, params.Filter, params.DateSort, params.Pagination, req.ProtocolRole)
+	reply, err := a.client.RecordsQuery(ctx, target, params.Filter, params.DateSort, params.Pagination, req.ProtocolRole, firstNonEmpty(params.PermissionGrantID, req.PermissionGrantID))
 	if err != nil {
 		return nil, err
 	}
@@ -321,7 +330,7 @@ func (a *SimpleAgent) sendRecordsDelete(ctx context.Context, target string, req 
 		return nil, fmt.Errorf("RecordsDelete requires *DeleteParams, got %T", req.MessageParams)
 	}
 
-	reply, err := a.client.RecordsDelete(ctx, target, params.RecordID, params.Prune, req.ProtocolRole)
+	reply, err := a.client.RecordsDelete(ctx, target, params.RecordID, params.Prune, req.ProtocolRole, firstNonEmpty(params.PermissionGrantID, req.PermissionGrantID))
 	if err != nil {
 		return nil, err
 	}
@@ -364,4 +373,13 @@ func (a *SimpleAgent) sendProtocolsQuery(ctx context.Context, target string, req
 		Status: reply.Status,
 		Reply:  reply,
 	}, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

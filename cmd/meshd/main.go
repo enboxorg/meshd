@@ -8,7 +8,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -29,6 +33,7 @@ import (
 	"github.com/enboxorg/meshd/internal/mesh"
 	"github.com/enboxorg/meshd/internal/profile"
 	"github.com/enboxorg/meshd/internal/state"
+	"github.com/enboxorg/meshd/internal/walletconnect"
 	"github.com/enboxorg/meshd/pkg/dids"
 	"github.com/enboxorg/meshd/pkg/dids/didcore"
 	"github.com/enboxorg/meshd/protocols"
@@ -42,6 +47,7 @@ Usage:
 
 Identity:
   auth login        Create a new identity profile
+  auth connect      Connect this CLI profile to an Enbox Wallet
   auth list         List all profiles
   auth use <name>   Set the default profile
   auth logout       Remove a profile from config
@@ -56,20 +62,24 @@ Network:
   network leave     Leave the current mesh network
   invite create     Create an invite URL for joining this network
   join <url>        Join a network from a meshd://invite URL
-  peer add          Add a peer to the mesh (anchor only)
+  peer add          Add a peer node to the mesh (anchor only)
+  peer remove       Remove a peer node from the mesh (anchor only)
   peer list         List all peers in the mesh
   peer approve      Deliver encryption keys to a peer (anchor only)
   acl set <file>    Set ACL policy from a JSON file (anchor only)
   acl show          Show the current ACL policy
+  admin             Open the meshd admin dashboard
   status            Show mesh status and identity info
+  doctor            Diagnose identity, wallet, daemon, TUN, and routes
   up                Start the mesh agent daemon
   down              Stop the mesh agent daemon
 
 Up flags:
   --create <name>   Create a new network and start (anchor mode)
-  --endpoint <url>  DWN endpoint (or set DWN_ENDPOINT env var)
+  --endpoint <url>  DWN endpoint for local-vault creation/join (or DWN_ENDPOINT)
   --anchor <did>    Anchor DID when joining a network
   --network <id>    Network record ID when joining a network
+  --owner <did>     Wallet owner DID for this local node when joining
   --tun [name]      Create a real TUN device (default; asks sudo when needed)
   --no-tun          Use userspace mode without OS routes
   --port <n>        WireGuard UDP listen port (default: auto)
@@ -78,6 +88,8 @@ Up flags:
   -v, --verbose     Enable debug logging
 
 Quick start:
+  meshd auth connect
+  meshd up
   meshd up --create my-network --endpoint https://dwn.example.com
   meshd invite create
   meshd join meshd://invite/<token>
@@ -96,6 +108,8 @@ Environment:
   MESHD_VAULT_CACHE_TTL
                      Cache interactive vault unlocks for this duration (default: 5m, 0 disables)
   DWN_ENDPOINT       Default DWN endpoint URL
+  MESHD_WALLET_RESPONSE_ENDPOINT
+                     DWN endpoint for wallet approval handoff on headless devices
 `
 
 var version = "dev"
@@ -105,6 +119,10 @@ const (
 	upBackgroundEnv = "MESHD_UP_BACKGROUND_CHILD"
 	backgroundWait  = 30 * time.Second
 	daemonLogName   = "meshd.log"
+	walletWaitTime  = 10 * time.Minute
+
+	walletResponseEndpointEnv     = "MESHD_WALLET_RESPONSE_ENDPOINT"
+	defaultWalletResponseEndpoint = "https://dev.aws.dwn.enbox.id"
 )
 
 func main() {
@@ -121,9 +139,9 @@ func main() {
 		switch combined {
 		case "network create", "network join", "network leave",
 			"invite create",
-			"peer list", "peer add", "peer approve",
+			"peer list", "peer add", "peer remove", "peer approve",
 			"acl set", "acl show",
-			"auth login", "auth list", "auth use", "auth logout",
+			"auth login", "auth connect", "auth list", "auth use", "auth logout",
 			"vault status", "vault init", "vault unlock":
 			cmd = combined
 			args = os.Args[3:]
@@ -145,6 +163,8 @@ func main() {
 		return
 	case "auth", "auth login":
 		err = cmdAuthLogin(ctx, args)
+	case "auth connect":
+		err = cmdAuthConnect(ctx, args, flagProfile)
 	case "auth list":
 		err = cmdAuthList()
 	case "auth use":
@@ -171,6 +191,8 @@ func main() {
 		err = cmdJoin(ctx, args, flagProfile)
 	case "peer add":
 		err = cmdPeerAdd(ctx, args, flagProfile)
+	case "peer remove":
+		err = cmdPeerRemove(ctx, args, flagProfile)
 	case "peer list":
 		err = cmdPeerList(ctx, args, flagProfile)
 	case "peer approve":
@@ -179,8 +201,12 @@ func main() {
 		err = cmdACLSet(ctx, args, flagProfile)
 	case "acl show":
 		err = cmdACLShow(ctx, args, flagProfile)
+	case "admin":
+		err = cmdAdmin(ctx, args, flagProfile)
 	case "status":
 		err = cmdStatus(ctx, args, flagProfile)
+	case "doctor":
+		err = cmdDoctor(ctx, args, flagProfile)
 	case "up":
 		err = cmdUp(ctx, args, flagProfile)
 	case "down":
@@ -333,39 +359,62 @@ func cmdVaultUnlock(args []string, flagProfile string) error {
 	}
 
 	fmt.Println("Vault unlocked.")
-	fmt.Printf("DID: %s\n", identity.URI)
+	fmt.Printf("Local Node DID: %s\n", identity.URI)
 	fmt.Printf("State: %s\n", stateDir)
 	return nil
 }
 
 // cmdNetworkCreate creates a new mesh network.
 //
-// Usage: meshd network create [name] [--endpoint <dwn-url>]
+// Usage: meshd network create [name] [--endpoint <dwn-url>] [--no-wait]
+// Usage: meshd network create --response <wallet-response.json>
 func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) error {
-	name, endpoint := parseNetworkCreateArgs(args)
-	if name == "" || endpoint == "" {
+	opts, err := parseNetworkCreateOptions(args)
+	if err != nil {
+		return err
+	}
+	if opts.responseIn != "" {
+		return importNetworkCreateResponse(ctx, flagProfile, opts.responseIn)
+	}
+
+	name, endpoint := opts.name, opts.endpoint
+	if opts.meshCIDR == "" {
+		opts.meshCIDR = "10.200.0.0/16"
+	}
+	if name == "" {
 		if !stdinIsTerminal() {
 			return fmt.Errorf("usage: meshd network create [name] [--endpoint <dwn-url>]")
 		}
 		scanner := bufio.NewScanner(os.Stdin)
-		var err error
-		if name == "" {
-			name, err = promptRequired(scanner, "Network name")
-			if err != nil {
-				return err
-			}
+		name, err = promptRequired(scanner, "Network name")
+		if err != nil {
+			return err
 		}
-		if endpoint == "" {
-			endpoint, err = promptRequired(scanner, "DWN endpoint URL")
-			if err != nil {
-				return err
-			}
-		}
+	}
+	if endpoint == "" && !stdinIsTerminal() && !isWalletAuthorizedNodeProfile(flagProfile) {
+		return fmt.Errorf("usage: meshd network create [name] [--endpoint <dwn-url>]")
 	}
 
 	stateDir, identity, err := ensureIdentityForCommand(ctx, flagProfile, endpoint)
 	if err != nil {
 		return err
+	}
+	meta := resolveIdentityMetadata(flagProfile, identity.URI)
+	nodeDID := firstNonEmpty(meta.NodeDID, identity.URI)
+	ownerDID := firstNonEmpty(meta.OwnerDID, nodeDID)
+	if meta.AuthType == profile.AuthTypeWalletAuthorizedNode && ownerDID != nodeDID {
+		return createWalletNetworkCreateRequest(ctx, flagProfile, stateDir, identity, name, endpoint, opts)
+	}
+
+	if endpoint == "" {
+		if !stdinIsTerminal() {
+			return fmt.Errorf("usage: meshd network create [name] [--endpoint <dwn-url>]")
+		}
+		scanner := bufio.NewScanner(os.Stdin)
+		endpoint, err = promptRequired(scanner, "DWN endpoint URL")
+		if err != nil {
+			return err
+		}
 	}
 
 	if state.HasNetwork(stateDir) {
@@ -420,10 +469,11 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	// 2. Create the network record.
 	// The "network" type does NOT have encryptionRequired — it's publicly
 	// readable as the anchor record. No encryption on this write.
-	meshCIDR := "10.200.0.0/16"
+	meshCIDR := opts.meshCIDR
 	networkData, _ := json.Marshal(map[string]any{
-		"name":     name,
-		"meshCIDR": meshCIDR,
+		"name":           name,
+		"meshCIDR":       meshCIDR,
+		"anchorEndpoint": endpoint,
 	})
 
 	record, writeStatus, err := api.Write(ctx, identity.URI, dwn.WriteParams{
@@ -448,7 +498,7 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	}
 	if err := kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
 		AnchorDID:      identity.URI,
-		RecipientDID:   identity.URI,
+		RecipientDID:   nodeDID,
 		SourceProtocol: protocols.MeshProtocolURI,
 		ContextID:      record.ID,
 	}); err != nil {
@@ -458,7 +508,7 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	}
 
 	// 4. Allocate mesh IP.
-	meshIP, err := mesh.AllocateMeshIP(meshCIDR, identity.URI)
+	meshIP, err := mesh.AllocateMeshIP(meshCIDR, nodeDID)
 	if err != nil {
 		return fmt.Errorf("allocating mesh IP: %w", err)
 	}
@@ -467,14 +517,21 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	// Use context encryption so that peers with the shared context key can
 	// decrypt the anchor's node record. The anchor already self-delivered the
 	// context key above, and as the DWN owner it can derive the key from root.
+	nodeKeyDelivery, err := walletconnect.NewKeyDeliveryPublic(identity)
+	if err != nil {
+		return fmt.Errorf("deriving node key-delivery public key: %w", err)
+	}
 	reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            identity.URI,
 		NetworkRecordID:      record.ID,
-		NodeDID:              identity.URI,
+		NodeDID:              nodeDID,
 		Signer:               signer,
 		EncryptionKeyManager: encMgr,
 		MeshIP:               meshIP.String(),
+		OwnerDID:             ownerDID,
+		DelegateDID:          meta.DelegateDID,
+		NodeKeyDelivery:      nodeKeyDelivery,
 		UseContextEncryption: true,
 	})
 	if err != nil {
@@ -506,6 +563,10 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 		NetworkName:     name,
 		MeshCIDR:        meshCIDR,
 		MeshIP:          meshIP.String(),
+		NodeDID:         nodeDID,
+		OwnerDID:        ownerDID,
+		MemberDID:       ownerDID,
+		DelegateDID:     meta.DelegateDID,
 	}
 	if reg != nil {
 		ns.NodeRecordID = reg.NodeRecordID
@@ -527,24 +588,734 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	return nil
 }
 
+type networkCreateOptions struct {
+	name       string
+	endpoint   string
+	meshCIDR   string
+	requestOut string
+	responseIn string
+	walletURL  string
+	noWait     bool
+}
+
 func parseNetworkCreateArgs(args []string) (name string, endpoint string) {
+	opts, _ := parseNetworkCreateOptions(args)
+	return opts.name, opts.endpoint
+}
+
+func parseNetworkCreateOptions(args []string) (networkCreateOptions, error) {
+	opts := networkCreateOptions{
+		meshCIDR:  "10.200.0.0/16",
+		walletURL: "https://wallet.enbox.id",
+	}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--endpoint":
 			if i+1 < len(args) {
-				endpoint = args[i+1]
+				opts.endpoint = args[i+1]
 				i++
+			} else {
+				return opts, fmt.Errorf("--endpoint requires a URL")
 			}
+		case "--cidr":
+			if i+1 < len(args) {
+				opts.meshCIDR = args[i+1]
+				i++
+			} else {
+				return opts, fmt.Errorf("--cidr requires a CIDR")
+			}
+		case "--request-out":
+			if i+1 < len(args) {
+				opts.requestOut = args[i+1]
+				i++
+			} else {
+				return opts, fmt.Errorf("--request-out requires a path")
+			}
+		case "--response":
+			if i+1 < len(args) {
+				opts.responseIn = args[i+1]
+				i++
+			} else {
+				return opts, fmt.Errorf("--response requires a path")
+			}
+		case "--wallet":
+			if i+1 < len(args) {
+				opts.walletURL = args[i+1]
+				i++
+			} else {
+				return opts, fmt.Errorf("--wallet requires a URL")
+			}
+		case "--no-wait":
+			opts.noWait = true
 		default:
-			if name == "" && !strings.HasPrefix(args[i], "-") {
-				name = args[i]
+			if strings.HasPrefix(args[i], "-") {
+				return opts, fmt.Errorf("unknown network create flag %q", args[i])
+			}
+			if opts.name == "" {
+				opts.name = args[i]
+			} else {
+				return opts, fmt.Errorf("unexpected argument %q", args[i])
 			}
 		}
 	}
-	if endpoint == "" {
-		endpoint = os.Getenv("DWN_ENDPOINT")
+	if opts.endpoint == "" {
+		opts.endpoint = os.Getenv("DWN_ENDPOINT")
 	}
-	return name, endpoint
+	return opts, nil
+}
+
+type walletResponseCallback struct {
+	url        string
+	server     *http.Server
+	responseCh chan []byte
+	errCh      chan error
+}
+
+type walletResponseRelay struct {
+	endpoint string
+	token    string
+}
+
+func shouldWaitForWalletResponse(walletURL, requestOut string, noWait bool) bool {
+	return walletURL != "" && requestOut == "" && !noWait && stdinIsTerminal()
+}
+
+func shouldUseWalletResponseRelay(walletURL, requestOut string, noWait bool) bool {
+	return walletURL != "" && requestOut == "" && !noWait
+}
+
+func walletResponseEndpoint(fallbackEndpoint string) string {
+	if endpoint := strings.TrimSpace(os.Getenv(walletResponseEndpointEnv)); endpoint != "" {
+		return strings.TrimRight(endpoint, "/")
+	}
+	if fallbackEndpoint = strings.TrimSpace(fallbackEndpoint); fallbackEndpoint != "" {
+		return strings.TrimRight(fallbackEndpoint, "/")
+	}
+	if endpoint := strings.TrimSpace(os.Getenv("DWN_ENDPOINT")); endpoint != "" {
+		return strings.TrimRight(endpoint, "/")
+	}
+	return defaultWalletResponseEndpoint
+}
+
+func setupWalletResponseRelay(ctx context.Context, endpoint string, identity *did.DID) (*walletResponseRelay, error) {
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	if endpoint == "" || identity == nil {
+		return nil, nil
+	}
+	token, err := walletconnect.GenerateChallenge()
+	if err != nil {
+		return nil, err
+	}
+	if err := dwn.RegisterTenant(ctx, endpoint, identity.URI); err != nil {
+		return nil, fmt.Errorf("registering wallet response tenant: %w", err)
+	}
+	signer := &dwn.Signer{DID: identity.URI, PrivateKey: identity.SigningKey}
+	api := dwn.NewDwnAPI(dwn.NewSimpleAgent(endpoint, signer))
+	status, err := api.ConfigureProtocol(ctx, identity.URI, protocols.WalletResponseProtocolJSON)
+	if err != nil {
+		return nil, fmt.Errorf("configuring wallet response protocol: %w", err)
+	}
+	if status.Code >= 300 && status.Code != 409 {
+		return nil, fmt.Errorf("wallet response protocol configure failed: %d %s", status.Code, status.Detail)
+	}
+	return &walletResponseRelay{endpoint: endpoint, token: token}, nil
+}
+
+func browserOpenCommand(goos string, rawURL string) (string, []string, bool) {
+	switch goos {
+	case "darwin":
+		return "open", []string{rawURL}, true
+	case "windows":
+		return "rundll32", []string{"url.dll,FileProtocolHandler", rawURL}, true
+	default:
+		return "xdg-open", []string{rawURL}, true
+	}
+}
+
+func openBrowser(rawURL string) error {
+	if rawURL == "" {
+		return fmt.Errorf("wallet URL is empty")
+	}
+	name, args, ok := browserOpenCommand(runtime.GOOS, rawURL)
+	if !ok {
+		return fmt.Errorf("unsupported OS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("%s did not return within 5s", name)
+	}
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		if detail != "" {
+			return fmt.Errorf("%s failed: %w: %s", name, err, detail)
+		}
+		return fmt.Errorf("%s failed: %w", name, err)
+	}
+	return nil
+}
+
+func printWalletURL(rawURL string, autoOpen bool, remoteHandoff bool) {
+	fmt.Printf("\nOpen in wallet:\n  %s\n", rawURL)
+	if remoteHandoff {
+		fmt.Printf("  This URL can be opened on another device; meshd will wait for the wallet response over DWN.\n")
+	}
+	if !autoOpen {
+		return
+	}
+	if err := openBrowser(rawURL); err != nil {
+		fmt.Printf("  Could not open browser automatically: %v\n", err)
+	} else {
+		fmt.Printf("  Browser opened. Approve the request there, then return here.\n")
+	}
+}
+
+type adminOptions struct {
+	dashboardURL string
+	printOnly    bool
+}
+
+const defaultAdminDashboardURL = "https://meshd-admin.pages.dev"
+
+func parseAdminArgs(args []string) (adminOptions, error) {
+	opts := adminOptions{dashboardURL: defaultAdminDashboardURL}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dashboard", "--wallet":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("%s requires a URL", args[i])
+			}
+			opts.dashboardURL = args[i+1]
+			i++
+		case "--print", "--no-open":
+			opts.printOnly = true
+		default:
+			return opts, fmt.Errorf("unknown admin flag %q", args[i])
+		}
+	}
+	return opts, nil
+}
+
+// cmdAdmin opens the meshd admin dashboard, preselecting the active owner and
+// network when local state is available.
+func cmdAdmin(ctx context.Context, args []string, flagProfile string) error {
+	opts, err := parseAdminArgs(args)
+	if err != nil {
+		return err
+	}
+	adminURL := buildAdminURL(opts.dashboardURL, adminContextFromProfile(flagProfile))
+	fmt.Printf("meshd admin:\n  %s\n", adminURL)
+	if opts.printOnly || !stdinIsTerminal() {
+		return nil
+	}
+	if err := openBrowser(adminURL); err != nil {
+		fmt.Printf("  Could not open browser automatically: %v\n", err)
+	} else {
+		fmt.Printf("  Browser opened.\n")
+	}
+	return nil
+}
+
+type adminContext struct {
+	OwnerDID        string
+	NetworkRecordID string
+}
+
+func adminContextFromProfile(flagProfile string) adminContext {
+	ctx := adminContext{}
+	if os.Getenv("MESHD_STATE_DIR") == "" {
+		if name, err := profile.Resolve(flagProfile); err == nil {
+			if cfg, cfgErr := profile.ReadConfig(); cfgErr == nil && cfg.Profiles[name] != nil {
+				ctx.OwnerDID = cfg.Profiles[name].EffectiveOwnerDID()
+			}
+		}
+	}
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return ctx
+	}
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil || ns == nil {
+		return ctx
+	}
+	ctx.OwnerDID = networkOwnerDID(ns, ctx.OwnerDID)
+	ctx.NetworkRecordID = ns.NetworkRecordID
+	return ctx
+}
+
+func buildAdminURL(walletURL string, ctx adminContext) string {
+	base := strings.TrimRight(strings.TrimSpace(walletURL), "/")
+	if base == "" {
+		base = defaultAdminDashboardURL
+	}
+	adminURL := base
+	values := url.Values{}
+	if ctx.OwnerDID != "" {
+		values.Set("owner", ctx.OwnerDID)
+	}
+	if ctx.NetworkRecordID != "" {
+		values.Set("network", ctx.NetworkRecordID)
+	}
+	if encoded := values.Encode(); encoded != "" {
+		adminURL += "?" + encoded
+	}
+	return adminURL
+}
+
+func startWalletResponseCallback() (*walletResponseCallback, error) {
+	token, err := walletconnect.GenerateChallenge()
+	if err != nil {
+		return nil, err
+	}
+	path := "/meshd/wallet-callback/" + token
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("start wallet callback listener: %w", err)
+	}
+
+	cb := &walletResponseCallback{
+		responseCh: make(chan []byte, 1),
+		errCh:      make(chan error, 1),
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Private-Network", "true")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		defer r.Body.Close()
+		data, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
+		if err != nil {
+			http.Error(w, "read response", http.StatusBadRequest)
+			return
+		}
+		if len(data) == 0 {
+			http.Error(w, "empty response", http.StatusBadRequest)
+			return
+		}
+		select {
+		case cb.responseCh <- data:
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte("ok\n"))
+		default:
+			http.Error(w, "response already received", http.StatusConflict)
+		}
+	})
+
+	cb.server = &http.Server{Handler: mux}
+	addr := ln.Addr().(*net.TCPAddr)
+	cb.url = fmt.Sprintf("http://127.0.0.1:%d%s", addr.Port, path)
+	go func() {
+		if err := cb.server.Serve(ln); err != nil && err != http.ErrServerClosed {
+			select {
+			case cb.errCh <- err:
+			default:
+			}
+		}
+	}()
+	return cb, nil
+}
+
+func (cb *walletResponseCallback) close() {
+	if cb == nil || cb.server == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = cb.server.Shutdown(ctx)
+}
+
+func (cb *walletResponseCallback) wait(ctx context.Context) ([]byte, error) {
+	timer := time.NewTimer(walletWaitTime)
+	defer timer.Stop()
+	select {
+	case data := <-cb.responseCh:
+		return data, nil
+	case err := <-cb.errCh:
+		return nil, fmt.Errorf("wallet callback failed: %w", err)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		return nil, fmt.Errorf("timed out waiting for wallet response")
+	}
+}
+
+func waitForWalletDelivery(ctx context.Context, callback *walletResponseCallback, relay *walletResponseRelay, identity *did.DID) ([]byte, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, walletWaitTime)
+	defer cancel()
+
+	type result struct {
+		data []byte
+		err  error
+	}
+	results := make(chan result, 2)
+	pending := 0
+	if callback != nil {
+		pending++
+		go func() {
+			data, err := callback.wait(waitCtx)
+			results <- result{data: data, err: err}
+		}()
+	}
+	if relay != nil {
+		pending++
+		go func() {
+			data, err := relay.wait(waitCtx, identity)
+			results <- result{data: data, err: err}
+		}()
+	}
+	if pending == 0 {
+		return nil, fmt.Errorf("no wallet response delivery channel configured")
+	}
+
+	var lastErr error
+	for pending > 0 {
+		select {
+		case res := <-results:
+			pending--
+			if res.err == nil {
+				return res.data, nil
+			}
+			lastErr = res.err
+		case <-waitCtx.Done():
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, waitCtx.Err()
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("wallet response was not received")
+}
+
+func (r *walletResponseRelay) wait(ctx context.Context, identity *did.DID) ([]byte, error) {
+	if r == nil || r.endpoint == "" || r.token == "" || identity == nil {
+		return nil, fmt.Errorf("wallet response relay is not configured")
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		data, ok, err := r.fetch(ctx, identity)
+		if err != nil {
+			lastErr = err
+		}
+		if ok {
+			return data, nil
+		}
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return nil, fmt.Errorf("timed out waiting for wallet response relay: %w", lastErr)
+			}
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (r *walletResponseRelay) fetch(ctx context.Context, identity *did.DID) ([]byte, bool, error) {
+	signer := &dwn.Signer{DID: identity.URI, PrivateKey: identity.SigningKey}
+	api := dwn.NewDwnAPI(dwn.NewSimpleAgent(r.endpoint, signer))
+	records, status, err := api.Query(ctx, identity.URI, dwn.QueryParams{
+		Filter: dwn.RecordsFilter{
+			Protocol:     protocols.WalletResponseProtocolURI,
+			ProtocolPath: "response",
+			Recipient:    identity.URI,
+		},
+		DateSort: "createdDescending",
+	}, "")
+	if err != nil {
+		return nil, false, err
+	}
+	if status.Code != 200 {
+		return nil, false, fmt.Errorf("wallet response query failed: %d %s", status.Code, status.Detail)
+	}
+	for _, queryRecord := range records {
+		record, readStatus, err := api.Read(ctx, identity.URI, dwn.RecordsFilter{
+			RecordID: queryRecord.ID,
+		}, "")
+		if err != nil {
+			return nil, false, err
+		}
+		if readStatus.Code != 200 || record == nil {
+			continue
+		}
+		data, err := record.Data().Bytes(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		var env walletconnect.ResponseEnvelope
+		if err := json.Unmarshal(data, &env); err != nil {
+			continue
+		}
+		if env.ResponseToken != r.token {
+			continue
+		}
+		if err := env.Validate(); err != nil {
+			return nil, false, err
+		}
+		if status, err := api.Delete(ctx, identity.URI, queryRecord.ID, false, ""); err != nil {
+			fmt.Printf("  Warning: wallet response cleanup failed: %v\n", err)
+		} else if status.Code >= 300 && status.Code != 404 {
+			fmt.Printf("  Warning: wallet response cleanup failed: %d %s\n", status.Code, status.Detail)
+		}
+		return append([]byte(nil), env.Response...), true, nil
+	}
+	return nil, false, nil
+}
+
+func createWalletNetworkCreateRequest(ctx context.Context, flagProfile string, stateDir string, identity *did.DID, name string, endpoint string, opts networkCreateOptions) error {
+	if state.HasNetwork(stateDir) {
+		return fmt.Errorf("already in a network. Use 'meshd network leave' first.")
+	}
+	var err error
+	var callback *walletResponseCallback
+	if shouldWaitForWalletResponse(opts.walletURL, opts.requestOut, opts.noWait) {
+		callback, err = startWalletResponseCallback()
+		if err != nil {
+			return err
+		}
+		defer callback.close()
+	}
+	var relay *walletResponseRelay
+	if shouldUseWalletResponseRelay(opts.walletURL, opts.requestOut, opts.noWait) {
+		relay, err = setupWalletResponseRelay(ctx, walletResponseEndpoint(endpoint), identity)
+		if err != nil {
+			fmt.Printf("  Warning: wallet response handoff unavailable: %v\n", err)
+			relay = nil
+		}
+	}
+	profileName := profileNameForWrite(flagProfile)
+	delegateIdentity, err := ensureWalletDelegateIdentity(stateDir)
+	if err != nil {
+		return err
+	}
+	req, err := walletconnect.NewNetworkCreateRequest(profileName, identity, name, endpoint, opts.meshCIDR, delegateIdentity)
+	if err != nil {
+		return err
+	}
+	if callback != nil {
+		req.CallbackURL = callback.url
+	}
+	if relay != nil {
+		req.ResponseEndpoint = relay.endpoint
+		req.ResponseToken = relay.token
+	}
+	if err := walletconnect.SignNetworkCreateRequest(identity, &req); err != nil {
+		return err
+	}
+	requestURL, err := walletconnect.EncodeNetworkCreateRequest(req)
+	if err != nil {
+		return err
+	}
+	if opts.requestOut != "" {
+		data, err := json.MarshalIndent(req, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal network create request: %w", err)
+		}
+		if err := os.WriteFile(opts.requestOut, data, 0600); err != nil {
+			return fmt.Errorf("write network create request: %w", err)
+		}
+	}
+
+	fmt.Println("Wallet approval required to create this network.")
+	fmt.Printf("  Profile: %s\n", profileName)
+	fmt.Printf("  Node DID: %s\n", identity.URI)
+	fmt.Printf("  Delegate DID: %s\n", delegateIdentity.URI)
+	fmt.Printf("  Network: %s\n", name)
+	fmt.Printf("  CIDR: %s\n", opts.meshCIDR)
+	if endpoint != "" {
+		fmt.Printf("  Requested DWN: %s\n", endpoint)
+	}
+	if opts.requestOut != "" {
+		fmt.Printf("  Request: %s\n", opts.requestOut)
+	}
+	if relay != nil {
+		fmt.Printf("  Response handoff: %s\n", relay.endpoint)
+	}
+	fmt.Printf("\nRequest URL:\n  %s\n", requestURL)
+	if opts.walletURL != "" {
+		walletURL := strings.TrimRight(opts.walletURL, "/") + "/meshd/create?request=" + url.QueryEscape(requestURL)
+		printWalletURL(walletURL, callback != nil, relay != nil)
+	}
+	if callback == nil && relay == nil {
+		fmt.Printf("\nAfter wallet approval, save the response JSON and run:\n")
+		fmt.Printf("  meshd network create --response <response.json>\n")
+		return nil
+	}
+	fmt.Printf("\nWaiting for wallet approval...\n")
+	data, err := waitForWalletDelivery(ctx, callback, relay, identity)
+	if err != nil {
+		return err
+	}
+	return importNetworkCreateResponseData(ctx, flagProfile, data)
+}
+
+func importNetworkCreateResponse(ctx context.Context, flagProfile string, responsePath string) error {
+	var data []byte
+	var err error
+	if responsePath == "-" {
+		data, err = io.ReadAll(os.Stdin)
+	} else {
+		data, err = os.ReadFile(responsePath)
+	}
+	if err != nil {
+		return fmt.Errorf("read network create response: %w", err)
+	}
+	return importNetworkCreateResponseData(ctx, flagProfile, data)
+}
+
+func importNetworkCreateResponseData(ctx context.Context, flagProfile string, data []byte) error {
+	var resp walletconnect.NetworkCreateResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return fmt.Errorf("parse network create response: %w", err)
+	}
+	if err := resp.Validate(); err != nil {
+		return err
+	}
+	resp.NormalizeOwnerDID()
+	ownerDID := resp.EffectiveOwnerDID()
+
+	profileFlag := firstNonEmpty(flagProfile, resp.ProfileName)
+	stateDir, identity, err := ensureIdentityForCommand(ctx, profileFlag, resp.AnchorEndpoint)
+	if err != nil {
+		return err
+	}
+	if resp.NodeDID != identity.URI {
+		return fmt.Errorf("network create response node DID %s does not match local node DID %s", resp.NodeDID, identity.URI)
+	}
+	if state.HasNetwork(stateDir) {
+		return fmt.Errorf("already in a network. Use 'meshd network leave' first.")
+	}
+
+	password, err := vaultPasswordForUnlock(stateDir)
+	if err != nil {
+		return err
+	}
+	if _, err := requireWalletResponseDelegateIdentity(stateDir, resp.DelegateDID, resp.NodeDID, "network create response"); err != nil {
+		return err
+	}
+	existingSession, err := state.LoadWalletSession(stateDir, password)
+	if err != nil {
+		return err
+	}
+	nodeContextKeys := resp.EffectiveNodeContextKeys()
+	nodeProtocols := resp.EffectiveNodeMultiPartyProtocols()
+	session := &state.WalletSession{
+		Version:                 1,
+		OwnerDID:                ownerDID,
+		ConnectedDID:            ownerDID,
+		DelegateDID:             resp.DelegateDID,
+		NodeDID:                 resp.NodeDID,
+		WalletOrigin:            resp.WalletOrigin,
+		ExpiresAt:               resp.ExpiresAt,
+		Grants:                  resp.Grants,
+		NodeContextKeys:         nodeContextKeys,
+		NodeMultiPartyProtocols: nodeProtocols,
+	}
+	if existingSession != nil {
+		if existingOwnerDID := existingSession.EffectiveOwnerDID(); existingOwnerDID != "" && existingOwnerDID != ownerDID {
+			return fmt.Errorf("wallet session owner DID %s does not match network response owner DID %s", existingOwnerDID, ownerDID)
+		}
+		if existingSession.NodeDID != "" && existingSession.NodeDID != resp.NodeDID {
+			return fmt.Errorf("wallet session node DID %s does not match network response node DID %s", existingSession.NodeDID, resp.NodeDID)
+		}
+		if session.DelegateDID == "" {
+			session.DelegateDID = existingSession.DelegateDID
+		}
+		if existingSession.DelegateDID != "" && session.DelegateDID != "" && existingSession.DelegateDID != session.DelegateDID {
+			return fmt.Errorf("wallet session delegate DID %s does not match network response delegate DID %s", existingSession.DelegateDID, session.DelegateDID)
+		}
+		session.Grants = append(existingSession.Grants, resp.Grants...)
+		session.DelegateDecryptionKeys = existingSession.DelegateDecryptionKeys
+		session.NodeContextKeys = append(existingSession.EffectiveNodeContextKeys(), nodeContextKeys...)
+		if len(nodeProtocols) == 0 {
+			session.NodeMultiPartyProtocols = existingSession.EffectiveNodeMultiPartyProtocols()
+		}
+	}
+	if err := state.StoreWalletSession(stateDir, password, session); err != nil {
+		return err
+	}
+
+	contextKeyCount, err := storeWalletNodeContextKeys(stateDir, password, nodeContextKeys)
+	if err != nil {
+		return err
+	}
+
+	ns := &state.NetworkState{
+		NetworkRecordID:   resp.NetworkRecordID,
+		AnchorDID:         ownerDID,
+		AnchorEndpoint:    resp.AnchorEndpoint,
+		NetworkName:       resp.NetworkName,
+		MeshCIDR:          resp.MeshCIDR,
+		MeshIP:            resp.MeshIP,
+		NodeDID:           resp.NodeDID,
+		OwnerDID:          ownerDID,
+		MemberDID:         ownerDID,
+		DelegateDID:       session.DelegateDID,
+		NodeRecordID:      resp.NodeRecordID,
+		NodeDateCreated:   resp.NodeDateCreated,
+		MemberRecordID:    resp.MemberRecordID,
+		MemberDateCreated: resp.MemberDateCreated,
+	}
+	if err := state.SaveNetworkState(stateDir, ns); err != nil {
+		return fmt.Errorf("saving network state: %w", err)
+	}
+
+	if os.Getenv("MESHD_STATE_DIR") == "" {
+		profileName := profileNameForWrite(profileFlag)
+		if err := profile.UpsertProfileEntry(&profile.Entry{
+			Name:         profileName,
+			DID:          identity.URI,
+			AuthType:     profile.AuthTypeWalletAuthorizedNode,
+			OwnerDID:     ownerDID,
+			ConnectedDID: ownerDID,
+			DelegateDID:  session.DelegateDID,
+			NodeDID:      identity.URI,
+			WalletOrigin: resp.WalletOrigin,
+			ExpiresAt:    resp.ExpiresAt,
+		}); err != nil {
+			return fmt.Errorf("saving wallet-connected profile: %w", err)
+		}
+	}
+
+	fmt.Println("Wallet-created network imported.")
+	fmt.Printf("  Name: %s\n", resp.NetworkName)
+	fmt.Printf("  CIDR: %s\n", resp.MeshCIDR)
+	fmt.Printf("  Mesh IP: %s\n", resp.MeshIP)
+	fmt.Printf("  Wallet Owner DID: %s\n", ownerDID)
+	if session.DelegateDID != "" {
+		fmt.Printf("  Delegate DID: %s\n", session.DelegateDID)
+	}
+	fmt.Printf("  Node DID: %s\n", resp.NodeDID)
+	fmt.Printf("  Anchor DID: %s\n", ownerDID)
+	fmt.Printf("  Anchor Endpoint: %s\n", resp.AnchorEndpoint)
+	fmt.Printf("  Network Record: %s\n", resp.NetworkRecordID)
+	if resp.MemberRecordID != "" {
+		fmt.Printf("  Member Record: %s\n", resp.MemberRecordID)
+	}
+	if resp.NodeRecordID != "" {
+		fmt.Printf("  Node Record: %s\n", resp.NodeRecordID)
+	}
+	if contextKeyCount > 0 {
+		fmt.Printf("  Context keys: %d imported\n", contextKeyCount)
+	}
+	fmt.Printf("\nRun 'meshd up' to start the mesh.\n")
+	return nil
 }
 
 // cmdNetworkJoin joins an existing mesh network.
@@ -556,7 +1327,9 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		return cmdJoin(ctx, args, flagProfile)
 	}
 
-	endpoint, anchorDID, networkID, preauthRequested := parseNetworkJoinArgs(args)
+	joinOpts := parseNetworkJoinOptions(args)
+	endpoint, anchorDID, networkID, preauthRequested := joinOpts.endpoint, joinOpts.anchorDID, joinOpts.networkID, joinOpts.preauthRequested
+	requestedOwnerDID := parseOwnerDIDArg(args)
 	if endpoint == "" || anchorDID == "" || networkID == "" {
 		if !stdinIsTerminal() {
 			return fmt.Errorf("usage: meshd network join <invite-url> OR meshd network join --endpoint <url> --anchor <did> --network <id>")
@@ -601,6 +1374,9 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 	if err != nil {
 		return err
 	}
+	meta := resolveIdentityMetadata(flagProfile, identity.URI)
+	nodeDID := firstNonEmpty(meta.NodeDID, identity.URI)
+	ownerDID := firstNonEmpty(requestedOwnerDID, meta.OwnerDID, nodeDID)
 
 	if state.HasNetwork(stateDir) {
 		return fmt.Errorf("already in a network. Use 'meshd network leave' first.")
@@ -656,7 +1432,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 			Protocol:     protocols.MeshProtocolURI,
 			ProtocolPath: "network/node",
 			ContextID:    networkID,
-			Recipient:    identity.URI,
+			Recipient:    nodeDID,
 		},
 		DateSort: "createdDescending",
 	}, "")
@@ -683,7 +1459,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 				Protocol:     protocols.MeshProtocolURI,
 				ProtocolPath: "network/member",
 				ContextID:    networkID,
-				Recipient:    identity.URI,
+				Recipient:    ownerDID,
 			},
 			DateSort: "createdDescending",
 		}, "network/member")
@@ -696,7 +1472,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 						Protocol:     protocols.MeshProtocolURI,
 						ProtocolPath: "network/member/node",
 						ContextID:    networkID + "/" + memberRecord.ID,
-						Recipient:    identity.URI,
+						Recipient:    nodeDID,
 					},
 					DateSort: "createdDescending",
 				}, "network/member")
@@ -731,7 +1507,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 				Protocol:     protocols.MeshProtocolURI,
 				ProtocolPath: "network/member",
 				ContextID:    networkID,
-				Recipient:    identity.URI,
+				Recipient:    ownerDID,
 			},
 			DateSort: "createdDescending",
 		}, "network/member")
@@ -742,7 +1518,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 	// If no node record found, the anchor hasn't added us yet.
 	// Allocate a mesh IP deterministically and save partial state.
 	if meshIP == "" {
-		allocatedIP, allocErr := mesh.AllocateMeshIP(networkData.MeshCIDR, identity.URI)
+		allocatedIP, allocErr := mesh.AllocateMeshIP(networkData.MeshCIDR, nodeDID)
 		if allocErr != nil {
 			return fmt.Errorf("allocating mesh IP: %w", allocErr)
 		}
@@ -750,12 +1526,9 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 	}
 
 	if nodeRecordID == "" {
-		if preauthRequested {
-			fmt.Printf("  Join request submitted. Waiting for the anchor to approve this invite.\n")
-			fmt.Printf("  Run 'meshd up' again after the anchor has processed the request.\n")
-		} else {
+		if !preauthRequested {
 			fmt.Printf("  No node record found — the anchor needs to run:\n")
-			fmt.Printf("    meshd peer add %s\n", identity.URI)
+			fmt.Printf("    meshd peer add %s\n", nodeDID)
 		}
 	}
 
@@ -780,15 +1553,28 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 
 	// Write nodeInfo if we have a node record (so the network sees our hostname/OS).
 	if nodeRecordID != "" {
+		nodeInfoGrantID, grantErr := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, nodeInfoProtocolPath(&state.NetworkState{MemberRecordID: memberRecordID}), networkID, false)
+		if grantErr != nil {
+			return grantErr
+		}
+		nodeInfoSigner := signer
+		if nodeInfoGrantID != "" {
+			operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, identity)
+			if err != nil {
+				return err
+			}
+			nodeInfoSigner = dwnSigner(operationIdentity)
+		}
 		if err := mesh.WriteNodeInfo(ctx, mesh.WriteNodeInfoParams{
 			AnchorEndpoint:       endpoint,
 			AnchorDID:            anchorDID,
 			NetworkRecordID:      networkID,
 			MemberRecordID:       memberRecordID,
 			NodeRecordID:         nodeRecordID,
-			Signer:               signer,
+			Signer:               nodeInfoSigner,
 			EncryptionKeyManager: encMgr,
 			UseContextEncryption: useContextEnc,
+			PermissionGrantID:    nodeInfoGrantID,
 		}); err != nil {
 			fmt.Printf("  Warning: nodeInfo write failed: %v\n", err)
 		} else {
@@ -804,6 +1590,10 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		NetworkName:     networkData.Name,
 		MeshCIDR:        networkData.MeshCIDR,
 		MeshIP:          meshIP,
+		NodeDID:         nodeDID,
+		OwnerDID:        ownerDID,
+		MemberDID:       ownerDID,
+		DelegateDID:     meta.DelegateDID,
 		NodeRecordID:    nodeRecordID,
 		NodeDateCreated: nodeDateCreated,
 		MemberRecordID:  memberRecordID,
@@ -815,42 +1605,92 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		return fmt.Errorf("saving network state: %w", err)
 	}
 
+	if nodeRecordID == "" {
+		if preauthRequested {
+			fmt.Printf("Join request is pending approval.\n")
+			fmt.Printf("  Name: %s\n", networkData.Name)
+			fmt.Printf("  CIDR: %s\n", networkData.MeshCIDR)
+			fmt.Printf("  Reserved Mesh IP: %s\n", meshIP)
+			fmt.Printf("  Anchor: %s\n", anchorDID)
+			if !joinOpts.noStartHint {
+				fmt.Printf("\nAfter approval, run 'meshd up' to start the mesh.\n")
+			}
+		} else {
+			fmt.Printf("Join state saved, but this node has not been approved yet.\n")
+			if !joinOpts.noStartHint {
+				fmt.Printf("\nAfter the anchor adds this node, run 'meshd up' to start the mesh.\n")
+			}
+		}
+		return nil
+	}
+
 	fmt.Printf("Joined network.\n")
 	fmt.Printf("  Name: %s\n", networkData.Name)
 	fmt.Printf("  CIDR: %s\n", networkData.MeshCIDR)
 	fmt.Printf("  Mesh IP: %s\n", meshIP)
 	fmt.Printf("  Anchor: %s\n", anchorDID)
-	fmt.Printf("\nRun 'meshd up' to start the mesh.\n")
+	if !joinOpts.noStartHint {
+		fmt.Printf("\nRun 'meshd up' to start the mesh.\n")
+	}
 
 	return nil
 }
 
+type networkJoinOptions struct {
+	endpoint         string
+	anchorDID        string
+	networkID        string
+	preauthRequested bool
+	noStartHint      bool
+}
+
 func parseNetworkJoinArgs(args []string) (endpoint string, anchorDID string, networkID string, preauthRequested bool) {
+	opts := parseNetworkJoinOptions(args)
+	return opts.endpoint, opts.anchorDID, opts.networkID, opts.preauthRequested
+}
+
+func parseNetworkJoinOptions(args []string) networkJoinOptions {
+	var opts networkJoinOptions
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--endpoint":
 			if i+1 < len(args) {
-				endpoint = args[i+1]
+				opts.endpoint = args[i+1]
 				i++
 			}
 		case "--anchor":
 			if i+1 < len(args) {
-				anchorDID = args[i+1]
+				opts.anchorDID = args[i+1]
 				i++
 			}
 		case "--network":
 			if i+1 < len(args) {
-				networkID = args[i+1]
+				opts.networkID = args[i+1]
 				i++
 			}
 		case "--preauth":
-			preauthRequested = true
+			opts.preauthRequested = true
+		case "--no-start-hint":
+			opts.noStartHint = true
 		}
 	}
-	if endpoint == "" {
-		endpoint = os.Getenv("DWN_ENDPOINT")
+	if opts.endpoint == "" {
+		opts.endpoint = os.Getenv("DWN_ENDPOINT")
 	}
-	return endpoint, anchorDID, networkID, preauthRequested
+	return opts
+}
+
+func parseOwnerDIDArg(args []string) string {
+	for i := 0; i < len(args); i++ {
+		if (args[i] == "--owner" || args[i] == "--member") && i+1 < len(args) {
+			return strings.TrimSpace(args[i+1])
+		}
+	}
+	return ""
+}
+
+func parseMemberDIDArg(args []string) string {
+	return parseOwnerDIDArg(args)
 }
 
 // cmdNetworkLeave leaves the current mesh network.
@@ -933,10 +1773,19 @@ func cmdInviteCreate(ctx context.Context, args []string, flagProfile string) err
 	if ns == nil {
 		return fmt.Errorf("not in a network. Use 'meshd network create' first.")
 	}
-	if ns.AnchorDID != identity.URI {
-		return fmt.Errorf("only the network anchor (%s) can create invites", ns.AnchorDID)
+	meta, useContextEncryption, err := requireNetworkOwnerProfile(flagProfile, identity, ns)
+	if err != nil {
+		return err
 	}
 
+	encMgr, err := prepareNetworkCommandEncryption(stateDir, identity, ns, useContextEncryption)
+	if err != nil {
+		return err
+	}
+	writeGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
+	if err != nil {
+		return err
+	}
 	expiresAt := time.Time{}
 	if expires > 0 {
 		expiresAt = time.Now().Add(expires)
@@ -945,18 +1794,24 @@ func cmdInviteCreate(ctx context.Context, args []string, flagProfile string) err
 		label = ns.NetworkName
 	}
 
-	signer := &dwn.Signer{DID: identity.URI, PrivateKey: identity.SigningKey}
+	operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, identity)
+	if err != nil {
+		return err
+	}
+	signer := dwnSigner(operationIdentity)
 	result, err := mesh.CreatePreAuthKey(ctx, mesh.CreatePreAuthKeyParams{
 		AnchorEndpoint:       ns.AnchorEndpoint,
 		AnchorDID:            ns.AnchorDID,
 		NetworkRecordID:      ns.NetworkRecordID,
 		NetworkName:          ns.NetworkName,
 		Signer:               signer,
-		EncryptionKeyManager: newEncryptionKeyManager(identity),
+		EncryptionKeyManager: encMgr,
 		Label:                label,
 		ExpiresAt:            expiresAt,
 		Reusable:             reusable,
 		Ephemeral:            ephemeral,
+		PermissionGrantID:    writeGrantID,
+		UseContextEncryption: useContextEncryption,
 	})
 	if err != nil {
 		return err
@@ -982,10 +1837,15 @@ func cmdInviteCreate(ctx context.Context, args []string, flagProfile string) err
 // Usage: meshd join <meshd://invite/...>
 func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: meshd join <meshd://invite/...>")
+		return fmt.Errorf("usage: meshd join <meshd://invite/...> [--owner <did>]")
 	}
 
-	payload, err := invite.Decode(args[0])
+	inviteURL, requestedOwnerDID, noStartHint, err := parseJoinCommandArgs(args)
+	if err != nil {
+		return err
+	}
+
+	payload, err := invite.Decode(inviteURL)
 	if err != nil {
 		return err
 	}
@@ -1003,7 +1863,7 @@ func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
 			if err := ensureDWNTenantRegistered(ctx, payload.Endpoint, identity); err != nil {
 				return err
 			}
-			refreshed, err := refreshPendingJoin(ctx, stateDir, ns, flagProfile)
+			refreshed, err := refreshPendingJoin(ctx, stateDir, ns, flagProfile, noStartHint)
 			if err != nil {
 				return err
 			}
@@ -1017,6 +1877,9 @@ func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
 	if err := ensureDWNTenantRegistered(ctx, payload.Endpoint, identity); err != nil {
 		return err
 	}
+	meta := resolveIdentityMetadata(flagProfile, identity.URI)
+	nodeDID := firstNonEmpty(meta.NodeDID, identity.URI)
+	ownerDID := firstNonEmpty(requestedOwnerDID, meta.OwnerDID, nodeDID)
 
 	preauth := payload.TokenID != "" || payload.Secret != ""
 	if preauth {
@@ -1025,11 +1888,19 @@ func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
 		}
 		label, _ := os.Hostname()
 		signer := &dwn.Signer{DID: identity.URI, PrivateKey: identity.SigningKey}
+		nodeKeyDelivery, err := walletconnect.NewKeyDeliveryPublic(identity)
+		if err != nil {
+			return fmt.Errorf("deriving node key-delivery public key: %w", err)
+		}
 		if err := mesh.WritePreAuthNodeRequest(ctx, mesh.WritePreAuthNodeRequestParams{
-			Invite:  payload,
-			NodeDID: identity.URI,
-			Signer:  signer,
-			Label:   label,
+			Invite:          payload,
+			NodeDID:         nodeDID,
+			MemberDID:       ownerDID,
+			DelegateDID:     meta.DelegateDID,
+			RequestedBy:     identity.URI,
+			Signer:          signer,
+			Label:           label,
+			NodeKeyDelivery: nodeKeyDelivery,
 		}); err != nil {
 			return err
 		}
@@ -1044,7 +1915,39 @@ func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
 	if preauth {
 		joinArgs = append(joinArgs, "--preauth")
 	}
+	if ownerDID != "" && ownerDID != nodeDID {
+		joinArgs = append(joinArgs, "--owner", ownerDID)
+	}
+	if noStartHint {
+		joinArgs = append(joinArgs, "--no-start-hint")
+	}
 	return cmdNetworkJoin(ctx, joinArgs, flagProfile)
+}
+
+func parseJoinCommandArgs(args []string) (inviteURL string, ownerDID string, noStartHint bool, err error) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--owner", "--member":
+			if i+1 >= len(args) {
+				return "", "", false, fmt.Errorf("%s requires a DID", args[i])
+			}
+			ownerDID = strings.TrimSpace(args[i+1])
+			i++
+		case "--no-start-hint":
+			noStartHint = true
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return "", "", false, fmt.Errorf("unknown join flag %q", args[i])
+			}
+			if inviteURL == "" {
+				inviteURL = args[i]
+			}
+		}
+	}
+	if inviteURL == "" {
+		return "", "", false, fmt.Errorf("usage: meshd join <meshd://invite/...> [--owner <did>]")
+	}
+	return inviteURL, ownerDID, noStartHint, nil
 }
 
 // cmdPeerList lists all peers in the current mesh network.
@@ -1065,11 +1968,15 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 	if ns == nil {
 		return fmt.Errorf("not in a network. Use 'meshd network join' first.")
 	}
+	selfNodeDID := networkNodeDID(ns, identity.URI)
+	meta := resolveIdentityMetadata(flagProfile, identity.URI)
+	selfOwnerDID := networkOwnerDID(ns, firstNonEmpty(meta.OwnerDID, identity.URI))
 
-	signer := &dwn.Signer{
-		DID:        identity.URI,
-		PrivateKey: identity.SigningKey,
+	operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, identity)
+	if err != nil {
+		return err
 	}
+	signer := dwnSigner(operationIdentity)
 	agent := dwn.NewSimpleAgent(ns.AnchorEndpoint, signer)
 	api := dwn.NewDwnAPI(agent)
 
@@ -1077,6 +1984,18 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 	queryRole := ""
 	if ns.AnchorDID != identity.URI {
 		queryRole = "network/node"
+	}
+	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
+	if err != nil {
+		return err
+	}
+	encMgr := newEncryptionKeyManager(identity)
+	if ns.AnchorDID != selfNodeDID {
+		_, _, _ = loadLocalContextKeyForCLI(stateDir, ns, encMgr)
+	}
+	if resp, err := loadControlStateForCLI(ctx, ns, identity, operationIdentity, encMgr, readGrantID); err == nil {
+		printPeerListRows(ns.NetworkName, peerListRowsFromMapResponse(ns, resp, selfNodeDID, selfOwnerDID))
+		return nil
 	}
 
 	// Query owner-provisioned node records (network/node).
@@ -1086,7 +2005,8 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 			ProtocolPath: "network/node",
 			ContextID:    ns.NetworkRecordID,
 		},
-		DateSort: "createdAscending",
+		DateSort:          "createdAscending",
+		PermissionGrantID: readGrantID,
 	}, queryRole)
 	if err != nil {
 		return fmt.Errorf("querying peers: %w", err)
@@ -1104,7 +2024,8 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 			ProtocolPath: "network/member",
 			ContextID:    ns.NetworkRecordID,
 		},
-		DateSort: "createdAscending",
+		DateSort:          "createdAscending",
+		PermissionGrantID: readGrantID,
 	}, queryRole)
 	if mErr == nil && mStatus.Code == 200 {
 		for _, memberRecord := range memberRecords {
@@ -1114,7 +2035,8 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 					ProtocolPath: "network/member/node",
 					ContextID:    ns.NetworkRecordID + "/" + memberRecord.ID,
 				},
-				DateSort: "createdAscending",
+				DateSort:          "createdAscending",
+				PermissionGrantID: readGrantID,
 			}, queryRole)
 			if mnErr == nil && mnStatus.Code == 200 {
 				records = append(records, memberNodeRecords...)
@@ -1127,41 +2049,130 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 		return nil
 	}
 
-	fmt.Printf("Peers in %q:\n", ns.NetworkName)
-	fmt.Printf("%-50s %-16s %-12s %-12s %s\n", "DID", "MESH IP", "DEVICE", "LABEL", "PATH")
-	fmt.Println(strings.Repeat("-", 105))
-
+	var rows []peerListRow
 	for _, r := range records {
 		peerDID := r.Recipient
 		displayDID := peerDID
 		if displayDID == "" {
 			displayDID = "(unknown)"
 		}
-		device := peerListDevice(peerDID, identity.URI)
+		device := peerListDevice(peerDID, selfNodeDID)
 
 		var node struct {
-			MeshIP string `json:"meshIP"`
-			Label  string `json:"label"`
+			MeshIP    string `json:"meshIP"`
+			Label     string `json:"label"`
+			MemberDID string `json:"memberDID"`
 		}
 		if err := r.Data().JSON(ctx, &node); err != nil {
 			// Data may not be inline (encrypted records need context key).
-			fmt.Printf("%-50s %-16s %-12s %-12s %s\n",
-				truncate(displayDID, 50),
-				peerListMeshIP(ns.MeshCIDR, peerDID, ""),
-				device,
-				"(encrypted)",
-				r.ProtocolPath)
+			rows = append(rows, peerListRow{
+				NodeDID: displayDID,
+				MeshIP:  peerListMeshIP(ns.MeshCIDR, peerDID, ""),
+				Device:  device,
+				Owner:   peerListOwner(peerDID, "", selfNodeDID, selfOwnerDID),
+				Label:   "(encrypted)",
+				Path:    r.ProtocolPath,
+			})
 			continue
 		}
-		fmt.Printf("%-50s %-16s %-12s %-12s %s\n",
-			truncate(displayDID, 50),
-			peerListMeshIP(ns.MeshCIDR, peerDID, node.MeshIP),
-			device,
-			node.Label,
-			r.ProtocolPath)
+		rows = append(rows, peerListRow{
+			NodeDID: displayDID,
+			MeshIP:  peerListMeshIP(ns.MeshCIDR, peerDID, node.MeshIP),
+			Device:  device,
+			Owner:   peerListOwner(peerDID, node.MemberDID, selfNodeDID, selfOwnerDID),
+			Label:   node.Label,
+			Path:    r.ProtocolPath,
+		})
 	}
+	printPeerListRows(ns.NetworkName, rows)
 
 	return nil
+}
+
+func loadControlStateForCLI(ctx context.Context, ns *state.NetworkState, identity *did.DID, signerIdentity *did.DID, encMgr *dwncrypto.EncryptionKeyManager, readGrantID string) (*control.MapResponse, error) {
+	if ns == nil || identity == nil {
+		return nil, fmt.Errorf("network state and identity are required")
+	}
+	if signerIdentity == nil {
+		signerIdentity = identity
+	}
+	selfNodeDID := networkNodeDID(ns, identity.URI)
+	protocolRole := ""
+	if ns.AnchorDID != selfNodeDID {
+		protocolRole = "network/node"
+	}
+	signer := dwnSigner(signerIdentity)
+	client := control.NewDWNClient(
+		ns.AnchorEndpoint,
+		ns.AnchorDID,
+		ns.NetworkRecordID,
+		selfNodeDID,
+		signer,
+		control.WithEncryptionKeyManager(encMgr),
+		control.WithProtocolRole(protocolRole),
+		control.WithPermissionGrantID(readGrantID),
+	)
+	return client.LoadState(ctx)
+}
+
+type peerListRow struct {
+	NodeDID string
+	MeshIP  string
+	Device  string
+	Owner   string
+	Label   string
+	Path    string
+}
+
+func peerListRowsFromMapResponse(ns *state.NetworkState, resp *control.MapResponse, selfNodeDID string, selfOwnerDID string) []peerListRow {
+	if resp == nil {
+		return nil
+	}
+	nodes := make([]*control.Node, 0, 1+len(resp.Peers))
+	if resp.Node != nil {
+		nodes = append(nodes, resp.Node)
+	}
+	nodes = append(nodes, resp.Peers...)
+
+	rows := make([]peerListRow, 0, len(nodes))
+	for _, node := range nodes {
+		if node == nil || node.DID == "" {
+			continue
+		}
+		meshIP := ""
+		if node.MeshIP.IsValid() {
+			meshIP = node.MeshIP.String()
+		}
+		rows = append(rows, peerListRow{
+			NodeDID: node.DID,
+			MeshIP:  peerListMeshIP(ns.MeshCIDR, node.DID, meshIP),
+			Device:  peerListDevice(node.DID, selfNodeDID),
+			Owner:   peerListOwner(node.DID, node.MemberDID, selfNodeDID, selfOwnerDID),
+			Label:   node.Name,
+			Path:    peerListPath(node),
+		})
+	}
+	return rows
+}
+
+func printPeerListRows(networkName string, rows []peerListRow) {
+	if len(rows) == 0 {
+		fmt.Println("No peers found.")
+		return
+	}
+	fmt.Printf("Peers in %q:\n", networkName)
+	fmt.Printf("%-48s %-16s %-12s %-36s %-12s %s\n", "NODE DID", "MESH IP", "DEVICE", "OWNER", "LABEL", "PATH")
+	fmt.Println(strings.Repeat("-", 132))
+	for _, row := range rows {
+		fmt.Printf("%-48s %-16s %-12s %-36s %-12s %s\n",
+			truncate(firstNonEmpty(row.NodeDID, "(unknown)"), 48),
+			row.MeshIP,
+			row.Device,
+			truncate(row.Owner, 36),
+			row.Label,
+			row.Path,
+		)
+	}
 }
 
 func peerListDevice(peerDID string, selfDID string) string {
@@ -1169,6 +2180,24 @@ func peerListDevice(peerDID string, selfDID string) string {
 		return "this device"
 	}
 	return "peer"
+}
+
+func peerListOwner(peerDID string, recordOwnerDID string, selfNodeDID string, selfOwnerDID string) string {
+	ownerDID := recordOwnerDID
+	if ownerDID == "" && peerDID != "" && peerDID == selfNodeDID {
+		ownerDID = selfOwnerDID
+	}
+	if ownerDID == "" || ownerDID == peerDID {
+		return "node"
+	}
+	return ownerDID
+}
+
+func peerListPath(node *control.Node) string {
+	if node != nil && node.MemberRecordID != "" {
+		return "network/member/node"
+	}
+	return "network/node"
 }
 
 func peerListMeshIP(meshCIDR string, peerDID string, recordMeshIP string) string {
@@ -1192,20 +2221,13 @@ func peerListMeshIP(meshCIDR string, peerDID string, recordMeshIP string) string
 // This must be run by the network anchor (owner). It combines the node
 // record creation and key delivery into a single command.
 //
-// Usage: meshd peer add <did> [--label <label>]
+// Usage: meshd peer add <node-did> [--owner <owner-did>] [--label <label>]
 func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: meshd peer add <did> [--label <label>]")
+	opts, err := parsePeerAddOptions(args)
+	if err != nil {
+		return err
 	}
-
-	peerDID := args[0]
-	label := "peer"
-	for i := 1; i < len(args); i++ {
-		if args[i] == "--label" && i+1 < len(args) {
-			label = args[i+1]
-			i++
-		}
-	}
+	peerDID := opts.nodeDID
 
 	stateDir, err := resolveStateDir(flagProfile)
 	if err != nil {
@@ -1224,16 +2246,28 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 		return fmt.Errorf("not in a network. Use 'meshd network create' first.")
 	}
 
-	// Only the anchor (network owner) can add peers.
-	if ns.AnchorDID != identity.URI {
-		return fmt.Errorf("only the network anchor (%s) can add peers", ns.AnchorDID)
+	meta, useContextEncryption, err := requireNetworkOwnerProfile(flagProfile, identity, ns)
+	if err != nil {
+		return err
+	}
+	encMgr, err := prepareNetworkCommandEncryption(stateDir, identity, ns, useContextEncryption)
+	if err != nil {
+		return err
+	}
+	writeGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
+	if err != nil {
+		return err
+	}
+	keyDeliveryGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.KeyDeliveryProtocolURI, "", "", useContextEncryption)
+	if err != nil {
+		return err
 	}
 
-	signer := &dwn.Signer{
-		DID:        identity.URI,
-		PrivateKey: identity.SigningKey,
+	operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, identity)
+	if err != nil {
+		return err
 	}
-	encMgr := newEncryptionKeyManager(identity)
+	signer := dwnSigner(operationIdentity)
 
 	// 1. Create a node record for the peer (assigns the network/node role).
 	// The peer's mesh IP is derived deterministically from their DID.
@@ -1252,13 +2286,18 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 		Signer:               signer,
 		EncryptionKeyManager: encMgr,
 		MeshIP:               peerMeshIP.String(),
-		Label:                label,
+		Label:                opts.label,
+		OwnerDID:             opts.ownerDID,
 		UseContextEncryption: true,
+		PermissionGrantID:    writeGrantID,
 	})
 	if err != nil {
 		return fmt.Errorf("creating node record: %w", err)
 	}
 	fmt.Printf("  Node record created (IP=%s).\n", peerMeshIP)
+	if opts.ownerDID != "" && opts.ownerDID != peerDID {
+		fmt.Printf("  Owner: %s\n", opts.ownerDID)
+	}
 
 	// 2. Deliver the context encryption key so the peer can decrypt records.
 	kdm := &mesh.KeyDeliveryManager{
@@ -1267,10 +2306,11 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 		EncryptionKeyManager: encMgr,
 	}
 	err = kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
-		AnchorDID:      identity.URI,
-		RecipientDID:   peerDID,
-		SourceProtocol: protocols.MeshProtocolURI,
-		ContextID:      ns.NetworkRecordID,
+		AnchorDID:         ns.AnchorDID,
+		RecipientDID:      peerDID,
+		SourceProtocol:    protocols.MeshProtocolURI,
+		ContextID:         ns.NetworkRecordID,
+		PermissionGrantID: keyDeliveryGrantID,
 	})
 	if err != nil {
 		// Non-fatal: the node was created, key delivery can be retried
@@ -1291,6 +2331,324 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 	fmt.Printf("  meshd join %s\n", joinURL)
 
 	return nil
+}
+
+type peerAddOptions struct {
+	nodeDID  string
+	ownerDID string
+	label    string
+}
+
+func parsePeerAddOptions(args []string) (peerAddOptions, error) {
+	opts := peerAddOptions{label: "peer"}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--label":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--label requires a value")
+			}
+			opts.label = args[i+1]
+			i++
+		case "--member", "--owner":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("%s requires a DID", args[i])
+			}
+			opts.ownerDID = args[i+1]
+			i++
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return opts, fmt.Errorf("unknown peer add flag %q", args[i])
+			}
+			if opts.nodeDID != "" {
+				return opts, fmt.Errorf("unexpected argument %q", args[i])
+			}
+			opts.nodeDID = args[i]
+		}
+	}
+	if opts.nodeDID == "" {
+		return opts, fmt.Errorf("usage: meshd peer add <node-did> [--owner <owner-did>] [--label <label>]")
+	}
+	return opts, nil
+}
+
+// cmdPeerRemove removes a peer node record from the mesh network.
+//
+// This removes the device from peer discovery by deleting its network/node or
+// network/member/node record and pruning child records such as nodeInfo and
+// endpoints. It does not delete the owning member record.
+//
+// Usage: meshd peer remove <node-did>
+func cmdPeerRemove(ctx context.Context, args []string, flagProfile string) error {
+	opts, err := parsePeerRemoveOptions(args)
+	if err != nil {
+		return err
+	}
+	peerDID := opts.nodeDID
+
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
+	identity, err := loadIdentity(stateDir)
+	if err != nil {
+		return err
+	}
+
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		return fmt.Errorf("loading network state: %w", err)
+	}
+	if ns == nil {
+		return fmt.Errorf("not in a network. Use 'meshd network create' first.")
+	}
+
+	selfNodeDID := networkNodeDID(ns, identity.URI)
+	if peerDID == selfNodeDID {
+		return fmt.Errorf("refusing to remove this device from the mesh; use 'meshd network leave' on this device")
+	}
+
+	meta, useContextEncryption, err := requireNetworkOwnerProfile(flagProfile, identity, ns)
+	if err != nil {
+		return err
+	}
+	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
+	if err != nil {
+		return err
+	}
+	deleteGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsDelete, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
+	if err != nil {
+		return err
+	}
+	keyDeliveryReadGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.KeyDeliveryProtocolURI, "", "", false)
+	if err != nil {
+		return err
+	}
+	keyDeliveryDeleteGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsDelete, protocols.KeyDeliveryProtocolURI, "", "", false)
+	if err != nil {
+		return err
+	}
+
+	operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, identity)
+	if err != nil {
+		return err
+	}
+	signer := dwnSigner(operationIdentity)
+	api := dwn.NewDwnAPI(dwn.NewSimpleAgent(ns.AnchorEndpoint, signer))
+	protocolRole := ""
+	if ns.AnchorDID != selfNodeDID {
+		protocolRole = "network/node"
+	}
+
+	candidates, err := queryPeerRemoveCandidates(ctx, api, ns, peerDID, readGrantID, protocolRole)
+	if err != nil {
+		return err
+	}
+	if len(candidates) == 0 {
+		return fmt.Errorf("peer node %s was not found in %q", peerDID, ns.NetworkName)
+	}
+
+	fmt.Printf("Removing peer %s from %q...\n", peerDID, ns.NetworkName)
+	for _, candidate := range candidates {
+		status, err := api.Delete(ctx, ns.AnchorDID, candidate.RecordID, true, protocolRole, deleteGrantID)
+		if err != nil {
+			return fmt.Errorf("deleting %s record %s: %w", candidate.Path, candidate.RecordID, err)
+		}
+		if status.Code >= 300 {
+			return fmt.Errorf("delete %s record %s failed: %d %s", candidate.Path, candidate.RecordID, status.Code, status.Detail)
+		}
+		fmt.Printf("  Removed %s record %s\n", candidate.Path, candidate.RecordID)
+	}
+	removedContextKeys, err := removeDeliveredContextKeysForPeer(ctx, api, ns, peerDID, keyDeliveryReadGrantID, keyDeliveryDeleteGrantID)
+	if err != nil {
+		fmt.Printf("  Warning: delivered context key cleanup failed: %v\n", err)
+	} else if removedContextKeys > 0 {
+		fmt.Printf("  Removed delivered context keys: %d\n", removedContextKeys)
+	}
+	fmt.Printf("Peer removed. For cryptographic revocation, rotate network context keys before re-adding this node.\n")
+	return nil
+}
+
+type peerRemoveOptions struct {
+	nodeDID string
+}
+
+func parsePeerRemoveOptions(args []string) (peerRemoveOptions, error) {
+	var opts peerRemoveOptions
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			return opts, fmt.Errorf("unknown peer remove flag %q", arg)
+		}
+		if opts.nodeDID != "" {
+			return opts, fmt.Errorf("unexpected argument %q", arg)
+		}
+		opts.nodeDID = arg
+	}
+	if opts.nodeDID == "" {
+		return opts, fmt.Errorf("usage: meshd peer remove <node-did>")
+	}
+	return opts, nil
+}
+
+type peerRemoveCandidate struct {
+	RecordID       string
+	Path           string
+	MemberRecordID string
+}
+
+func queryPeerRemoveCandidates(ctx context.Context, api *dwn.DwnAPI, ns *state.NetworkState, peerDID, readGrantID, protocolRole string) ([]peerRemoveCandidate, error) {
+	if api == nil || ns == nil || peerDID == "" {
+		return nil, nil
+	}
+	var candidates []peerRemoveCandidate
+
+	records, status, err := api.Query(ctx, ns.AnchorDID, dwn.QueryParams{
+		Filter: dwn.RecordsFilter{
+			Protocol:     protocols.MeshProtocolURI,
+			ProtocolPath: "network/node",
+			ContextID:    ns.NetworkRecordID,
+			Recipient:    peerDID,
+		},
+		DateSort:          "createdAscending",
+		PermissionGrantID: readGrantID,
+	}, protocolRole)
+	if err != nil {
+		return nil, fmt.Errorf("querying owner node records: %w", err)
+	}
+	if status.Code != 200 {
+		return nil, fmt.Errorf("owner node query failed: %d %s", status.Code, status.Detail)
+	}
+	candidates = appendPeerRemoveCandidates(candidates, records, "")
+
+	memberRecords, status, err := api.Query(ctx, ns.AnchorDID, dwn.QueryParams{
+		Filter: dwn.RecordsFilter{
+			Protocol:     protocols.MeshProtocolURI,
+			ProtocolPath: "network/member",
+			ContextID:    ns.NetworkRecordID,
+		},
+		DateSort:          "createdAscending",
+		PermissionGrantID: readGrantID,
+	}, protocolRole)
+	if err != nil {
+		return nil, fmt.Errorf("querying member records: %w", err)
+	}
+	if status.Code != 200 {
+		return nil, fmt.Errorf("member query failed: %d %s", status.Code, status.Detail)
+	}
+	for _, memberRecord := range memberRecords {
+		if memberRecord == nil || memberRecord.ID == "" {
+			continue
+		}
+		memberNodeRecords, mnStatus, mnErr := api.Query(ctx, ns.AnchorDID, dwn.QueryParams{
+			Filter: dwn.RecordsFilter{
+				Protocol:     protocols.MeshProtocolURI,
+				ProtocolPath: "network/member/node",
+				ContextID:    ns.NetworkRecordID + "/" + memberRecord.ID,
+				Recipient:    peerDID,
+			},
+			DateSort:          "createdAscending",
+			PermissionGrantID: readGrantID,
+		}, protocolRole)
+		if mnErr != nil {
+			return nil, fmt.Errorf("querying member node records for %s: %w", memberRecord.ID, mnErr)
+		}
+		if mnStatus.Code != 200 {
+			return nil, fmt.Errorf("member node query for %s failed: %d %s", memberRecord.ID, mnStatus.Code, mnStatus.Detail)
+		}
+		candidates = appendPeerRemoveCandidates(candidates, memberNodeRecords, memberRecord.ID)
+	}
+	return candidates, nil
+}
+
+func appendPeerRemoveCandidates(candidates []peerRemoveCandidate, records []*dwn.Record, memberRecordID string) []peerRemoveCandidate {
+	for _, record := range records {
+		candidate, ok := peerRemoveCandidateFromRecord(record, memberRecordID)
+		if ok {
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
+}
+
+func peerRemoveCandidateFromRecord(record *dwn.Record, memberRecordID string) (peerRemoveCandidate, bool) {
+	if record == nil || record.ID == "" {
+		return peerRemoveCandidate{}, false
+	}
+	path := record.ProtocolPath
+	if path == "" {
+		if memberRecordID != "" {
+			path = "network/member/node"
+		} else {
+			path = "network/node"
+		}
+	}
+	return peerRemoveCandidate{
+		RecordID:       record.ID,
+		Path:           path,
+		MemberRecordID: memberRecordID,
+	}, true
+}
+
+func removeDeliveredContextKeysForPeer(ctx context.Context, api *dwn.DwnAPI, ns *state.NetworkState, peerDID, readGrantID, deleteGrantID string) (int, error) {
+	if api == nil || ns == nil || peerDID == "" {
+		return 0, nil
+	}
+	records, status, err := api.Query(ctx, ns.AnchorDID, dwn.QueryParams{
+		Filter: dwn.RecordsFilter{
+			Protocol:     protocols.KeyDeliveryProtocolURI,
+			ProtocolPath: "contextKey",
+			Recipient:    peerDID,
+		},
+		DateSort:          "createdAscending",
+		PermissionGrantID: readGrantID,
+	}, "")
+	if err != nil {
+		return 0, fmt.Errorf("querying delivered context keys: %w", err)
+	}
+	if status.Code != 200 {
+		return 0, fmt.Errorf("context key query failed: %d %s", status.Code, status.Detail)
+	}
+
+	removed := 0
+	for _, record := range records {
+		if !deliveredContextKeyMatchesNetwork(record, ns.NetworkRecordID) {
+			continue
+		}
+		status, err := api.Delete(ctx, ns.AnchorDID, record.ID, false, "", deleteGrantID)
+		if err != nil {
+			return removed, fmt.Errorf("deleting contextKey record %s: %w", record.ID, err)
+		}
+		if status.Code >= 300 {
+			return removed, fmt.Errorf("delete contextKey record %s failed: %d %s", record.ID, status.Code, status.Detail)
+		}
+		removed++
+	}
+	return removed, nil
+}
+
+func deliveredContextKeyMatchesNetwork(record *dwn.Record, networkRecordID string) bool {
+	if record == nil || record.ID == "" || networkRecordID == "" {
+		return false
+	}
+	return tagString(record.Tags, "protocol") == protocols.MeshProtocolURI &&
+		tagString(record.Tags, "contextId") == networkRecordID
+}
+
+func tagString(tags map[string]any, key string) string {
+	if tags == nil {
+		return ""
+	}
+	value, ok := tags[key]
+	if !ok {
+		return ""
+	}
+	switch v := value.(type) {
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	default:
+		return fmt.Sprint(v)
+	}
 }
 
 // cmdPeerApprove delivers encryption keys to a peer so they can decrypt
@@ -1321,16 +2679,32 @@ func cmdPeerApprove(ctx context.Context, args []string, flagProfile string) erro
 		return fmt.Errorf("not in a network. Use 'meshd network create' first.")
 	}
 
-	// Only the anchor (network owner) can deliver context keys.
-	if ns.AnchorDID != identity.URI {
-		return fmt.Errorf("only the network anchor (%s) can approve peers", ns.AnchorDID)
+	meta, useContextEncryption, err := requireNetworkOwnerProfile(flagProfile, identity, ns)
+	if err != nil {
+		return err
+	}
+	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
+	if err != nil {
+		return err
+	}
+	keyDeliveryGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.KeyDeliveryProtocolURI, "", "", useContextEncryption)
+	if err != nil {
+		return err
 	}
 
-	signer := &dwn.Signer{
-		DID:        identity.URI,
-		PrivateKey: identity.SigningKey,
+	operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, identity)
+	if err != nil {
+		return err
 	}
-	encMgr := newEncryptionKeyManager(identity)
+	signer := dwnSigner(operationIdentity)
+	encMgr, err := prepareNetworkCommandEncryption(stateDir, identity, ns, useContextEncryption)
+	if err != nil {
+		return err
+	}
+	recipientKeyDelivery, lookupErr := lookupPeerKeyDelivery(ctx, stateDir, ns, identity, operationIdentity, encMgr, readGrantID, peerDID)
+	if lookupErr != nil {
+		fmt.Printf("  Warning: node key-delivery lookup failed: %v\n", lookupErr)
+	}
 
 	kdm := &mesh.KeyDeliveryManager{
 		Endpoint:             ns.AnchorEndpoint,
@@ -1339,17 +2713,56 @@ func cmdPeerApprove(ctx context.Context, args []string, flagProfile string) erro
 	}
 
 	err = kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
-		AnchorDID:      identity.URI,
-		RecipientDID:   peerDID,
-		SourceProtocol: protocols.MeshProtocolURI,
-		ContextID:      ns.NetworkRecordID,
+		AnchorDID:            ns.AnchorDID,
+		RecipientDID:         peerDID,
+		SourceProtocol:       protocols.MeshProtocolURI,
+		ContextID:            ns.NetworkRecordID,
+		PermissionGrantID:    keyDeliveryGrantID,
+		RecipientKeyDelivery: recipientKeyDelivery,
 	})
 	if err != nil {
 		return fmt.Errorf("delivering context key: %w", err)
 	}
 
 	fmt.Printf("Context key delivered to %s.\n", peerDID)
+	if recipientKeyDelivery != nil {
+		fmt.Printf("  Encrypted to node key-delivery key: %s\n", recipientKeyDelivery.RootKeyID)
+	}
 	fmt.Printf("The peer can now decrypt mesh records in this network.\n")
+	return nil
+}
+
+func lookupPeerKeyDelivery(ctx context.Context, stateDir string, ns *state.NetworkState, identity *did.DID, signerIdentity *did.DID, encMgr *dwncrypto.EncryptionKeyManager, readGrantID string, peerDID string) (*dwncrypto.KeyDeliveryPublic, error) {
+	if ns == nil || identity == nil || peerDID == "" {
+		return nil, nil
+	}
+	if encMgr == nil {
+		encMgr = newEncryptionKeyManager(identity)
+	}
+	if ns.AnchorDID != networkNodeDID(ns, identity.URI) && !encMgr.HasContextKey(ns.NetworkRecordID) {
+		if _, _, err := loadLocalContextKeyForCLI(stateDir, ns, encMgr); err != nil {
+			return nil, err
+		}
+	}
+	resp, err := loadControlStateForCLI(ctx, ns, identity, signerIdentity, encMgr, readGrantID)
+	if err != nil {
+		return nil, err
+	}
+	return keyDeliveryForNode(resp, peerDID), nil
+}
+
+func keyDeliveryForNode(resp *control.MapResponse, nodeDID string) *dwncrypto.KeyDeliveryPublic {
+	if resp == nil || nodeDID == "" {
+		return nil
+	}
+	if resp.Node != nil && resp.Node.DID == nodeDID {
+		return resp.Node.KeyDelivery
+	}
+	for _, peer := range resp.Peers {
+		if peer != nil && peer.DID == nodeDID {
+			return peer.KeyDelivery
+		}
+	}
 	return nil
 }
 
@@ -1374,12 +2787,28 @@ func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 	}
 
 	fmt.Printf("Identity:\n")
-	fmt.Printf("  DID: %s\n", identity.URI)
+	meta := resolveIdentityMetadata(flagProfile, identity.URI)
+	fmt.Printf("  Local Node DID: %s\n", identity.URI)
+	fmt.Printf("  Auth: %s\n", authDisplayName(meta.AuthType))
+	if meta.OwnerDID != "" && meta.OwnerDID != identity.URI {
+		fmt.Printf("  Wallet Owner DID: %s\n", meta.OwnerDID)
+	}
+	if meta.DelegateDID != "" {
+		fmt.Printf("  Session Delegate DID: %s\n", meta.DelegateDID)
+	}
+	if meta.NodeDID != "" && meta.NodeDID != identity.URI {
+		fmt.Printf("  Configured Node DID: %s\n", meta.NodeDID)
+	}
 	fmt.Printf("  State: %s\n", stateDir)
 	if did.EncryptedExists(stateDir) {
 		fmt.Printf("  Vault: encrypted\n")
 	} else {
 		fmt.Printf("  Vault: plaintext legacy\n")
+	}
+	if meta.AuthType == profile.AuthTypeWalletAuthorizedNode {
+		if err := printWalletSessionStatus(stateDir, meta); err != nil {
+			return err
+		}
 	}
 
 	// Network.
@@ -1398,18 +2827,29 @@ func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 	fmt.Printf("  Anchor DID: %s\n", ns.AnchorDID)
 	fmt.Printf("  Anchor Endpoint: %s\n", ns.AnchorEndpoint)
 	fmt.Printf("  Network Record: %s\n", ns.NetworkRecordID)
+	selfNodeDID := networkNodeDID(ns, identity.URI)
+	selfOwnerDID := networkOwnerDID(ns, firstNonEmpty(meta.OwnerDID, identity.URI))
+	if selfNodeDID != "" {
+		fmt.Printf("  Node DID: %s\n", selfNodeDID)
+	}
+	if selfOwnerDID != "" && selfOwnerDID != selfNodeDID {
+		fmt.Printf("  Wallet Owner DID: %s\n", selfOwnerDID)
+	}
 	if ns.MeshIP != "" {
 		fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
 	}
-	// WireGuard public key is derived from the identity, not stored.
-	if identity != nil {
-		wgPubKey, wgErr := mesh.WireGuardPubKeyFromDID(identity.URI)
+	// WireGuard public key is derived from the node DID, not stored.
+	if selfNodeDID != "" {
+		wgPubKey, wgErr := mesh.WireGuardPubKeyFromDID(selfNodeDID)
 		if wgErr == nil {
 			fmt.Printf("  WireGuard Key: %s\n", wgPubKey)
 		}
 	}
 	if ns.NodeRecordID != "" {
 		fmt.Printf("  Node Record: %s\n", ns.NodeRecordID)
+	}
+	if ns.MemberRecordID != "" {
+		fmt.Printf("  Member Record: %s\n", ns.MemberRecordID)
 	}
 
 	// Query live daemon status if running.
@@ -1433,6 +2873,519 @@ func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 	return nil
 }
 
+type doctorLevel string
+
+const (
+	doctorOK   doctorLevel = "ok"
+	doctorWarn doctorLevel = "warn"
+	doctorFail doctorLevel = "fail"
+	doctorInfo doctorLevel = "info"
+)
+
+type doctorCheck struct {
+	Level  doctorLevel
+	Title  string
+	Detail string
+	Next   string
+}
+
+// cmdDoctor diagnoses local state and common runtime issues without mutating
+// network or DWN state.
+func cmdDoctor(ctx context.Context, args []string, flagProfile string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("usage: meshd doctor")
+	}
+
+	fmt.Println("meshd doctor")
+	checks := collectDoctorChecks(ctx, flagProfile)
+	for _, check := range checks {
+		printDoctorCheck(os.Stdout, check)
+	}
+	if doctorHasLevel(checks, doctorFail) {
+		fmt.Println("\nResult: issues found. Follow the suggested next steps above.")
+	} else if doctorHasLevel(checks, doctorWarn) {
+		fmt.Println("\nResult: usable, with warnings.")
+	} else {
+		fmt.Println("\nResult: ready.")
+	}
+	return nil
+}
+
+func collectDoctorChecks(ctx context.Context, flagProfile string) []doctorCheck {
+	var checks []doctorCheck
+
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		checks = append(checks, doctorCheck{
+			Level:  doctorFail,
+			Title:  "No active identity profile",
+			Detail: err.Error(),
+			Next:   "Run 'meshd auth connect' or select a profile with '--profile <name>'.",
+		})
+		return checks
+	}
+	checks = append(checks, doctorCheck{
+		Level:  doctorInfo,
+		Title:  "State directory",
+		Detail: stateDir,
+	})
+
+	if !identityExists(stateDir) {
+		checks = append(checks, doctorCheck{
+			Level:  doctorFail,
+			Title:  "Identity missing",
+			Detail: "This profile has no local node identity.",
+			Next:   "Run 'meshd auth connect' for wallet approval, or 'meshd auth login' for a local-vault profile.",
+		})
+		return checks
+	}
+
+	identity, err := loadIdentity(stateDir)
+	if err != nil {
+		checks = append(checks, doctorCheck{
+			Level:  doctorFail,
+			Title:  "Identity vault could not be opened",
+			Detail: err.Error(),
+			Next:   "Run 'meshd vault unlock' and check the vault password.",
+		})
+		return checks
+	}
+	meta := resolveIdentityMetadata(flagProfile, identity.URI)
+	checks = append(checks, doctorCheck{
+		Level:  doctorOK,
+		Title:  "Identity loaded",
+		Detail: fmt.Sprintf("node DID %s (%s)", firstNonEmpty(meta.NodeDID, identity.URI), authDisplayName(meta.AuthType)),
+	})
+	if did.EncryptedExists(stateDir) {
+		checks = append(checks, doctorCheck{Level: doctorOK, Title: "Vault encrypted"})
+	} else {
+		checks = append(checks, doctorCheck{
+			Level:  doctorWarn,
+			Title:  "Legacy plaintext identity",
+			Detail: "This profile is using the old plaintext identity file.",
+			Next:   "Run 'meshd vault init' to encrypt it.",
+		})
+	}
+
+	if meta.AuthType == profile.AuthTypeWalletAuthorizedNode {
+		checks = append(checks, walletDoctorChecks(stateDir, meta)...)
+	}
+
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil {
+		checks = append(checks, doctorCheck{
+			Level:  doctorFail,
+			Title:  "Network state could not be read",
+			Detail: err.Error(),
+			Next:   "Inspect network.json or run 'meshd network leave' before joining again.",
+		})
+		return checks
+	}
+	if ns == nil {
+		checks = append(checks, doctorCheck{
+			Level:  doctorWarn,
+			Title:  "No network joined",
+			Detail: "This profile has an identity but no mesh membership.",
+			Next:   "Run 'meshd up' to use the setup wizard, create a network, or join an invite.",
+		})
+		return checks
+	}
+
+	selfNodeDID := networkNodeDID(ns, identity.URI)
+	checks = append(checks, doctorCheck{
+		Level:  doctorOK,
+		Title:  "Network joined",
+		Detail: fmt.Sprintf("%s (%s)", ns.NetworkName, ns.MeshCIDR),
+	})
+	if ns.AnchorEndpoint == "" || ns.AnchorDID == "" || ns.NetworkRecordID == "" {
+		checks = append(checks, doctorCheck{
+			Level:  doctorFail,
+			Title:  "Network anchor metadata incomplete",
+			Detail: fmt.Sprintf("anchor=%q endpoint=%q record=%q", ns.AnchorDID, ns.AnchorEndpoint, ns.NetworkRecordID),
+			Next:   "Rejoin the network from a fresh invite or wallet approval.",
+		})
+	}
+	if ns.MeshIP == "" {
+		checks = append(checks, doctorCheck{
+			Level: "fail",
+			Title: "Mesh IP missing",
+			Next:  "Run 'meshd up' again after the anchor approves this node.",
+		})
+	} else {
+		checks = append(checks, doctorCheck{Level: doctorOK, Title: "Mesh IP assigned", Detail: ns.MeshIP})
+	}
+	if ns.NodeRecordID == "" {
+		checks = append(checks, doctorCheck{
+			Level:  doctorWarn,
+			Title:  "Node record missing",
+			Detail: "This usually means the join request is still waiting for anchor/wallet approval.",
+			Next:   "Open the wallet admin panel or keep the anchor online, then run 'meshd up' again.",
+		})
+	}
+	if meta.DelegateDID != "" && ns.DelegateDID != "" && meta.DelegateDID != ns.DelegateDID {
+		checks = append(checks, doctorCheck{
+			Level:  doctorFail,
+			Title:  "Delegate mismatch",
+			Detail: fmt.Sprintf("profile delegate %s, network delegate %s", meta.DelegateDID, ns.DelegateDID),
+			Next:   "Reconnect this profile with 'meshd auth connect'.",
+		})
+	}
+
+	live, daemonChecks := daemonDoctorChecks(ctx, ns)
+	checks = append(checks, daemonChecks...)
+	if live == nil {
+		return checks
+	}
+
+	if live.TUNDevice == "" {
+		checks = append(checks, doctorCheck{
+			Level:  doctorWarn,
+			Title:  "No TUN device",
+			Detail: "The daemon is running in userspace/no-route mode. OS ping will not work in this mode.",
+			Next:   "Run 'meshd down' and then 'meshd up' without '--no-tun'.",
+		})
+		return checks
+	}
+
+	checks = append(checks, interfaceDoctorChecks(ctx, live.TUNDevice, firstNonEmpty(live.MeshIP, ns.MeshIP))...)
+	routeChecks := peerRouteDoctorChecks(ctx, stateDir, ns, identity, meta, selfNodeDID, live.TUNDevice)
+	checks = append(checks, routeChecks...)
+	return checks
+}
+
+func walletDoctorChecks(stateDir string, meta identityMetadata) []doctorCheck {
+	if !state.WalletSessionExists(stateDir) {
+		return []doctorCheck{{
+			Level:  doctorFail,
+			Title:  "Wallet session missing",
+			Detail: "This profile is marked wallet-authorized but has no imported wallet grants.",
+			Next:   "Run 'meshd auth connect'.",
+		}}
+	}
+	status, err := loadWalletSessionStatus(stateDir, meta)
+	if err != nil {
+		return []doctorCheck{{
+			Level:  doctorFail,
+			Title:  "Wallet session could not be opened",
+			Detail: err.Error(),
+			Next:   "Run 'meshd vault unlock' and reconnect with 'meshd auth connect' if needed.",
+		}}
+	}
+	if status == nil || !status.Exists {
+		return []doctorCheck{{
+			Level: doctorFail,
+			Title: "Wallet session missing",
+			Next:  "Run 'meshd auth connect'.",
+		}}
+	}
+	checks := []doctorCheck{{
+		Level:  doctorOK,
+		Title:  "Wallet owner",
+		Detail: status.OwnerDID,
+	}}
+	if status.DelegateDID == "" {
+		checks = append(checks, doctorCheck{
+			Level:  doctorWarn,
+			Title:  "Delegate DID missing",
+			Detail: "This looks like an older wallet session that granted directly to the node DID.",
+			Next:   "Run 'meshd auth connect' to create a revocable local delegate.",
+		})
+	} else if _, err := verifyWalletDelegateIdentity(stateDir, status.DelegateDID); err != nil {
+		checks = append(checks, doctorCheck{
+			Level:  doctorFail,
+			Title:  "Delegate vault mismatch",
+			Detail: err.Error(),
+			Next:   "Run 'meshd auth connect' again from this profile.",
+		})
+	} else {
+		checks = append(checks, doctorCheck{
+			Level:  doctorOK,
+			Title:  "Delegate key loaded",
+			Detail: status.DelegateDID,
+		})
+	}
+	if status.OwnerDIDMismatch || status.NodeDIDMismatch {
+		checks = append(checks, doctorCheck{
+			Level:  doctorFail,
+			Title:  "Wallet session identity mismatch",
+			Detail: fmt.Sprintf("owner mismatch=%t node mismatch=%t", status.OwnerDIDMismatch, status.NodeDIDMismatch),
+			Next:   "Reconnect this profile with 'meshd auth connect'.",
+		})
+	}
+	if status.NodeRuntimeAccess {
+		checks = append(checks, doctorCheck{Level: doctorOK, Title: "Runtime grants present"})
+	} else {
+		checks = append(checks, doctorCheck{
+			Level:  doctorFail,
+			Title:  "Runtime grants missing",
+			Detail: "The daemon may not be able to read/write mesh control records.",
+			Next:   "Run 'meshd auth connect' and approve node runtime access in the wallet.",
+		})
+	}
+	if status.NodeContextKeyCount > 0 {
+		checks = append(checks, doctorCheck{Level: doctorOK, Title: "Context keys cached", Detail: strconv.Itoa(status.NodeContextKeyCount)})
+	} else {
+		checks = append(checks, doctorCheck{
+			Level:  doctorWarn,
+			Title:  "No cached context key",
+			Detail: "Non-anchor nodes need a delivered context key to decrypt mesh records.",
+			Next:   "Approve the node in the wallet admin panel or run 'meshd peer approve <node-did>' on the anchor.",
+		})
+	}
+	return checks
+}
+
+func daemonDoctorChecks(ctx context.Context, ns *state.NetworkState) (*daemon.Status, []doctorCheck) {
+	client := daemon.NewClient(daemon.DefaultSocketPath())
+	if !client.IsRunning() {
+		return nil, []doctorCheck{{
+			Level:  doctorFail,
+			Title:  "Daemon not running",
+			Detail: fmt.Sprintf("socket %s is not accepting connections", daemon.DefaultSocketPath()),
+			Next:   "Run 'meshd up'.",
+		}}
+	}
+	live, err := client.GetStatus(ctx)
+	if err != nil {
+		return nil, []doctorCheck{{
+			Level:  doctorFail,
+			Title:  "Daemon status unavailable",
+			Detail: err.Error(),
+			Next:   "Run 'meshd down' and then 'meshd up'.",
+		}}
+	}
+	checks := []doctorCheck{{
+		Level:  doctorOK,
+		Title:  "Daemon running",
+		Detail: fmt.Sprintf("pid %d, uptime %s", live.PID, live.Uptime),
+	}}
+	if ns != nil && ns.NetworkName != "" && live.Network != "" && live.Network != ns.NetworkName {
+		checks = append(checks, doctorCheck{
+			Level:  doctorWarn,
+			Title:  "Daemon network differs from local state",
+			Detail: fmt.Sprintf("daemon=%q local=%q", live.Network, ns.NetworkName),
+			Next:   "Run 'meshd down' and then 'meshd up' for the active profile.",
+		})
+	}
+	if ns != nil && ns.MeshIP != "" && live.MeshIP != "" && live.MeshIP != ns.MeshIP {
+		checks = append(checks, doctorCheck{
+			Level:  doctorWarn,
+			Title:  "Daemon mesh IP differs from local state",
+			Detail: fmt.Sprintf("daemon=%s local=%s", live.MeshIP, ns.MeshIP),
+			Next:   "Run 'meshd down' and then 'meshd up'.",
+		})
+	}
+	return live, checks
+}
+
+func interfaceDoctorChecks(ctx context.Context, tunName string, meshIP string) []doctorCheck {
+	output, err := inspectInterface(ctx, tunName)
+	if err != nil {
+		return []doctorCheck{{
+			Level:  doctorWarn,
+			Title:  "TUN device could not be inspected",
+			Detail: err.Error(),
+			Next:   "Check the interface manually with 'ip addr' on Linux or 'ifconfig' on macOS.",
+		}}
+	}
+	checks := []doctorCheck{{
+		Level:  doctorOK,
+		Title:  "TUN device exists",
+		Detail: tunName,
+	}}
+	if meshIP != "" {
+		if strings.Contains(output, meshIP) {
+			checks = append(checks, doctorCheck{Level: doctorOK, Title: "TUN has mesh IP", Detail: meshIP})
+		} else {
+			checks = append(checks, doctorCheck{
+				Level:  doctorWarn,
+				Title:  "TUN mesh IP not visible",
+				Detail: fmt.Sprintf("%s was not found in %s", meshIP, tunName),
+				Next:   "Run 'meshd down' and then 'meshd up'.",
+			})
+		}
+	}
+	return checks
+}
+
+func peerRouteDoctorChecks(ctx context.Context, stateDir string, ns *state.NetworkState, identity *did.DID, meta identityMetadata, selfNodeDID string, tunName string) []doctorCheck {
+	if ns == nil || identity == nil || tunName == "" {
+		return nil
+	}
+	routeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	peerIP, peerCount, err := doctorPeerRouteTarget(routeCtx, stateDir, ns, identity, meta, selfNodeDID)
+	if err != nil {
+		return []doctorCheck{{
+			Level:  doctorWarn,
+			Title:  "Peer route check skipped",
+			Detail: err.Error(),
+			Next:   "Run 'meshd peer list' to verify peer discovery.",
+		}}
+	}
+	if peerCount == 0 {
+		return []doctorCheck{{
+			Level:  doctorWarn,
+			Title:  "No peers discovered",
+			Detail: "The network map contains only this device.",
+			Next:   "Join another device and approve it in the wallet admin panel.",
+		}}
+	}
+	if peerIP == "" {
+		return []doctorCheck{{
+			Level:  doctorWarn,
+			Title:  "No peer mesh IP available",
+			Detail: fmt.Sprintf("%d peer records were found, but none had a usable mesh IP", peerCount),
+			Next:   "Run 'meshd peer list' and check that peers have mesh IPs.",
+		}}
+	}
+	output, err := routeForIP(ctx, peerIP)
+	if err != nil {
+		return []doctorCheck{{
+			Level:  doctorWarn,
+			Title:  "Peer route could not be inspected",
+			Detail: err.Error(),
+			Next:   "Check the route manually with 'ip route get <peer-ip>' on Linux or 'route -n get <peer-ip>' on macOS.",
+		}}
+	}
+	if routeUsesInterface(output, tunName) {
+		return []doctorCheck{{
+			Level:  doctorOK,
+			Title:  "Peer route uses meshd TUN",
+			Detail: fmt.Sprintf("%s via %s", peerIP, tunName),
+		}}
+	}
+	detected := routeInterface(output)
+	detail := strings.TrimSpace(firstLine(output))
+	if detected != "" {
+		detail = fmt.Sprintf("%s routes via %s, not %s", peerIP, detected, tunName)
+	}
+	return []doctorCheck{{
+		Level:  doctorFail,
+		Title:  "Peer route does not use meshd TUN",
+		Detail: detail,
+		Next:   "Run 'meshd down' and then 'meshd up'. If another VPN owns this route, check its route table.",
+	}}
+}
+
+func doctorPeerRouteTarget(ctx context.Context, stateDir string, ns *state.NetworkState, identity *did.DID, meta identityMetadata, selfNodeDID string) (string, int, error) {
+	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
+	if err != nil {
+		return "", 0, err
+	}
+	operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, identity)
+	if err != nil {
+		return "", 0, err
+	}
+	encMgr := newEncryptionKeyManager(identity)
+	if ns.AnchorDID != selfNodeDID {
+		_, _, _ = loadLocalContextKeyForCLI(stateDir, ns, encMgr)
+	}
+	resp, err := loadControlStateForCLI(ctx, ns, identity, operationIdentity, encMgr, readGrantID)
+	if err != nil {
+		return "", 0, err
+	}
+	peerCount := 0
+	for _, peer := range resp.Peers {
+		if peer == nil || peer.DID == selfNodeDID {
+			continue
+		}
+		peerCount++
+		if peer.MeshIP.IsValid() {
+			return peer.MeshIP.String(), peerCount, nil
+		}
+	}
+	return "", peerCount, nil
+}
+
+func inspectInterface(ctx context.Context, name string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("interface name is empty")
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "linux":
+		cmd = exec.CommandContext(ctx, "ip", "addr", "show", "dev", name)
+	case "darwin":
+		cmd = exec.CommandContext(ctx, "ifconfig", name)
+	default:
+		return "", fmt.Errorf("interface inspection is not implemented for %s", runtime.GOOS)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return strings.TrimSpace(string(out)), fmt.Errorf("%s: %w", strings.Join(cmd.Args, " "), err)
+	}
+	return string(out), nil
+}
+
+func routeForIP(ctx context.Context, ip string) (string, error) {
+	if ip == "" {
+		return "", fmt.Errorf("peer IP is empty")
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "linux":
+		cmd = exec.CommandContext(ctx, "ip", "route", "get", ip)
+	case "darwin":
+		cmd = exec.CommandContext(ctx, "route", "-n", "get", ip)
+	default:
+		return "", fmt.Errorf("route inspection is not implemented for %s", runtime.GOOS)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return strings.TrimSpace(string(out)), fmt.Errorf("%s: %w", strings.Join(cmd.Args, " "), err)
+	}
+	return string(out), nil
+}
+
+func routeUsesInterface(output string, tunName string) bool {
+	return tunName != "" && routeInterface(output) == tunName
+}
+
+func routeInterface(output string) string {
+	fields := strings.Fields(output)
+	for i, field := range fields {
+		switch strings.TrimSuffix(field, ":") {
+		case "dev", "interface":
+			if i+1 < len(fields) {
+				return strings.TrimSpace(fields[i+1])
+			}
+		}
+	}
+	return ""
+}
+
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+func printDoctorCheck(w io.Writer, check doctorCheck) {
+	label := string(check.Level)
+	if label == "" {
+		label = string(doctorInfo)
+	}
+	fmt.Fprintf(w, "[%s] %s\n", label, check.Title)
+	if check.Detail != "" {
+		fmt.Fprintf(w, "     %s\n", check.Detail)
+	}
+	if check.Next != "" {
+		fmt.Fprintf(w, "     Next: %s\n", check.Next)
+	}
+}
+
+func doctorHasLevel(checks []doctorCheck, level doctorLevel) bool {
+	for _, check := range checks {
+		if check.Level == level {
+			return true
+		}
+	}
+	return false
+}
+
 // upFlags holds parsed flags for the `meshd up` command.
 type upFlags struct {
 	// Network setup flags.
@@ -1440,6 +3393,7 @@ type upFlags struct {
 	endpoint      string // --endpoint <url>: DWN endpoint
 	anchorDID     string // --anchor <did>: anchor DID for joining
 	networkID     string // --network <id>: network record ID for joining
+	ownerDID      string // --owner <did>: wallet owner DID for this node
 	inviteURL     string // positional meshd://invite URL
 
 	// Engine flags.
@@ -1473,6 +3427,11 @@ func parseUpFlags(args []string) upFlags {
 		case "--network":
 			if i+1 < len(args) {
 				f.networkID = args[i+1]
+				i++
+			}
+		case "--owner", "--member":
+			if i+1 < len(args) {
+				f.ownerDID = args[i+1]
 				i++
 			}
 		case "--port":
@@ -1703,7 +3662,7 @@ func sudoEnvironmentAssignments() []string {
 		assignments = append(assignments, vaultPasswordCacheDirEnv+"="+cacheDir)
 	}
 
-	for _, key := range []string{"PATH", "DWN_ENDPOINT", "ENBOX_PROFILE", "MESHD_STATE_DIR", vaultPasswordCacheTTLEnv} {
+	for _, key := range []string{"PATH", "DWN_ENDPOINT", "ENBOX_PROFILE", "MESHD_STATE_DIR", vaultPasswordCacheTTLEnv, walletResponseEndpointEnv} {
 		if value := os.Getenv(key); value != "" {
 			assignments = append(assignments, key+"="+value)
 		}
@@ -1818,21 +3777,41 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		return fmt.Errorf("loading network state: %w", err)
 	}
 
+	createdFromInvite := false
 	if ns == nil {
 		// Not in a network. Use flags or prompt interactively.
+		createdFromInvite = f.inviteURL != ""
 		ns, err = ensureNetwork(ctx, f, stateDir, identity, flagProfile)
 		if err != nil {
 			return err
 		}
 	}
+	if ns != nil && ns.NetworkRecordID == "" && ns.NodeRecordID == "" && ns.AnchorDID != "" {
+		ns, err = refreshPendingOwnerApproval(ctx, stateDir, ns, identity)
+		if err != nil {
+			return err
+		}
+		if ns.NetworkRecordID == "" || ns.NodeRecordID == "" {
+			printPendingOwnerApproval(ns)
+			return nil
+		}
+	}
 	if ns.NodeRecordID == "" && ns.AnchorDID != identity.URI {
-		ns, err = refreshPendingJoin(ctx, stateDir, ns, flagProfile)
+		if createdFromInvite {
+			return fmt.Errorf("join request is waiting for approval; approve it in the wallet admin panel or keep the anchor online, then run 'meshd up'")
+		}
+		ns, err = refreshPendingJoin(ctx, stateDir, ns, flagProfile, true)
 		if err != nil {
 			return err
 		}
 		if ns.NodeRecordID == "" {
-			return fmt.Errorf("join request is still pending anchor approval; run 'meshd up' again after the anchor is online")
+			return fmt.Errorf("join request is waiting for approval; approve it in the wallet admin panel or keep the anchor online, then run 'meshd up'")
 		}
+	}
+	selfNodeDID := networkNodeDID(ns, identity.URI)
+	nodeIdentity, err := loadNodeIdentity(stateDir, selfNodeDID, identity)
+	if err != nil {
+		return err
 	}
 	if shouldElevate {
 		if !backgroundChild && !f.foreground {
@@ -1855,12 +3834,14 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		Level: logLevel,
 	}))
 
-	signer := &dwn.Signer{
-		DID:        identity.URI,
-		PrivateKey: identity.SigningKey,
+	meta := resolveIdentityMetadata(flagProfile, identity.URI)
+	operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, nodeIdentity)
+	if err != nil {
+		return err
 	}
+	signer := dwnSigner(operationIdentity)
 
-	encMgr := newEncryptionKeyManager(identity)
+	encMgr := newEncryptionKeyManager(nodeIdentity)
 
 	// Enable Protocol Context encryption so all nodes (including the anchor)
 	// write records that any peer with the shared context key can decrypt.
@@ -1885,7 +3866,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 
 		// Fall back to DWN fetch if not cached.
 		if !useContextEncryption {
-			contextKey, err := fetchContextKey(ctx, identity, ns)
+			contextKey, err := fetchContextKey(ctx, nodeIdentity, ns)
 			if err != nil {
 				slog.Warn("context key fetch failed (will retry on next up)",
 					slog.Any("error", err),
@@ -1911,16 +3892,42 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	}
 
 	// Derive WireGuard key pair from identity (no separate WG key generation).
-	wgKeys, err := mesh.WireGuardKeyFromIdentity(identity.EncryptionPrivateKey)
+	wgKeys, err := mesh.WireGuardKeyFromIdentity(nodeIdentity.EncryptionPrivateKey)
 	if err != nil {
 		return fmt.Errorf("deriving WireGuard keys from identity: %w", err)
 	}
 
 	fmt.Printf("Starting meshd...\n")
 	fmt.Printf("  Network: %s\n", ns.NetworkName)
-	fmt.Printf("  DID: %s\n", identity.URI)
+	fmt.Printf("  DID: %s\n", nodeIdentity.URI)
+	if operationIdentity.URI != nodeIdentity.URI {
+		fmt.Printf("  DWN delegate: %s\n", operationIdentity.URI)
+	}
 	fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
 	fmt.Printf("  Anchor: %s\n", ns.AnchorEndpoint)
+
+	networkOwner := isNetworkOwnerProfile(meta, identity.URI, ns)
+	endpointWriteGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, endpointProtocolPath(ns), ns.NetworkRecordID, false)
+	if err != nil {
+		return err
+	}
+	ownerWriteGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
+	if err != nil {
+		return err
+	}
+	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
+	if err != nil {
+		return err
+	}
+	deleteGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsDelete, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
+	if err != nil {
+		return err
+	}
+	keyDeliveryGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.KeyDeliveryProtocolURI, "", "", false)
+	if err != nil {
+		return err
+	}
+	ownerAutomation := ownerAutomationEnabled(ns, nodeIdentity.URI, networkOwner, readGrantID, ownerWriteGrantID, deleteGrantID, keyDeliveryGrantID)
 
 	// Write/update endpoint record (encrypted) before starting the engine.
 	if ns.NodeRecordID != "" {
@@ -1936,6 +3943,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 			LocalEndpoints:       localEndpoints,
 			NATType:              "unknown",
 			UseContextEncryption: useContextEncryption,
+			PermissionGrantID:    endpointWriteGrantID,
 		}
 		err = mesh.WriteEndpoint(ctx, wpParams)
 		if err != nil {
@@ -1945,10 +3953,10 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		}
 	}
 
-	// If this node is the anchor, enable automatic context key delivery
-	// so new members get decryption keys without manual "peer approve".
+	// If this profile has owner authority, enable automatic context key
+	// delivery so new members get decryption keys without manual approval.
 	var autoKeyDelivery *engine.AutoKeyDelivery
-	if ns.AnchorDID == identity.URI {
+	if ownerAutomation && useContextEncryption {
 		autoKeyDelivery = engine.NewAutoKeyDelivery(engine.AutoKeyDeliveryConfig{
 			Endpoint:             ns.AnchorEndpoint,
 			AnchorDID:            ns.AnchorDID,
@@ -1956,43 +3964,49 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 			Signer:               signer,
 			EncryptionKeyManager: encMgr,
 			Logger:               logger,
+			PermissionGrantID:    keyDeliveryGrantID,
 		})
 		if autoKeyDelivery != nil {
-			fmt.Printf("  Auto key delivery: enabled (anchor node)\n")
+			fmt.Printf("  Auto key delivery: enabled (owner node)\n")
 		}
 	}
-	if ns.AnchorDID == identity.URI {
-		approvePreAuthRequests(ctx, ns, signer, encMgr, logger)
+	if networkOwner && !ownerAutomation && ns.AnchorDID != nodeIdentity.URI {
+		fmt.Printf("  Owner automation: disabled (use the wallet admin panel for approvals)\n")
+	}
+	if ownerAutomation {
+		approvePreAuthRequests(ctx, ns, signer, encMgr, logger, readGrantID, ownerWriteGrantID, deleteGrantID, keyDeliveryGrantID, useContextEncryption)
 	}
 
 	// Determine the protocol role for DWN queries. The anchor reads as
 	// author (no role needed). Non-anchor nodes use their node role.
 	protocolRole := ""
-	if ns.AnchorDID != identity.URI {
+	if ns.AnchorDID != nodeIdentity.URI {
 		protocolRole = "network/node"
 	}
 	discoRegistry := engine.NewInMemoryDiscoRegistry()
 
 	eng, err := engine.New(engine.Config{
-		AnchorEndpoint:       ns.AnchorEndpoint,
-		AnchorTenant:         ns.AnchorDID,
-		NetworkRecordID:      ns.NetworkRecordID,
-		SelfDID:              identity.URI,
-		Signer:               signer,
-		Resolver:             universalResolver{},
-		EncryptionKeyManager: encMgr,
-		NodeRecordID:         ns.NodeRecordID,
-		MemberRecordID:       ns.MemberRecordID,
-		ProtocolRole:         protocolRole,
-		AutoKeyDelivery:      autoKeyDelivery,
-		UseContextEncryption: useContextEncryption,
-		WireGuardPrivateKey:  wgKeys.PrivateKey,
-		DiscoKeyRegistry:     discoRegistry,
-		TUNName:              f.tunName,
-		Domain:               ns.NetworkName,
-		ListenPort:           f.listenPort,
-		PollInterval:         f.pollInterval,
-		Logger:               logger,
+		AnchorEndpoint:         ns.AnchorEndpoint,
+		AnchorTenant:           ns.AnchorDID,
+		NetworkRecordID:        ns.NetworkRecordID,
+		SelfDID:                nodeIdentity.URI,
+		Signer:                 signer,
+		Resolver:               universalResolver{},
+		EncryptionKeyManager:   encMgr,
+		NodeRecordID:           ns.NodeRecordID,
+		MemberRecordID:         ns.MemberRecordID,
+		ProtocolRole:           protocolRole,
+		PermissionGrantID:      readGrantID,
+		WritePermissionGrantID: endpointWriteGrantID,
+		AutoKeyDelivery:        autoKeyDelivery,
+		UseContextEncryption:   useContextEncryption,
+		WireGuardPrivateKey:    wgKeys.PrivateKey,
+		DiscoKeyRegistry:       discoRegistry,
+		TUNName:                f.tunName,
+		Domain:                 ns.NetworkName,
+		ListenPort:             f.listenPort,
+		PollInterval:           f.pollInterval,
+		Logger:                 logger,
 	})
 	if err != nil {
 		return fmt.Errorf("creating engine: %w", err)
@@ -2021,13 +4035,13 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	}
 
 	var stopPreAuthApproval chan struct{}
-	if ns.AnchorDID == identity.URI {
+	if ownerAutomation {
 		stopPreAuthApproval = make(chan struct{})
 		interval := f.pollInterval
 		if interval == 0 {
 			interval = 30 * time.Second
 		}
-		go runPreAuthApprovalLoop(ctx, stopPreAuthApproval, interval, ns, signer, encMgr, logger)
+		go runPreAuthApprovalLoop(ctx, stopPreAuthApproval, interval, ns, signer, encMgr, logger, readGrantID, ownerWriteGrantID, deleteGrantID, keyDeliveryGrantID, useContextEncryption)
 		defer close(stopPreAuthApproval)
 	}
 
@@ -2150,6 +4164,8 @@ func ensureNetwork(ctx context.Context, f upFlags, stateDir string, identity *di
 		return setupCreateNetwork(ctx, f, stateDir, identity, flagProfile)
 	case f.anchorDID != "" && f.networkID != "":
 		return setupJoinNetwork(ctx, f, stateDir, identity, flagProfile)
+	case f.ownerDID != "":
+		return setupOwnerNodeRequest(ctx, f, stateDir, identity, nil)
 	default:
 		return setupInteractive(ctx, f, stateDir, identity, flagProfile)
 	}
@@ -2158,14 +4174,26 @@ func ensureNetwork(ctx context.Context, f upFlags, stateDir string, identity *di
 // setupCreateNetwork creates a new mesh network (anchor mode).
 // This is the --create flag path.
 func setupCreateNetwork(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string) (*state.NetworkState, error) {
-	if f.endpoint == "" {
+	walletOwned := isWalletAuthorizedNodeProfile(flagProfile)
+	if f.endpoint == "" && !walletOwned {
 		return nil, fmt.Errorf("--endpoint (or DWN_ENDPOINT env) is required to create a network")
 	}
+	if f.endpoint == "" && !stdinIsTerminal() {
+		return nil, fmt.Errorf("wallet-owned network creation requires an interactive terminal; run 'meshd network create %s' first", f.createNetwork)
+	}
 
-	fmt.Printf("Creating network %q on %s...\n", f.createNetwork, f.endpoint)
+	if f.endpoint == "" {
+		fmt.Printf("Creating wallet-owned network %q...\n", f.createNetwork)
+	} else {
+		fmt.Printf("Creating network %q on %s...\n", f.createNetwork, f.endpoint)
+	}
 
 	// Delegate to the existing network create logic.
-	err := cmdNetworkCreate(ctx, []string{f.createNetwork, "--endpoint", f.endpoint}, flagProfile)
+	createArgs := []string{f.createNetwork}
+	if f.endpoint != "" {
+		createArgs = append(createArgs, "--endpoint", f.endpoint)
+	}
+	err := cmdNetworkCreate(ctx, createArgs, flagProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -2189,11 +4217,16 @@ func setupJoinNetwork(ctx context.Context, f upFlags, stateDir string, identity 
 
 	fmt.Printf("Joining network on %s...\n", f.endpoint)
 
-	err := cmdNetworkJoin(ctx, []string{
+	joinArgs := []string{
 		"--endpoint", f.endpoint,
 		"--anchor", f.anchorDID,
 		"--network", f.networkID,
-	}, flagProfile)
+	}
+	if f.ownerDID != "" {
+		joinArgs = append(joinArgs, "--owner", f.ownerDID)
+	}
+
+	err := cmdNetworkJoin(ctx, joinArgs, flagProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -2210,7 +4243,11 @@ func setupJoinNetwork(ctx context.Context, f upFlags, stateDir string, identity 
 
 // setupJoinInvite joins an existing network from an invite URL.
 func setupJoinInvite(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string) (*state.NetworkState, error) {
-	if err := cmdJoin(ctx, []string{f.inviteURL}, flagProfile); err != nil {
+	joinArgs := []string{f.inviteURL, "--no-start-hint"}
+	if f.ownerDID != "" {
+		joinArgs = append(joinArgs, "--owner", f.ownerDID)
+	}
+	if err := cmdJoin(ctx, joinArgs, flagProfile); err != nil {
 		return nil, err
 	}
 	ns, err := state.LoadNetworkState(stateDir)
@@ -2223,7 +4260,155 @@ func setupJoinInvite(ctx context.Context, f upFlags, stateDir string, identity *
 	return ns, nil
 }
 
-func refreshPendingJoin(ctx context.Context, stateDir string, ns *state.NetworkState, flagProfile string) (*state.NetworkState, error) {
+func setupOwnerNodeRequest(ctx context.Context, f upFlags, stateDir string, identity *did.DID, scanner *bufio.Scanner) (*state.NetworkState, error) {
+	ownerDID := strings.TrimSpace(f.ownerDID)
+	var err error
+	if ownerDID == "" {
+		if scanner == nil {
+			return nil, fmt.Errorf("--owner <did> is required")
+		}
+		ownerDID, err = promptRequired(scanner, "Owner DID")
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	endpoint, err := ownerDWNEndpointForRequest(ctx, ownerDID, f.endpoint, scanner)
+	if err != nil {
+		return nil, err
+	}
+	if state.HasNetwork(stateDir) {
+		return nil, fmt.Errorf("already in a network. Use 'meshd network leave' first.")
+	}
+	if err := ensureDWNTenantRegistered(ctx, endpoint, identity); err != nil {
+		return nil, err
+	}
+
+	label, _ := os.Hostname()
+	nodeKeyDelivery, err := walletconnect.NewKeyDeliveryPublic(identity)
+	if err != nil {
+		return nil, fmt.Errorf("deriving node key-delivery public key: %w", err)
+	}
+	requestID, err := mesh.WriteOwnerNodeRequest(ctx, mesh.OwnerNodeRequestParams{
+		OwnerEndpoint:   endpoint,
+		OwnerDID:        ownerDID,
+		NodeDID:         identity.URI,
+		Signer:          dwnSigner(identity),
+		Label:           label,
+		SourceDWN:       endpoint,
+		NodeKeyDelivery: nodeKeyDelivery,
+	})
+	if err != nil {
+		adminURL := buildAdminURL(defaultAdminDashboardURL, adminContext{OwnerDID: ownerDID})
+		return nil, fmt.Errorf("submitting owner approval request: %w\nOpen the dashboard once to initialize meshd for this owner: %s", err, adminURL)
+	}
+
+	ns := &state.NetworkState{
+		AnchorDID:             ownerDID,
+		AnchorEndpoint:        endpoint,
+		NetworkName:           "pending approval",
+		NodeDID:               identity.URI,
+		OwnerDID:              ownerDID,
+		MemberDID:             ownerDID,
+		PendingOwnerRequestID: requestID,
+		PendingOwnerRequestAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := state.SaveNetworkState(stateDir, ns); err != nil {
+		return nil, fmt.Errorf("saving pending owner request: %w", err)
+	}
+
+	fmt.Printf("Node approval request submitted.\n")
+	fmt.Printf("  Owner DID: %s\n", ownerDID)
+	fmt.Printf("  Node DID:  %s\n", identity.URI)
+	fmt.Printf("  Request:   %s\n", requestID)
+	fmt.Printf("  Dashboard: %s\n", buildAdminURL(defaultAdminDashboardURL, adminContext{OwnerDID: ownerDID}))
+	fmt.Printf("\nApprove this device in the dashboard, then run 'meshd up' again.\n")
+	return ns, nil
+}
+
+func ownerDWNEndpointForRequest(ctx context.Context, ownerDID, explicitEndpoint string, scanner *bufio.Scanner) (string, error) {
+	endpoint := strings.TrimSpace(explicitEndpoint)
+	if endpoint != "" {
+		return endpoint, nil
+	}
+	resolved, err := control.ResolvePeerDWNEndpoint(ctx, universalResolver{}, ownerDID, nil)
+	if err == nil && strings.TrimSpace(resolved) != "" {
+		return strings.TrimSpace(resolved), nil
+	}
+	if scanner != nil {
+		if err != nil {
+			fmt.Printf("Could not resolve an owner DWN endpoint automatically: %v\n", err)
+		}
+		return promptRequired(scanner, "Owner DWN endpoint URL")
+	}
+	return "", fmt.Errorf("--endpoint (or DWN_ENDPOINT env) is required because no DWN endpoint could be resolved for owner DID %s", ownerDID)
+}
+
+func refreshPendingOwnerApproval(ctx context.Context, stateDir string, ns *state.NetworkState, identity *did.DID) (*state.NetworkState, error) {
+	if ns == nil {
+		return nil, fmt.Errorf("network state is missing")
+	}
+	ownerDID := ns.EffectiveOwnerDID(ns.AnchorDID)
+	nodeDID := ns.EffectiveNodeDID(identity.URI)
+	fmt.Printf("Checking owner approval...\n")
+	approval, approvalRecordID, err := mesh.FindOwnerNodeApproval(ctx, ns.AnchorEndpoint, ownerDID, nodeDID, dwnSigner(identity))
+	if err != nil {
+		return nil, err
+	}
+	if approval == nil {
+		return ns, nil
+	}
+	if approval.ExpiresAt != "" {
+		expiresAt, parseErr := time.Parse(time.RFC3339, approval.ExpiresAt)
+		if parseErr != nil {
+			return nil, fmt.Errorf("approval has invalid expiry %q", approval.ExpiresAt)
+		}
+		if time.Now().UTC().After(expiresAt) {
+			return nil, fmt.Errorf("approval expired at %s; renew this node in the dashboard", approval.ExpiresAt)
+		}
+	}
+
+	refreshed := &state.NetworkState{
+		NetworkRecordID:   approval.NetworkRecordID,
+		AnchorDID:         ownerDID,
+		AnchorEndpoint:    firstNonEmpty(approval.AnchorEndpoint, ns.AnchorEndpoint),
+		NetworkName:       firstNonEmpty(approval.NetworkName, "mesh"),
+		MeshCIDR:          firstNonEmpty(approval.MeshCIDR, "10.200.0.0/16"),
+		MeshIP:            approval.MeshIP,
+		NodeDID:           nodeDID,
+		OwnerDID:          ownerDID,
+		MemberDID:         ownerDID,
+		NodeRecordID:      approval.NodeRecordID,
+		NodeDateCreated:   approval.NodeDateCreated,
+		MemberRecordID:    approval.MemberRecordID,
+		MemberDateCreated: approval.MemberDateCreated,
+	}
+	if err := state.SaveNetworkState(stateDir, refreshed); err != nil {
+		return nil, fmt.Errorf("saving approved network state: %w", err)
+	}
+	fmt.Printf("Owner approval accepted.\n")
+	fmt.Printf("  Network: %s\n", refreshed.NetworkName)
+	fmt.Printf("  Mesh IP: %s\n", refreshed.MeshIP)
+	if approvalRecordID != "" {
+		fmt.Printf("  Approval: %s\n", approvalRecordID)
+	}
+	return refreshed, nil
+}
+
+func printPendingOwnerApproval(ns *state.NetworkState) {
+	ownerDID := ""
+	if ns != nil {
+		ownerDID = ns.EffectiveOwnerDID(ns.AnchorDID)
+	}
+	fmt.Printf("Node approval is still pending.\n")
+	if ownerDID != "" {
+		fmt.Printf("  Owner DID: %s\n", ownerDID)
+		fmt.Printf("  Dashboard: %s\n", buildAdminURL(defaultAdminDashboardURL, adminContext{OwnerDID: ownerDID}))
+	}
+	fmt.Printf("\nApprove this device in the dashboard, then run 'meshd up' again.\n")
+}
+
+func refreshPendingJoin(ctx context.Context, stateDir string, ns *state.NetworkState, flagProfile string, noStartHint bool) (*state.NetworkState, error) {
 	if ns == nil {
 		return nil, fmt.Errorf("network state is missing")
 	}
@@ -2233,12 +4418,20 @@ func refreshPendingJoin(ctx context.Context, stateDir string, ns *state.NetworkS
 	if err := state.ClearNetworkState(stateDir); err != nil {
 		return nil, fmt.Errorf("clearing pending network state: %w", err)
 	}
-	err := cmdNetworkJoin(ctx, []string{
+	joinArgs := []string{
 		"--endpoint", ns.AnchorEndpoint,
 		"--anchor", ns.AnchorDID,
 		"--network", ns.NetworkRecordID,
 		"--preauth",
-	}, flagProfile)
+	}
+	ownerDID := ns.EffectiveOwnerDID("")
+	if ownerDID != "" && ownerDID != ns.NodeDID {
+		joinArgs = append(joinArgs, "--owner", ownerDID)
+	}
+	if noStartHint {
+		joinArgs = append(joinArgs, "--no-start-hint")
+	}
+	err := cmdNetworkJoin(ctx, joinArgs, flagProfile)
 	if err != nil {
 		_ = state.SaveNetworkState(stateDir, &previous)
 		return nil, err
@@ -2256,14 +4449,16 @@ func refreshPendingJoin(ctx context.Context, stateDir string, ns *state.NetworkS
 	return refreshed, nil
 }
 
-// setupInteractive prompts the user to create or join a network.
+// setupInteractive prompts the user to request owner approval, create, or join
+// a network.
 func setupInteractive(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string) (*state.NetworkState, error) {
 	fmt.Println("No network configured. What would you like to do?")
 	fmt.Println()
-	fmt.Println("  1) Create a new network")
-	fmt.Println("  2) Join an existing network")
+	fmt.Println("  1) Request access from an owner DID")
+	fmt.Println("  2) Create a new local-vault network")
+	fmt.Println("  3) Join with an invite URL")
 	fmt.Println()
-	fmt.Print("Choice [1/2]: ")
+	fmt.Print("Choice [1/2/3]: ")
 
 	scanner := bufio.NewScanner(os.Stdin)
 	if !scanner.Scan() {
@@ -2275,11 +4470,13 @@ func setupInteractive(ctx context.Context, f upFlags, stateDir string, identity 
 
 	switch choice {
 	case "1":
-		return interactiveCreate(ctx, f, stateDir, identity, flagProfile, scanner)
+		return setupOwnerNodeRequest(ctx, f, stateDir, identity, scanner)
 	case "2":
+		return interactiveCreate(ctx, f, stateDir, identity, flagProfile, scanner)
+	case "3":
 		return interactiveJoin(ctx, f, stateDir, identity, flagProfile, scanner)
 	default:
-		return nil, fmt.Errorf("invalid choice %q (expected 1 or 2)", choice)
+		return nil, fmt.Errorf("invalid choice %q (expected 1, 2, or 3)", choice)
 	}
 }
 
@@ -2302,7 +4499,7 @@ func promptRequired(scanner *bufio.Scanner, label string) (string, error) {
 // interactiveCreate guides the user through creating a new network.
 func interactiveCreate(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string, scanner *bufio.Scanner) (*state.NetworkState, error) {
 	endpoint := f.endpoint
-	if endpoint == "" {
+	if endpoint == "" && !isWalletAuthorizedNodeProfile(flagProfile) {
 		fmt.Print("DWN endpoint URL: ")
 		if !scanner.Scan() {
 			return nil, fmt.Errorf("no input received")
@@ -2330,41 +4527,73 @@ func interactiveCreate(ctx context.Context, f upFlags, stateDir string, identity
 
 // interactiveJoin guides the user through joining an existing network.
 func interactiveJoin(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string, scanner *bufio.Scanner) (*state.NetworkState, error) {
-	endpoint := f.endpoint
+	input, err := promptInteractiveJoin(scanner, f.endpoint)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Println()
+	if input.inviteURL != "" {
+		f.inviteURL = input.inviteURL
+		return setupJoinInvite(ctx, f, stateDir, identity, flagProfile)
+	}
+	f.endpoint = input.endpoint
+	f.anchorDID = input.anchorDID
+	f.networkID = input.networkID
+	return setupJoinNetwork(ctx, f, stateDir, identity, flagProfile)
+}
+
+type interactiveJoinInput struct {
+	inviteURL string
+	endpoint  string
+	anchorDID string
+	networkID string
+}
+
+func promptInteractiveJoin(scanner *bufio.Scanner, defaultEndpoint string) (interactiveJoinInput, error) {
+	fmt.Print("Invite URL (recommended; leave blank for manual details): ")
+	if !scanner.Scan() {
+		return interactiveJoinInput{}, fmt.Errorf("no input received")
+	}
+	inviteURL := strings.TrimSpace(scanner.Text())
+	if inviteURL != "" {
+		return interactiveJoinInput{inviteURL: inviteURL}, nil
+	}
+
+	endpoint := defaultEndpoint
 	if endpoint == "" {
 		fmt.Print("DWN endpoint URL: ")
 		if !scanner.Scan() {
-			return nil, fmt.Errorf("no input received")
+			return interactiveJoinInput{}, fmt.Errorf("no input received")
 		}
 		endpoint = strings.TrimSpace(scanner.Text())
 		if endpoint == "" {
-			return nil, fmt.Errorf("endpoint URL is required")
+			return interactiveJoinInput{}, fmt.Errorf("endpoint URL is required")
 		}
 	}
 
 	fmt.Print("Anchor DID: ")
 	if !scanner.Scan() {
-		return nil, fmt.Errorf("no input received")
+		return interactiveJoinInput{}, fmt.Errorf("no input received")
 	}
 	anchorDID := strings.TrimSpace(scanner.Text())
 	if anchorDID == "" {
-		return nil, fmt.Errorf("anchor DID is required")
+		return interactiveJoinInput{}, fmt.Errorf("anchor DID is required")
 	}
 
 	fmt.Print("Network ID: ")
 	if !scanner.Scan() {
-		return nil, fmt.Errorf("no input received")
+		return interactiveJoinInput{}, fmt.Errorf("no input received")
 	}
 	networkID := strings.TrimSpace(scanner.Text())
 	if networkID == "" {
-		return nil, fmt.Errorf("network ID is required")
+		return interactiveJoinInput{}, fmt.Errorf("network ID is required")
 	}
 
-	fmt.Println()
-	f.endpoint = endpoint
-	f.anchorDID = anchorDID
-	f.networkID = networkID
-	return setupJoinNetwork(ctx, f, stateDir, identity, flagProfile)
+	return interactiveJoinInput{
+		endpoint:  endpoint,
+		anchorDID: anchorDID,
+		networkID: networkID,
+	}, nil
 }
 
 // cmdDown stops the mesh agent daemon by sending a shutdown request via the
@@ -2404,6 +4633,8 @@ const (
 	vaultPasswordEnv           = "MESHD_VAULT_PASSWORD"
 	vaultPasswordCacheTTLEnv   = "MESHD_VAULT_CACHE_TTL"
 	vaultPasswordCacheDirEnv   = "MESHD_VAULT_CACHE_DIR"
+	nodeIdentityVaultFile      = "node.identity.vault.json"
+	delegateIdentityVaultFile  = "delegate.identity.vault.json"
 	defaultVaultPasswordCache  = 5 * time.Minute
 	vaultPasswordCacheFileMode = 0o600
 	vaultPasswordCacheDirMode  = 0o700
@@ -2439,6 +4670,345 @@ func profileNameForWrite(flagProfile string) string {
 		return name
 	}
 	return defaultProfileName(flagProfile)
+}
+
+type identityMetadata struct {
+	AuthType    string
+	OwnerDID    string
+	DelegateDID string
+	NodeDID     string
+}
+
+func authDisplayName(authType string) string {
+	switch profile.NormalizeAuthType(authType) {
+	case profile.AuthTypeLocalVault:
+		return "local vault"
+	case profile.AuthTypeWalletAuthorizedNode:
+		return "wallet-authorized node"
+	default:
+		return authType
+	}
+}
+
+func resolveIdentityMetadata(flagProfile string, fallbackDID string) identityMetadata {
+	meta := identityMetadata{
+		AuthType: profile.AuthTypeLocalVault,
+		OwnerDID: fallbackDID,
+		NodeDID:  fallbackDID,
+	}
+	if os.Getenv("MESHD_STATE_DIR") != "" {
+		return meta
+	}
+	name, err := profile.Resolve(flagProfile)
+	if err != nil {
+		return meta
+	}
+	cfg, err := profile.ReadConfig()
+	if err != nil || cfg.Profiles[name] == nil {
+		return meta
+	}
+	entry := cfg.Profiles[name]
+	meta.AuthType = entry.EffectiveAuthType()
+	meta.OwnerDID = firstNonEmpty(entry.EffectiveOwnerDID(), fallbackDID)
+	meta.DelegateDID = entry.DelegateDID
+	meta.NodeDID = firstNonEmpty(entry.EffectiveNodeDID(), fallbackDID)
+	return meta
+}
+
+func isWalletAuthorizedNodeProfile(flagProfile string) bool {
+	if os.Getenv("MESHD_STATE_DIR") != "" {
+		return false
+	}
+	name, err := profile.Resolve(flagProfile)
+	if err != nil {
+		return false
+	}
+	cfg, err := profile.ReadConfig()
+	if err != nil || cfg.Profiles[name] == nil {
+		return false
+	}
+	entry := cfg.Profiles[name]
+	return entry.EffectiveAuthType() == profile.AuthTypeWalletAuthorizedNode &&
+		entry.EffectiveOwnerDID() != "" &&
+		entry.EffectiveOwnerDID() != entry.EffectiveNodeDID()
+}
+
+func isNetworkOwnerProfile(meta identityMetadata, identityDID string, ns *state.NetworkState) bool {
+	if ns == nil || ns.AnchorDID == "" {
+		return false
+	}
+	if ns.AnchorDID == identityDID {
+		return true
+	}
+	return meta.AuthType == profile.AuthTypeWalletAuthorizedNode &&
+		meta.OwnerDID != "" &&
+		meta.OwnerDID == ns.AnchorDID
+}
+
+func ownerAutomationEnabled(ns *state.NetworkState, nodeDID string, networkOwner bool, readGrantID, writeGrantID, deleteGrantID, keyDeliveryWriteGrantID string) bool {
+	if !networkOwner || ns == nil {
+		return false
+	}
+	if ns.AnchorDID == nodeDID {
+		return true
+	}
+	return readGrantID != "" && writeGrantID != "" && deleteGrantID != "" && keyDeliveryWriteGrantID != ""
+}
+
+func nodeInfoProtocolPath(ns *state.NetworkState) string {
+	if ns != nil && ns.MemberRecordID != "" {
+		return "network/member/node/nodeInfo"
+	}
+	return "network/node/nodeInfo"
+}
+
+func endpointProtocolPath(ns *state.NetworkState) string {
+	if ns != nil && ns.MemberRecordID != "" {
+		return "network/member/node/endpoint"
+	}
+	return "network/node/endpoint"
+}
+
+func requireNetworkOwnerProfile(flagProfile string, identity *did.DID, ns *state.NetworkState) (identityMetadata, bool, error) {
+	if identity == nil {
+		return identityMetadata{}, false, fmt.Errorf("identity is required")
+	}
+	meta := resolveIdentityMetadata(flagProfile, identity.URI)
+	if !isNetworkOwnerProfile(meta, identity.URI, ns) {
+		return meta, false, fmt.Errorf("only the network owner (%s) can perform this action", ns.AnchorDID)
+	}
+	return meta, ns.AnchorDID != identity.URI, nil
+}
+
+func prepareNetworkCommandEncryption(stateDir string, identity *did.DID, ns *state.NetworkState, useContextEncryption bool) (*dwncrypto.EncryptionKeyManager, error) {
+	encMgr := newEncryptionKeyManager(identity)
+	if !useContextEncryption {
+		return encMgr, nil
+	}
+	_, loaded, err := loadLocalContextKeyForCLI(stateDir, ns, encMgr)
+	if err != nil {
+		return nil, err
+	}
+	if !loaded {
+		return nil, fmt.Errorf("wallet-owned network is missing its local context key; reconnect this profile with 'meshd auth connect'")
+	}
+	return encMgr, nil
+}
+
+func walletGrantIDForDWNOperation(stateDir string, meta identityMetadata, messageType dwn.DwnInterface, protocolURI, protocolPath, contextID string, required bool) (string, error) {
+	if meta.AuthType != profile.AuthTypeWalletAuthorizedNode {
+		return "", nil
+	}
+	if !state.WalletSessionExists(stateDir) {
+		if required {
+			return "", fmt.Errorf("wallet-connected profile is missing an imported wallet session; run 'meshd auth connect --response <file>'")
+		}
+		return "", nil
+	}
+	password, err := vaultPasswordForUnlock(stateDir)
+	if err != nil {
+		return "", err
+	}
+	session, err := state.LoadWalletSession(stateDir, password)
+	if err != nil {
+		return "", err
+	}
+	if session == nil {
+		if required {
+			return "", fmt.Errorf("wallet-connected profile is missing an imported wallet session; run 'meshd auth connect --response <file>'")
+		}
+		return "", nil
+	}
+	sessionOwnerDID := session.EffectiveOwnerDID()
+	if sessionOwnerDID != "" && meta.OwnerDID != "" && sessionOwnerDID != meta.OwnerDID {
+		return "", fmt.Errorf("wallet session owner DID %s does not match profile owner DID %s", sessionOwnerDID, meta.OwnerDID)
+	}
+	if session.NodeDID != "" && meta.NodeDID != "" && session.NodeDID != meta.NodeDID {
+		return "", fmt.Errorf("wallet session node DID %s does not match profile node DID %s", session.NodeDID, meta.NodeDID)
+	}
+	granteeDID, _ := walletSessionGrantGranteeDID(session, meta)
+	grantID, err := dwn.FindPermissionGrantID(session.Grants, dwn.PermissionGrantMatch{
+		Grantor:      firstNonEmpty(sessionOwnerDID, meta.OwnerDID),
+		Grantee:      granteeDID,
+		MessageType:  messageType,
+		Protocol:     protocolURI,
+		ProtocolPath: protocolPath,
+		ContextID:    contextID,
+		Now:          time.Now().UTC(),
+	})
+	if err != nil {
+		return "", err
+	}
+	if grantID == "" && required {
+		target := protocolURI
+		if protocolPath != "" {
+			target += " " + protocolPath
+		}
+		return "", fmt.Errorf("wallet session has no permission grant for %s %s; run 'meshd auth connect --admin' to approve admin control", messageType, target)
+	}
+	return grantID, nil
+}
+
+func walletSessionGrantGranteeDID(session *state.WalletSession, meta identityMetadata) (string, bool) {
+	delegateDID := firstNonEmpty(session.DelegateDID, meta.DelegateDID)
+	if delegateDID != "" {
+		return delegateDID, true
+	}
+	return firstNonEmpty(session.NodeDID, meta.NodeDID), false
+}
+
+type walletSessionStatus struct {
+	Exists                  bool
+	OwnerDID                string
+	NodeDID                 string
+	WalletOrigin            string
+	ExpiresAt               string
+	DelegateDID             string
+	GrantCount              int
+	NodeContextKeyCount     int
+	NodeProtocolCount       int
+	NodeRuntimeAccess       bool
+	AdminControlAccess      bool
+	OwnerDIDMismatch        bool
+	NodeDIDMismatch         bool
+	LegacyDelegateKeyFields bool
+}
+
+func loadWalletSessionStatus(stateDir string, meta identityMetadata) (*walletSessionStatus, error) {
+	status := &walletSessionStatus{}
+	if !state.WalletSessionExists(stateDir) {
+		return status, nil
+	}
+	password, err := vaultPasswordForUnlock(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	session, err := state.LoadWalletSession(stateDir, password)
+	if err != nil {
+		return nil, err
+	}
+	if session == nil {
+		return status, nil
+	}
+	status.Exists = true
+	status.OwnerDID = session.EffectiveOwnerDID()
+	status.NodeDID = session.NodeDID
+	status.WalletOrigin = session.WalletOrigin
+	status.ExpiresAt = session.ExpiresAt
+	status.DelegateDID = session.DelegateDID
+	status.GrantCount = len(session.Grants)
+	status.NodeContextKeyCount = len(session.EffectiveNodeContextKeys())
+	status.NodeProtocolCount = len(session.EffectiveNodeMultiPartyProtocols())
+	status.NodeRuntimeAccess = walletSessionHasNodeRuntimeGrants(session, meta)
+	status.AdminControlAccess = walletSessionHasAdminControlGrants(session, meta)
+	status.LegacyDelegateKeyFields = len(session.NodeContextKeys) == 0 && len(session.DelegateContextKeys) > 0
+	status.OwnerDIDMismatch = meta.OwnerDID != "" && status.OwnerDID != "" && meta.OwnerDID != status.OwnerDID
+	status.NodeDIDMismatch = meta.NodeDID != "" && session.NodeDID != "" && meta.NodeDID != session.NodeDID
+	return status, nil
+}
+
+func walletSessionHasNodeRuntimeGrants(session *state.WalletSession, meta identityMetadata) bool {
+	if session == nil {
+		return false
+	}
+	return walletSessionHasGrant(session, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "") &&
+		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "network/node/nodeInfo") &&
+		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "network/node/endpoint") &&
+		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "network/member/node/nodeInfo") &&
+		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "network/member/node/endpoint") &&
+		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsQuery, protocols.KeyDeliveryProtocolURI, "")
+}
+
+func walletSessionHasAdminControlGrants(session *state.WalletSession, meta identityMetadata) bool {
+	if session == nil {
+		return false
+	}
+	return walletSessionHasGrant(session, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "") &&
+		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "") &&
+		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsDelete, protocols.MeshProtocolURI, "") &&
+		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsQuery, protocols.KeyDeliveryProtocolURI, "") &&
+		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsWrite, protocols.KeyDeliveryProtocolURI, "") &&
+		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsDelete, protocols.KeyDeliveryProtocolURI, "")
+}
+
+func walletSessionHasGrant(session *state.WalletSession, meta identityMetadata, messageType dwn.DwnInterface, protocolURI, protocolPath string) bool {
+	if session == nil {
+		return false
+	}
+	granteeDID, _ := walletSessionGrantGranteeDID(session, meta)
+	grantID, err := dwn.FindPermissionGrantID(session.Grants, dwn.PermissionGrantMatch{
+		Grantor:      firstNonEmpty(session.EffectiveOwnerDID(), meta.OwnerDID),
+		Grantee:      granteeDID,
+		MessageType:  messageType,
+		Protocol:     protocolURI,
+		ProtocolPath: protocolPath,
+		Now:          time.Now().UTC(),
+	})
+	return err == nil && grantID != ""
+}
+
+func printWalletSessionStatus(stateDir string, meta identityMetadata) error {
+	status, err := loadWalletSessionStatus(stateDir, meta)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("  Wallet Session: ")
+	if status == nil || !status.Exists {
+		fmt.Printf("missing (run 'meshd auth connect')\n")
+		return nil
+	}
+	fmt.Printf("imported\n")
+	if status.WalletOrigin != "" {
+		fmt.Printf("    Wallet: %s\n", status.WalletOrigin)
+	}
+	if status.OwnerDID != "" && status.OwnerDID != meta.OwnerDID {
+		fmt.Printf("    Wallet Owner DID: %s\n", status.OwnerDID)
+	}
+	if status.NodeDID != "" && status.NodeDID != meta.NodeDID {
+		fmt.Printf("    Node DID: %s\n", status.NodeDID)
+	}
+	if status.DelegateDID != "" {
+		fmt.Printf("    Session Delegate DID: %s\n", status.DelegateDID)
+	}
+	fmt.Printf("    Grants: %d\n", status.GrantCount)
+	if status.NodeRuntimeAccess {
+		fmt.Printf("    Node Runtime Access: yes\n")
+	} else {
+		fmt.Printf("    Node Runtime Access: no\n")
+	}
+	if status.AdminControlAccess {
+		fmt.Printf("    Admin Control Access: yes\n")
+	} else {
+		fmt.Printf("    Admin Control Access: no (run 'meshd auth connect --admin')\n")
+	}
+	fmt.Printf("    Node Context Keys: %d\n", status.NodeContextKeyCount)
+	if status.NodeProtocolCount > 0 {
+		fmt.Printf("    Node Protocols: %d\n", status.NodeProtocolCount)
+	}
+	if status.ExpiresAt != "" {
+		fmt.Printf("    Expires: %s\n", status.ExpiresAt)
+	}
+	if status.OwnerDIDMismatch || status.NodeDIDMismatch {
+		fmt.Printf("    Warning: session identity does not match profile metadata\n")
+	}
+	if status.LegacyDelegateKeyFields {
+		fmt.Printf("    Compatibility: using legacy delegateContextKeys as node context keys\n")
+	}
+	return nil
+}
+
+func networkNodeDID(ns *state.NetworkState, fallbackDID string) string {
+	if ns == nil {
+		return fallbackDID
+	}
+	return ns.EffectiveNodeDID(fallbackDID)
+}
+
+func networkOwnerDID(ns *state.NetworkState, fallbackDID string) string {
+	if ns == nil {
+		return fallbackDID
+	}
+	return ns.EffectiveOwnerDID(fallbackDID)
 }
 
 func identityExists(stateDir string) bool {
@@ -2714,6 +5284,33 @@ func loadIdentity(stateDir string) (*did.DID, error) {
 	return identity, nil
 }
 
+func loadNodeIdentity(stateDir string, nodeDID string, fallback *did.DID) (*did.DID, error) {
+	if fallback == nil {
+		return nil, fmt.Errorf("fallback identity is required")
+	}
+	if nodeDID == "" || nodeDID == fallback.URI {
+		return fallback, nil
+	}
+	if !did.EncryptedExistsAs(stateDir, nodeIdentityVaultFile) {
+		return nil, fmt.Errorf("node identity %s is recorded, but %s is missing", nodeDID, nodeIdentityVaultFile)
+	}
+	password, err := vaultPasswordForUnlock(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	nodeIdentity, err := did.LoadEncryptedAs(stateDir, nodeIdentityVaultFile, password)
+	if err != nil {
+		return nil, fmt.Errorf("unlocking node identity vault: %w", err)
+	}
+	if nodeIdentity == nil {
+		return nil, fmt.Errorf("node identity vault is missing")
+	}
+	if nodeIdentity.URI != nodeDID {
+		return nil, fmt.Errorf("node identity vault DID %s does not match network node DID %s", nodeIdentity.URI, nodeDID)
+	}
+	return nodeIdentity, nil
+}
+
 func loadLocalContextKeyForCLI(stateDir string, ns *state.NetworkState, encMgr *dwncrypto.EncryptionKeyManager) (string, bool, error) {
 	if ns == nil || ns.NetworkRecordID == "" {
 		return "", false, nil
@@ -2808,26 +5405,114 @@ func fetchContextKey(ctx context.Context, identity *did.DID, ns *state.NetworkSt
 		PrivateKey: identity.SigningKey,
 	}
 
-	// contextKey records are written unencrypted (access controlled by
-	// key-delivery protocol $actions). The recipient can query and read
-	// their own records via the DWN's implicit recipient authorization.
 	return mesh.FetchContextKey(ctx, mesh.FetchContextKeyParams{
-		AnchorEndpoint: ns.AnchorEndpoint,
-		AnchorDID:      ns.AnchorDID,
-		SelfDID:        identity.URI,
-		ContextID:      ns.NetworkRecordID,
-		Signer:         signer,
+		AnchorEndpoint:       ns.AnchorEndpoint,
+		AnchorDID:            ns.AnchorDID,
+		SelfDID:              identity.URI,
+		ContextID:            ns.NetworkRecordID,
+		Signer:               signer,
+		EncryptionKeyManager: newEncryptionKeyManager(identity),
 	})
 }
 
-func approvePreAuthRequests(ctx context.Context, ns *state.NetworkState, signer *dwn.Signer, encMgr *dwncrypto.EncryptionKeyManager, logger *slog.Logger) {
+func ensureWalletDelegateIdentity(stateDir string) (*did.DID, error) {
+	password, err := vaultPasswordForUnlock(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	if did.EncryptedExistsAs(stateDir, delegateIdentityVaultFile) {
+		delegateIdentity, err := did.LoadEncryptedAs(stateDir, delegateIdentityVaultFile, password)
+		if err != nil {
+			return nil, fmt.Errorf("unlocking delegate identity vault: %w", err)
+		}
+		if delegateIdentity == nil {
+			return nil, fmt.Errorf("delegate identity vault is missing")
+		}
+		return delegateIdentity, nil
+	}
+	delegateIdentity, err := did.Generate()
+	if err != nil {
+		return nil, fmt.Errorf("generating delegate DID: %w", err)
+	}
+	if err := delegateIdentity.StoreEncryptedAs(stateDir, delegateIdentityVaultFile, password); err != nil {
+		return nil, fmt.Errorf("storing delegate identity: %w", err)
+	}
+	return delegateIdentity, nil
+}
+
+func verifyWalletDelegateIdentity(stateDir string, delegateDID string) (*did.DID, error) {
+	delegateDID = strings.TrimSpace(delegateDID)
+	if delegateDID == "" {
+		return nil, nil
+	}
+	if !did.EncryptedExistsAs(stateDir, delegateIdentityVaultFile) {
+		return nil, fmt.Errorf("wallet response grants to delegate DID %s, but the local delegate vault is missing; rerun 'meshd auth connect' from this profile", delegateDID)
+	}
+	password, err := vaultPasswordForUnlock(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	delegateIdentity, err := did.LoadEncryptedAs(stateDir, delegateIdentityVaultFile, password)
+	if err != nil {
+		return nil, fmt.Errorf("unlocking delegate identity vault: %w", err)
+	}
+	if delegateIdentity == nil {
+		return nil, fmt.Errorf("delegate identity vault is missing")
+	}
+	if delegateIdentity.URI != delegateDID {
+		return nil, fmt.Errorf("delegate identity vault DID %s does not match wallet response delegate DID %s", delegateIdentity.URI, delegateDID)
+	}
+	return delegateIdentity, nil
+}
+
+func requireWalletResponseDelegateIdentity(stateDir string, delegateDID string, nodeDID string, responseLabel string) (*did.DID, error) {
+	delegateDID = strings.TrimSpace(delegateDID)
+	nodeDID = strings.TrimSpace(nodeDID)
+	if responseLabel == "" {
+		responseLabel = "wallet response"
+	}
+	if delegateDID == "" {
+		return nil, nil
+	}
+	if nodeDID != "" && delegateDID == nodeDID {
+		return nil, fmt.Errorf("%s delegate DID must be distinct from node DID %s", responseLabel, nodeDID)
+	}
+	return verifyWalletDelegateIdentity(stateDir, delegateDID)
+}
+
+func loadDWNOperationIdentity(stateDir string, meta identityMetadata, fallback *did.DID) (*did.DID, error) {
+	if fallback == nil {
+		return nil, fmt.Errorf("fallback identity is required")
+	}
+	if meta.AuthType != profile.AuthTypeWalletAuthorizedNode || meta.DelegateDID == "" || meta.DelegateDID == fallback.URI {
+		return fallback, nil
+	}
+	return verifyWalletDelegateIdentity(stateDir, meta.DelegateDID)
+}
+
+func dwnSigner(identity *did.DID) *dwn.Signer {
+	if identity == nil {
+		return nil
+	}
+	return &dwn.Signer{
+		DID:        identity.URI,
+		PrivateKey: identity.SigningKey,
+	}
+}
+
+func approvePreAuthRequests(ctx context.Context, ns *state.NetworkState, signer *dwn.Signer, encMgr *dwncrypto.EncryptionKeyManager, logger *slog.Logger, readGrantID, writeGrantID, deleteGrantID, keyDeliveryGrantID string, useContextEncryption bool) {
 	result, err := mesh.ApprovePreAuthRequests(ctx, mesh.ApprovePreAuthRequestsParams{
-		AnchorEndpoint:       ns.AnchorEndpoint,
-		AnchorDID:            ns.AnchorDID,
-		NetworkRecordID:      ns.NetworkRecordID,
-		MeshCIDR:             ns.MeshCIDR,
-		Signer:               signer,
-		EncryptionKeyManager: encMgr,
+		AnchorEndpoint:          ns.AnchorEndpoint,
+		AnchorDID:               ns.AnchorDID,
+		NetworkRecordID:         ns.NetworkRecordID,
+		MeshCIDR:                ns.MeshCIDR,
+		Signer:                  signer,
+		EncryptionKeyManager:    encMgr,
+		ReadPermissionGrantID:   readGrantID,
+		WritePermissionGrantID:  writeGrantID,
+		DeletePermissionGrantID: deleteGrantID,
+		KeyDeliveryGrantID:      keyDeliveryGrantID,
+		UseContextEncryption:    useContextEncryption,
 	})
 	if err != nil {
 		logger.Warn("preauth approval failed", slog.Any("error", err))
@@ -2845,7 +5530,7 @@ func approvePreAuthRequests(ctx context.Context, ns *state.NetworkState, signer 
 	}
 }
 
-func runPreAuthApprovalLoop(ctx context.Context, stop <-chan struct{}, interval time.Duration, ns *state.NetworkState, signer *dwn.Signer, encMgr *dwncrypto.EncryptionKeyManager, logger *slog.Logger) {
+func runPreAuthApprovalLoop(ctx context.Context, stop <-chan struct{}, interval time.Duration, ns *state.NetworkState, signer *dwn.Signer, encMgr *dwncrypto.EncryptionKeyManager, logger *slog.Logger, readGrantID, writeGrantID, deleteGrantID, keyDeliveryGrantID string, useContextEncryption bool) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -2856,7 +5541,7 @@ func runPreAuthApprovalLoop(ctx context.Context, stop <-chan struct{}, interval 
 		case <-stop:
 			return
 		case <-ticker.C:
-			approvePreAuthRequests(ctx, ns, signer, encMgr, logger)
+			approvePreAuthRequests(ctx, ns, signer, encMgr, logger, readGrantID, writeGrantID, deleteGrantID, keyDeliveryGrantID, useContextEncryption)
 		}
 	}
 }
@@ -2943,6 +5628,290 @@ func cmdAuthLogin(ctx context.Context, args []string) error {
 	return nil
 }
 
+type authConnectOptions struct {
+	profileName string
+	requestOut  string
+	responseIn  string
+	walletURL   string
+	noWait      bool
+	admin       bool
+}
+
+// cmdAuthConnect creates or imports a wallet connection for a CLI profile.
+//
+// Usage:
+//
+//	meshd auth connect [name] [--admin] [--request-out <file>] [--wallet <url>] [--no-wait]
+//	meshd auth connect [name] --response <file>
+func cmdAuthConnect(ctx context.Context, args []string, flagProfile string) error {
+	opts, err := parseAuthConnectArgs(args)
+	if err != nil {
+		return err
+	}
+	profileFlag := firstNonEmpty(opts.profileName, flagProfile)
+
+	if opts.responseIn != "" {
+		return importAuthConnectResponse(ctx, profileFlag, opts.responseIn)
+	}
+	return createAuthConnectRequest(ctx, profileFlag, opts)
+}
+
+func parseAuthConnectArgs(args []string) (authConnectOptions, error) {
+	opts := authConnectOptions{
+		walletURL: "https://wallet.enbox.id",
+	}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--request-out":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--request-out requires a path")
+			}
+			opts.requestOut = args[i+1]
+			i++
+		case "--response":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--response requires a path")
+			}
+			opts.responseIn = args[i+1]
+			i++
+		case "--wallet":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--wallet requires a URL")
+			}
+			opts.walletURL = args[i+1]
+			i++
+		case "--no-wait":
+			opts.noWait = true
+		case "--admin":
+			opts.admin = true
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return opts, fmt.Errorf("unknown auth connect flag %q", args[i])
+			}
+			if opts.profileName == "" {
+				opts.profileName = args[i]
+			} else {
+				return opts, fmt.Errorf("unexpected argument %q", args[i])
+			}
+		}
+	}
+	return opts, nil
+}
+
+func createAuthConnectRequest(ctx context.Context, profileFlag string, opts authConnectOptions) error {
+	stateDir, identity, err := ensureIdentityForCommand(ctx, profileFlag, "")
+	if err != nil {
+		return err
+	}
+	var callback *walletResponseCallback
+	if shouldWaitForWalletResponse(opts.walletURL, opts.requestOut, opts.noWait) {
+		callback, err = startWalletResponseCallback()
+		if err != nil {
+			return err
+		}
+		defer callback.close()
+	}
+	var relay *walletResponseRelay
+	if shouldUseWalletResponseRelay(opts.walletURL, opts.requestOut, opts.noWait) {
+		relay, err = setupWalletResponseRelay(ctx, walletResponseEndpoint(""), identity)
+		if err != nil {
+			fmt.Printf("  Warning: wallet response handoff unavailable: %v\n", err)
+			relay = nil
+		}
+	}
+	profileName := profileNameForWrite(profileFlag)
+	delegateIdentity, err := ensureWalletDelegateIdentity(stateDir)
+	if err != nil {
+		return err
+	}
+	req, err := walletconnect.NewRequest(profileName, identity, delegateIdentity)
+	if err != nil {
+		return err
+	}
+	if opts.admin {
+		req.Permissions = appendUniqueStrings(req.Permissions, "mesh-admin")
+	}
+	if callback != nil {
+		req.CallbackURL = callback.url
+	}
+	if relay != nil {
+		req.ResponseEndpoint = relay.endpoint
+		req.ResponseToken = relay.token
+	}
+	if err := walletconnect.SignRequest(identity, &req); err != nil {
+		return err
+	}
+	requestURL, err := walletconnect.EncodeRequest(req)
+	if err != nil {
+		return err
+	}
+	if opts.requestOut != "" {
+		data, err := json.MarshalIndent(req, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal wallet request: %w", err)
+		}
+		if err := os.WriteFile(opts.requestOut, data, 0600); err != nil {
+			return fmt.Errorf("write wallet request: %w", err)
+		}
+	}
+
+	fmt.Println("Wallet connect request created.")
+	fmt.Printf("  Profile: %s\n", profileName)
+	fmt.Printf("  Node DID: %s\n", identity.URI)
+	fmt.Printf("  Delegate DID: %s\n", delegateIdentity.URI)
+	if opts.admin {
+		fmt.Printf("  Access: node runtime + admin control\n")
+	} else {
+		fmt.Printf("  Access: node runtime\n")
+	}
+	fmt.Printf("  State: %s\n", stateDir)
+	if opts.requestOut != "" {
+		fmt.Printf("  Request: %s\n", opts.requestOut)
+	}
+	if relay != nil {
+		fmt.Printf("  Response handoff: %s\n", relay.endpoint)
+	}
+	fmt.Printf("\nRequest URL:\n  %s\n", requestURL)
+	if opts.walletURL != "" {
+		walletURL := strings.TrimRight(opts.walletURL, "/") + "/meshd/connect?request=" + url.QueryEscape(requestURL)
+		printWalletURL(walletURL, callback != nil, relay != nil)
+	}
+	if callback == nil && relay == nil {
+		fmt.Printf("\nAfter wallet approval, save the response JSON and run:\n")
+		fmt.Printf("  meshd auth connect %s --response <response.json>\n", profileName)
+		return nil
+	}
+	fmt.Printf("\nWaiting for wallet approval...\n")
+	data, err := waitForWalletDelivery(ctx, callback, relay, identity)
+	if err != nil {
+		return err
+	}
+	return importAuthConnectResponseData(ctx, profileFlag, data)
+}
+
+func importAuthConnectResponse(ctx context.Context, profileFlag string, responsePath string) error {
+	var data []byte
+	var err error
+	if responsePath == "-" {
+		data, err = io.ReadAll(os.Stdin)
+	} else {
+		data, err = os.ReadFile(responsePath)
+	}
+	if err != nil {
+		return fmt.Errorf("read wallet response: %w", err)
+	}
+	return importAuthConnectResponseData(ctx, profileFlag, data)
+}
+
+func importAuthConnectResponseData(ctx context.Context, profileFlag string, data []byte) error {
+	var resp walletconnect.Response
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return fmt.Errorf("parse wallet response: %w", err)
+	}
+	if err := resp.Validate(); err != nil {
+		return err
+	}
+	resp.NormalizeOwnerDID()
+	ownerDID := resp.EffectiveOwnerDID()
+	profileFlag = firstNonEmpty(profileFlag, resp.ProfileName)
+	stateDir, identity, err := ensureIdentityForCommand(ctx, profileFlag, "")
+	if err != nil {
+		return err
+	}
+	if resp.NodeDID != identity.URI {
+		return fmt.Errorf("wallet response node DID %s does not match local node DID %s", resp.NodeDID, identity.URI)
+	}
+
+	password, err := vaultPasswordForUnlock(stateDir)
+	if err != nil {
+		return err
+	}
+	if _, err := requireWalletResponseDelegateIdentity(stateDir, resp.DelegateDID, resp.NodeDID, "wallet response"); err != nil {
+		return err
+	}
+	nodeContextKeys := resp.EffectiveNodeContextKeys()
+	nodeProtocols := resp.EffectiveNodeMultiPartyProtocols()
+	session := &state.WalletSession{
+		Version:                 1,
+		OwnerDID:                ownerDID,
+		ConnectedDID:            ownerDID,
+		DelegateDID:             resp.DelegateDID,
+		NodeDID:                 resp.NodeDID,
+		WalletOrigin:            resp.WalletOrigin,
+		ExpiresAt:               resp.ExpiresAt,
+		Grants:                  resp.Grants,
+		NodeContextKeys:         nodeContextKeys,
+		NodeMultiPartyProtocols: nodeProtocols,
+		DelegateDecryptionKeys:  resp.DelegateDecryptionKeys,
+	}
+	if err := state.StoreWalletSession(stateDir, password, session); err != nil {
+		return err
+	}
+	importedContextKeys, err := storeWalletNodeContextKeys(stateDir, password, nodeContextKeys)
+	if err != nil {
+		return err
+	}
+
+	if os.Getenv("MESHD_STATE_DIR") == "" {
+		profileName := profileNameForWrite(profileFlag)
+		if err := profile.UpsertProfileEntry(&profile.Entry{
+			Name:         profileName,
+			DID:          identity.URI,
+			AuthType:     profile.AuthTypeWalletAuthorizedNode,
+			OwnerDID:     ownerDID,
+			ConnectedDID: ownerDID,
+			DelegateDID:  resp.DelegateDID,
+			NodeDID:      identity.URI,
+			WalletOrigin: resp.WalletOrigin,
+			ExpiresAt:    resp.ExpiresAt,
+		}); err != nil {
+			return fmt.Errorf("saving wallet-connected profile: %w", err)
+		}
+	}
+
+	fmt.Println("Wallet connection imported.")
+	fmt.Printf("  Wallet Owner DID: %s\n", ownerDID)
+	if resp.DelegateDID != "" {
+		fmt.Printf("  Session Delegate DID: %s\n", resp.DelegateDID)
+	}
+	fmt.Printf("  Node DID: %s\n", resp.NodeDID)
+	fmt.Printf("  Session: encrypted\n")
+	if importedContextKeys > 0 {
+		fmt.Printf("  Context keys: %d imported\n", importedContextKeys)
+	}
+	return nil
+}
+
+func storeWalletNodeContextKeys(stateDir string, password string, rawKeys []json.RawMessage) (int, error) {
+	imported := 0
+	for _, raw := range rawKeys {
+		var entry struct {
+			Protocol          string          `json:"protocol"`
+			ContextID         string          `json:"contextId"`
+			DerivedPrivateKey json.RawMessage `json:"derivedPrivateKey"`
+		}
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return imported, fmt.Errorf("parse node context key: %w", err)
+		}
+		if entry.Protocol != protocols.MeshProtocolURI || entry.ContextID == "" {
+			continue
+		}
+		contextKey, err := dwncrypto.ParseDerivedPrivateJwk(entry.DerivedPrivateKey)
+		if err != nil {
+			return imported, fmt.Errorf("parse mesh context key %s: %w", entry.ContextID, err)
+		}
+		privateKey, err := contextKey.PrivateKeyBytes()
+		if err != nil {
+			return imported, fmt.Errorf("decode mesh context key %s: %w", entry.ContextID, err)
+		}
+		if err := state.StoreContextKey(stateDir, password, entry.ContextID, privateKey); err != nil {
+			return imported, err
+		}
+		imported++
+	}
+	return imported, nil
+}
+
 // cmdAuthList lists all identity profiles.
 func cmdAuthList() error {
 	cfg, err := profile.ReadConfig()
@@ -2966,7 +5935,14 @@ func cmdAuthList() error {
 			suffix = " (default)"
 		}
 		fmt.Printf("%s%s%s\n", marker, entry.Name, suffix)
-		fmt.Printf("    DID:     %s\n", entry.DID)
+		fmt.Printf("    Node:    %s\n", entry.EffectiveNodeDID())
+		fmt.Printf("    Auth:    %s\n", authDisplayName(entry.EffectiveAuthType()))
+		if ownerDID := entry.EffectiveOwnerDID(); ownerDID != "" && ownerDID != entry.DID {
+			fmt.Printf("    Owner:   %s\n", ownerDID)
+		}
+		if entry.DelegateDID != "" {
+			fmt.Printf("    Session: %s\n", entry.DelegateDID)
+		}
 		fmt.Printf("    Created: %s\n", entry.CreatedAt)
 		fmt.Println()
 	}
@@ -3087,17 +6063,24 @@ func cmdACLSet(ctx context.Context, args []string, flagProfile string) error {
 		return fmt.Errorf("not in a network. Use 'meshd network create' first.")
 	}
 
-	// Verify this is the anchor node.
-	if identity.URI != ns.AnchorDID {
-		return fmt.Errorf("only the network anchor can set ACL policy (you: %s, anchor: %s)",
-			truncate(identity.URI, 40), truncate(ns.AnchorDID, 40))
+	meta, useContextEncryption, err := requireNetworkOwnerProfile(flagProfile, identity, ns)
+	if err != nil {
+		return err
 	}
 
-	signer := &dwn.Signer{
-		DID:        identity.URI,
-		PrivateKey: identity.SigningKey,
+	operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, identity)
+	if err != nil {
+		return err
 	}
-	encMgr := newEncryptionKeyManager(identity)
+	signer := dwnSigner(operationIdentity)
+	encMgr, err := prepareNetworkCommandEncryption(stateDir, identity, ns, useContextEncryption)
+	if err != nil {
+		return err
+	}
+	writeGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
+	if err != nil {
+		return err
+	}
 
 	if err := mesh.WriteACLPolicy(ctx, mesh.WriteACLPolicyParams{
 		AnchorEndpoint:       ns.AnchorEndpoint,
@@ -3105,6 +6088,8 @@ func cmdACLSet(ctx context.Context, args []string, flagProfile string) error {
 		NetworkRecordID:      ns.NetworkRecordID,
 		Signer:               signer,
 		EncryptionKeyManager: encMgr,
+		PermissionGrantID:    writeGrantID,
+		UseContextEncryption: useContextEncryption,
 		PolicyData:           policyBytes,
 	}); err != nil {
 		return err
@@ -3135,10 +6120,12 @@ func cmdACLShow(ctx context.Context, args []string, flagProfile string) error {
 		return fmt.Errorf("not in a network. Use 'meshd network join' first.")
 	}
 
-	signer := &dwn.Signer{
-		DID:        identity.URI,
-		PrivateKey: identity.SigningKey,
+	meta := resolveIdentityMetadata(flagProfile, identity.URI)
+	operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, identity)
+	if err != nil {
+		return err
 	}
+	signer := dwnSigner(operationIdentity)
 	encMgr := newEncryptionKeyManager(identity)
 
 	// Load context key for decryption. Try cached key first, then DWN fetch.
@@ -3171,6 +6158,10 @@ func cmdACLShow(ctx context.Context, args []string, flagProfile string) error {
 	if ns.AnchorDID != identity.URI {
 		aclQueryRole = "network/node"
 	}
+	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
+	if err != nil {
+		return err
+	}
 
 	client := control.NewDWNClient(
 		ns.AnchorEndpoint,
@@ -3180,6 +6171,7 @@ func cmdACLShow(ctx context.Context, args []string, flagProfile string) error {
 		signer,
 		control.WithEncryptionKeyManager(encMgr),
 		control.WithProtocolRole(aclQueryRole),
+		control.WithPermissionGrantID(readGrantID),
 	)
 
 	// Load state (which now includes ACL policy).
@@ -3212,4 +6204,33 @@ func truncate(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func appendUniqueStrings(values []string, next ...string) []string {
+	for _, candidate := range next {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		exists := false
+		for _, value := range values {
+			if value == candidate {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			values = append(values, candidate)
+		}
+	}
+	return values
 }

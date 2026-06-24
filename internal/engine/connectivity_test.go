@@ -298,11 +298,12 @@ func TestTwoNodeConnectivity(t *testing.T) {
 	t.Log("Step 6b: Node B fetches context key and re-registers with context encryption")
 
 	contextKeyJwk, err := mesh.FetchContextKey(ctx, mesh.FetchContextKeyParams{
-		AnchorEndpoint: endpoint,
-		AnchorDID:      nodeA.identity.URI,
-		SelfDID:        nodeB.identity.URI,
-		ContextID:      networkRecordID,
-		Signer:         nodeB.signer,
+		AnchorEndpoint:       endpoint,
+		AnchorDID:            nodeA.identity.URI,
+		SelfDID:              nodeB.identity.URI,
+		ContextID:            networkRecordID,
+		Signer:               nodeB.signer,
+		EncryptionKeyManager: nodeB.encMgr,
 	})
 	if err != nil {
 		t.Fatalf("fetching context key for B: %v", err)
@@ -775,11 +776,12 @@ func TestTwoNodeNetworkMapDiscovery(t *testing.T) {
 
 	// Node B fetches and stores context key.
 	contextKeyJwk, err := mesh.FetchContextKey(ctx, mesh.FetchContextKeyParams{
-		AnchorEndpoint: endpoint,
-		AnchorDID:      nodeA.identity.URI,
-		SelfDID:        nodeB.identity.URI,
-		ContextID:      networkRecordID,
-		Signer:         nodeB.signer,
+		AnchorEndpoint:       endpoint,
+		AnchorDID:            nodeA.identity.URI,
+		SelfDID:              nodeB.identity.URI,
+		ContextID:            networkRecordID,
+		Signer:               nodeB.signer,
+		EncryptionKeyManager: nodeB.encMgr,
 	})
 	if err != nil {
 		t.Fatalf("fetching context key: %v", err)

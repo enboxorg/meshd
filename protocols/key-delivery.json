@@ -1,5 +1,5 @@
 {
-  "protocol": "https://enbox.id/protocols/key-delivery",
+  "protocol": "https://identity.foundation/protocols/key-delivery",
   "published": false,
   "types": {
     "contextKey": {

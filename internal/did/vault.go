@@ -14,10 +14,20 @@ const encryptedStateFile = "identity.vault.json"
 
 // StoreEncrypted persists the DID private key in a password-encrypted vault.
 func (d *DID) StoreEncrypted(stateDir string, password string) error {
-	return d.storeEncryptedWithParams(stateDir, password, vault.DefaultArgon2idParams)
+	return d.StoreEncryptedAs(stateDir, encryptedStateFile, password)
 }
 
 func (d *DID) storeEncryptedWithParams(stateDir string, password string, params vault.Argon2idParams) error {
+	return d.storeEncryptedFileWithParams(stateDir, encryptedStateFile, password, params)
+}
+
+// StoreEncryptedAs persists the DID private key in a named password-encrypted
+// vault file under stateDir. The filename must be controlled by the caller.
+func (d *DID) StoreEncryptedAs(stateDir string, filename string, password string) error {
+	return d.storeEncryptedFileWithParams(stateDir, filename, password, vault.DefaultArgon2idParams)
+}
+
+func (d *DID) storeEncryptedFileWithParams(stateDir string, filename string, password string, params vault.Argon2idParams) error {
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
 	}
@@ -36,7 +46,7 @@ func (d *DID) storeEncryptedWithParams(stateDir string, password string, params 
 		return err
 	}
 
-	target := filepath.Join(stateDir, encryptedStateFile)
+	target := filepath.Join(stateDir, filename)
 	tmp := target + ".tmp"
 	if err := os.WriteFile(tmp, sealed, 0600); err != nil {
 		return fmt.Errorf("write encrypted identity: %w", err)
@@ -50,7 +60,13 @@ func (d *DID) storeEncryptedWithParams(stateDir string, password string, params 
 
 // LoadEncrypted reads a password-encrypted DID identity.
 func LoadEncrypted(stateDir string, password string) (*DID, error) {
-	target := filepath.Join(stateDir, encryptedStateFile)
+	return LoadEncryptedAs(stateDir, encryptedStateFile, password)
+}
+
+// LoadEncryptedAs reads a password-encrypted DID identity from a named vault
+// file under stateDir. The filename must be controlled by the caller.
+func LoadEncryptedAs(stateDir string, filename string, password string) (*DID, error) {
+	target := filepath.Join(stateDir, filename)
 	data, err := os.ReadFile(target)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -81,7 +97,12 @@ func LoadEncrypted(stateDir string, password string) (*DID, error) {
 
 // EncryptedExists checks whether an encrypted DID identity file exists.
 func EncryptedExists(stateDir string) bool {
-	target := filepath.Join(stateDir, encryptedStateFile)
+	return EncryptedExistsAs(stateDir, encryptedStateFile)
+}
+
+// EncryptedExistsAs checks whether a named encrypted DID vault file exists.
+func EncryptedExistsAs(stateDir string, filename string) bool {
+	target := filepath.Join(stateDir, filename)
 	_, err := os.Stat(target)
 	return err == nil
 }

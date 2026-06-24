@@ -1,0 +1,75 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://enbox.id/schemas/wireguard-mesh/node-approval",
+  "type": "object",
+  "required": ["ownerDID", "nodeDID", "networkRecordId", "nodeRecordId", "meshIP", "approvedAt"],
+  "additionalProperties": false,
+  "properties": {
+    "ownerDID": {
+      "type": "string",
+      "description": "The wallet/account DID that approved this node"
+    },
+    "nodeDID": {
+      "type": "string",
+      "description": "The device DID that was approved"
+    },
+    "networkRecordId": {
+      "type": "string",
+      "description": "The mesh network record ID the node was approved into"
+    },
+    "networkName": {
+      "type": "string",
+      "description": "Human-readable network name"
+    },
+    "meshCIDR": {
+      "type": "string",
+      "description": "The mesh IP range"
+    },
+    "meshIP": {
+      "type": "string",
+      "description": "Allocated IP for this node"
+    },
+    "anchorEndpoint": {
+      "type": "string",
+      "format": "uri",
+      "description": "DWN endpoint for the owner/anchor"
+    },
+    "memberRecordId": {
+      "type": "string",
+      "description": "The owner/member record that owns this node"
+    },
+    "memberDateCreated": {
+      "type": "string",
+      "format": "date-time",
+      "description": "dateCreated timestamp for the member record"
+    },
+    "nodeRecordId": {
+      "type": "string",
+      "description": "The approved node record ID"
+    },
+    "nodeDateCreated": {
+      "type": "string",
+      "format": "date-time",
+      "description": "dateCreated timestamp for the node record"
+    },
+    "label": {
+      "type": "string",
+      "maxLength": 128,
+      "description": "Owner-assigned node label"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this node membership expires; omitted means never expires"
+    },
+    "approvedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the owner approved the node"
+    },
+    "requestRecordId": {
+      "type": "string",
+      "description": "The owner-scoped request record this approval satisfies"
+    }
+  }
+}

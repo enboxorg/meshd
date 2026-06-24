@@ -19,15 +19,61 @@
       "format": "date-time",
       "description": "When this node was added to the network"
     },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this node membership expires; omitted means never expires"
+    },
     "label": {
       "type": "string",
       "maxLength": 128,
       "description": "Human-readable label for this node"
     },
+    "memberDID": {
+      "type": "string",
+      "description": "Legacy alias for ownerDID. The wallet/member DID that owns this node. Defaults to the node DID for local-only devices."
+    },
+    "ownerDID": {
+      "type": "string",
+      "description": "The wallet/member DID that owns this node. Defaults to the node DID for local-only devices."
+    },
+    "delegateDID": {
+      "type": "string",
+      "description": "The local delegate/session DID that currently has wallet grants to operate this node."
+    },
     "sourceDWN": {
       "type": "string",
       "format": "uri",
       "description": "The DWN endpoint where the device's authoritative records live (for cross-DWN member devices)"
+    },
+    "nodeKeyDelivery": {
+      "type": "object",
+      "description": "Public key material used by the anchor to encrypt delivered mesh context keys to this node",
+      "required": ["rootKeyId", "publicKeyJwk"],
+      "additionalProperties": false,
+      "properties": {
+        "rootKeyId": {
+          "type": "string",
+          "description": "The node's root encryption key ID"
+        },
+        "publicKeyJwk": {
+          "type": "object",
+          "required": ["kty", "crv", "x"],
+          "additionalProperties": true,
+          "properties": {
+            "kty": { "type": "string", "const": "OKP" },
+            "crv": { "type": "string", "const": "X25519" },
+            "x": {
+              "type": "string",
+              "description": "Base64url-encoded X25519 public key derived for key delivery"
+            },
+            "kid": {
+              "type": "string",
+              "description": "Optional key ID; rootKeyId is authoritative when present"
+            }
+          }
+        }
+      }
     }
   }
 }

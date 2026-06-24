@@ -9,6 +9,39 @@
       "type": "string",
       "description": "The DID of the device being proposed for network membership"
     },
+    "memberDID": {
+      "type": "string",
+      "description": "Legacy alias for ownerDID. The durable wallet/member DID that owns the proposed device. Defaults to nodeDID for local-only joins."
+    },
+    "ownerDID": {
+      "type": "string",
+      "description": "The durable wallet/member DID that owns the proposed device. Defaults to nodeDID for local-only joins."
+    },
+    "delegateDID": {
+      "type": "string",
+      "description": "The local delegate/session DID that should receive wallet grants for this device, when distinct from nodeDID."
+    },
+    "requestedBy": {
+      "type": "string",
+      "description": "The DID that submitted the request, such as a wallet delegate or the node DID."
+    },
+    "nodeProof": {
+      "type": "string",
+      "description": "Base64url Ed25519 signature from nodeDID over the join or owner-access request statement."
+    },
+    "requestKind": {
+      "type": "string",
+      "enum": ["owner-node", "network-preauth"],
+      "description": "The enrollment path used by this request"
+    },
+    "networkRecordId": {
+      "type": "string",
+      "description": "Requested network record ID, when the node already knows the target network"
+    },
+    "networkName": {
+      "type": "string",
+      "description": "Requested or display network name"
+    },
     "sourceDWN": {
       "type": "string",
       "format": "uri",
@@ -18,6 +51,35 @@
       "type": "string",
       "maxLength": 128,
       "description": "Optional label for the proposed device"
+    },
+    "nodeKeyDelivery": {
+      "type": "object",
+      "description": "Public key material used by the anchor to encrypt the delivered mesh context key to this node",
+      "required": ["rootKeyId", "publicKeyJwk"],
+      "additionalProperties": false,
+      "properties": {
+        "rootKeyId": {
+          "type": "string",
+          "description": "The node's root encryption key ID"
+        },
+        "publicKeyJwk": {
+          "type": "object",
+          "required": ["kty", "crv", "x"],
+          "additionalProperties": true,
+          "properties": {
+            "kty": { "type": "string", "const": "OKP" },
+            "crv": { "type": "string", "const": "X25519" },
+            "x": {
+              "type": "string",
+              "description": "Base64url-encoded X25519 public key derived for key delivery"
+            },
+            "kid": {
+              "type": "string",
+              "description": "Optional key ID; rootKeyId is authoritative when present"
+            }
+          }
+        }
+      }
     },
     "preAuthKeyId": {
       "type": "string",
@@ -31,6 +93,11 @@
       "type": "string",
       "format": "date-time",
       "description": "When the device requested to join"
+    },
+    "expiresAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Optional request expiry"
     }
   }
 }

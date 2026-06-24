@@ -6,7 +6,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/enboxorg/meshd/internal/did"
+	"github.com/enboxorg/meshd/internal/dwn"
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/internal/invite"
 	"github.com/enboxorg/meshd/pkg/dids/didjwk"
+	"github.com/enboxorg/meshd/protocols"
 )
 
 // =============================================================================
@@ -120,6 +125,111 @@ func TestWireGuardKeyFromIdentity_Deterministic(t *testing.T) {
 
 	if kp1.PublicKey != kp2.PublicKey {
 		t.Fatal("same identity should produce same WG key pair")
+	}
+}
+
+func TestNodeJoinProofRoundTrip(t *testing.T) {
+	node, err := did.Generate()
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	signer := &dwn.Signer{DID: node.URI, PrivateKey: node.SigningKey}
+
+	proof := SignNodeJoinProof(signer, "network-record", node.URI, "did:dht:member", "preauth-record")
+	if proof == "" {
+		t.Fatal("proof is empty")
+	}
+	if !VerifyNodeJoinProof(node.URI, proof, "network-record", "did:dht:member", "preauth-record") {
+		t.Fatal("proof did not verify")
+	}
+	if VerifyNodeJoinProof(node.URI, proof, "other-network", "did:dht:member", "preauth-record") {
+		t.Fatal("proof verified for a different network")
+	}
+}
+
+func TestPreAuthNodeRequestDataIncludesSignedNodeKeyDelivery(t *testing.T) {
+	node, err := did.Generate()
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	signer := &dwn.Signer{DID: node.URI, PrivateKey: node.SigningKey}
+	keyDelivery, err := dwncrypto.NewKeyDeliveryPublic(
+		node.EncryptionPrivateKey,
+		node.EncryptionKeyID(),
+		protocols.KeyDeliveryProtocolURI,
+	)
+	if err != nil {
+		t.Fatalf("NewKeyDeliveryPublic: %v", err)
+	}
+	payload := invite.New(
+		"https://dwn.example",
+		"did:jwk:anchor",
+		"network-record",
+		"test-net",
+		"preauth-record",
+		"preauth-secret",
+		"",
+	)
+
+	got, err := preAuthNodeRequestData(WritePreAuthNodeRequestParams{
+		Invite:          payload,
+		NodeDID:         node.URI,
+		MemberDID:       "did:jwk:wallet",
+		RequestedBy:     node.URI,
+		Signer:          signer,
+		Label:           "laptop",
+		NodeKeyDelivery: keyDelivery,
+	})
+	if err != nil {
+		t.Fatalf("preAuthNodeRequestData: %v", err)
+	}
+	if got.NodeDID != node.URI {
+		t.Fatalf("node DID = %q, want %q", got.NodeDID, node.URI)
+	}
+	if got.MemberDID != "did:jwk:wallet" {
+		t.Fatalf("member DID = %q", got.MemberDID)
+	}
+	if got.OwnerDID != "did:jwk:wallet" {
+		t.Fatalf("owner DID = %q", got.OwnerDID)
+	}
+	if got.NodeKeyDelivery == nil || got.NodeKeyDelivery.RootKeyID != node.EncryptionKeyID() {
+		t.Fatalf("node key delivery = %+v, want root %s", got.NodeKeyDelivery, node.EncryptionKeyID())
+	}
+	if !VerifyNodeJoinProof(got.NodeDID, got.NodeProof, payload.NetworkID, got.MemberDID, payload.TokenID) {
+		t.Fatal("node proof did not verify")
+	}
+	if !invite.VerifyProof(payload.Secret, payload.NetworkID, got.NodeDID, got.PreAuthProof) {
+		t.Fatal("preauth proof did not verify")
+	}
+	if got.RequestedAt == "" {
+		t.Fatal("requestedAt is empty")
+	}
+}
+
+func TestValidateNodeKeyDeliveryRejectsMismatchedRoot(t *testing.T) {
+	node, err := did.Generate()
+	if err != nil {
+		t.Fatalf("Generate node: %v", err)
+	}
+	other, err := did.Generate()
+	if err != nil {
+		t.Fatalf("Generate other: %v", err)
+	}
+	keyDelivery, err := dwncrypto.NewKeyDeliveryPublic(
+		other.EncryptionPrivateKey,
+		other.EncryptionKeyID(),
+		protocols.KeyDeliveryProtocolURI,
+	)
+	if err != nil {
+		t.Fatalf("NewKeyDeliveryPublic: %v", err)
+	}
+
+	err = validateNodeKeyDelivery(node.URI, keyDelivery)
+	if err == nil {
+		t.Fatal("expected mismatched key delivery root to fail")
+	}
+	if !strings.Contains(err.Error(), "does not match node DID") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

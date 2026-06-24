@@ -14,6 +14,10 @@
       "schema": "https://enbox.id/schemas/wireguard-mesh/node-request",
       "dataFormats": ["application/json"]
     },
+    "nodeApproval": {
+      "schema": "https://enbox.id/schemas/wireguard-mesh/node-approval",
+      "dataFormats": ["application/json"]
+    },
     "node": {
       "schema": "https://enbox.id/schemas/wireguard-mesh/node",
       "dataFormats": ["application/json"],
@@ -46,6 +50,23 @@
     }
   },
   "structure": {
+    "nodeRequest": {
+      "$size": { "max": 3000 },
+      "$actions": [
+        { "who": "anyone", "can": ["create"] },
+        { "who": "recipient", "of": "nodeRequest", "can": ["create", "read", "delete"] },
+        { "who": "author", "of": "nodeRequest", "can": ["create", "read", "delete"] }
+      ]
+    },
+
+    "nodeApproval": {
+      "$size": { "max": 3000 },
+      "$actions": [
+        { "who": "recipient", "of": "nodeApproval", "can": ["read"] },
+        { "who": "author", "of": "nodeApproval", "can": ["create", "read", "delete"] }
+      ]
+    },
+
     "network": {
       "$encryption": {
         "rootKeyId": "#dwn-enc",
