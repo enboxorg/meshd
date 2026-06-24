@@ -402,6 +402,7 @@ func TestRefreshLocalMembershipMetadataFromMap(t *testing.T) {
 		MeshCIDR:        "10.200.0.0/16",
 		MeshIP:          "10.200.0.5",
 		NodeExpiresAt:   "2026-07-01T00:00:00Z",
+		NodeLabel:       "old-label",
 		NodeDID:         "did:jwk:node",
 		OwnerDID:        "did:jwk:old-owner",
 		MemberDID:       "did:jwk:old-owner",
@@ -415,6 +416,7 @@ func TestRefreshLocalMembershipMetadataFromMap(t *testing.T) {
 	refreshed, changed, err := refreshLocalMembershipMetadataFromMap(dir, ns, &control.MapResponse{
 		Node: &control.Node{
 			DID:            "did:jwk:node",
+			Name:           "server-01",
 			MeshIP:         netip.MustParseAddr("10.200.0.9"),
 			MemberDID:      "did:jwk:wallet",
 			MemberRecordID: "member-2",
@@ -426,7 +428,7 @@ func TestRefreshLocalMembershipMetadataFromMap(t *testing.T) {
 	if !changed {
 		t.Fatal("refreshLocalMembershipMetadataFromMap changed = false, want true")
 	}
-	if refreshed.MeshIP != "10.200.0.9" || refreshed.NodeExpiresAt != "" || refreshed.OwnerDID != "did:jwk:wallet" || refreshed.MemberRecordID != "member-2" {
+	if refreshed.MeshIP != "10.200.0.9" || refreshed.NodeExpiresAt != "" || refreshed.NodeLabel != "server-01" || refreshed.OwnerDID != "did:jwk:wallet" || refreshed.MemberRecordID != "member-2" {
 		t.Fatalf("refreshed state = %+v", refreshed)
 	}
 
@@ -434,7 +436,7 @@ func TestRefreshLocalMembershipMetadataFromMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadNetworkState: %v", err)
 	}
-	if reloaded.MeshIP != "10.200.0.9" || reloaded.NodeExpiresAt != "" || reloaded.OwnerDID != "did:jwk:wallet" || reloaded.MemberDID != "did:jwk:wallet" || reloaded.MemberRecordID != "member-2" {
+	if reloaded.MeshIP != "10.200.0.9" || reloaded.NodeExpiresAt != "" || reloaded.NodeLabel != "server-01" || reloaded.OwnerDID != "did:jwk:wallet" || reloaded.MemberDID != "did:jwk:wallet" || reloaded.MemberRecordID != "member-2" {
 		t.Fatalf("persisted state = %+v", reloaded)
 	}
 }

@@ -229,6 +229,8 @@ pending nodes, and remove devices without copying record IDs by hand. Use
 machine or when approving a server from another device, target the owner
 explicitly with `meshd admin --owner <wallet-did>`; add `--network <record-id>`
 when you want the dashboard to preselect a specific network.
+Dashboard node label edits refresh into local CLI state on the next `meshd up`
+or `meshd peer list`, and `meshd status` prints the current `Node Label`.
 
 For manual admin onboarding, use `meshd peer add <node-did> --owner
 <wallet-or-owner-did>` when the device DID and owning wallet/member DID are

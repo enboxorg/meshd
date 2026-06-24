@@ -69,6 +69,9 @@ type NetworkState struct {
 	// Empty means the membership does not expire.
 	NodeExpiresAt string `json:"nodeExpiresAt,omitempty"`
 
+	// NodeLabel is the human-readable owner/dashboard label for this node.
+	NodeLabel string `json:"nodeLabel,omitempty"`
+
 	// NodeDID is this machine's device DID. It is the DID used for WireGuard
 	// key derivation, node records, endpoint writes, and "this device" UI.
 	// Older state files omit it; callers should fall back to the local profile

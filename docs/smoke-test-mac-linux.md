@@ -134,6 +134,8 @@ Expected result:
 - If an approval expiry was selected, the joining node's `meshd status` shows
   `Membership Expires`.
 - Both machines show the same network name.
+- The joining node's `meshd status` shows `Node Label` after approval if the
+  dashboard assigned or edited one.
 - `meshd peer list` shows both peers with `10.200.x.x` mesh IPs and an
   `EXPIRES` column. Non-expiring nodes show `never`.
 
@@ -141,6 +143,7 @@ If you renew a node or switch it to `Never` in the dashboard, run `meshd up` or
 `meshd peer list` on that node. Both commands refresh the local membership
 metadata from the DWN map, so `meshd status` should then show the updated
 `Membership Expires` value or omit it for non-expiring membership.
+The same refresh updates the local `Node Label` after dashboard label edits.
 
 ## 5. Ping both directions
 

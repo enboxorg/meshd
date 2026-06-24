@@ -2210,6 +2210,12 @@ func refreshLocalMembershipMetadataFromMap(stateDir string, ns *state.NetworkSta
 		changed = true
 	}
 
+	nodeLabel := strings.TrimSpace(resp.Node.Name)
+	if refreshed.NodeLabel != nodeLabel {
+		refreshed.NodeLabel = nodeLabel
+		changed = true
+	}
+
 	if resp.Node.MemberDID != "" && refreshed.OwnerDID != resp.Node.MemberDID {
 		refreshed.OwnerDID = resp.Node.MemberDID
 		refreshed.MemberDID = resp.Node.MemberDID
@@ -2969,6 +2975,9 @@ func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 	}
 	if ns.MeshIP != "" {
 		fmt.Printf("  Mesh IP: %s\n", ns.MeshIP)
+	}
+	if ns.NodeLabel != "" {
+		fmt.Printf("  Node Label: %s\n", ns.NodeLabel)
 	}
 	if ns.NodeExpiresAt != "" {
 		fmt.Printf("  Membership Expires: %s\n", ns.NodeExpiresAt)
@@ -4552,6 +4561,7 @@ func refreshPendingOwnerApproval(ctx context.Context, stateDir string, ns *state
 		MeshCIDR:          firstNonEmpty(approval.MeshCIDR, "10.200.0.0/16"),
 		MeshIP:            approval.MeshIP,
 		NodeExpiresAt:     approval.ExpiresAt,
+		NodeLabel:         approval.Label,
 		NodeDID:           nodeDID,
 		OwnerDID:          ownerDID,
 		MemberDID:         ownerDID,
@@ -4566,6 +4576,9 @@ func refreshPendingOwnerApproval(ctx context.Context, stateDir string, ns *state
 	fmt.Printf("Owner approval accepted.\n")
 	fmt.Printf("  Network: %s\n", refreshed.NetworkName)
 	fmt.Printf("  Mesh IP: %s\n", refreshed.MeshIP)
+	if refreshed.NodeLabel != "" {
+		fmt.Printf("  Node Label: %s\n", refreshed.NodeLabel)
+	}
 	if refreshed.NodeExpiresAt != "" {
 		fmt.Printf("  Membership Expires: %s\n", refreshed.NodeExpiresAt)
 	}
