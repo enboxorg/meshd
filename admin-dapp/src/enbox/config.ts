@@ -30,6 +30,7 @@ export const WALLET_OPTIONS = [
 export const DWN_ENDPOINTS = (
   import.meta.env.VITE_ENBOX_DWN_ENDPOINTS || "https://dev.aws.dwn.enbox.id,https://enbox-dwn.fly.dev"
 ).split(",").map((endpoint: string) => endpoint.trim()).filter(Boolean);
+export const DEFAULT_DWN_ENDPOINT = DWN_ENDPOINTS[0] || "https://dev.aws.dwn.enbox.id";
 
 export const MeshProtocolDefinition = meshProtocolDefinition;
 export const KeyDeliveryProtocolDefinition = keyDeliveryProtocolDefinition;

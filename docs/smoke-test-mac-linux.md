@@ -11,7 +11,8 @@ Assumptions:
   should not overlap Tailscale's `100.64.0.0/10` address space.
 - The beta DWN endpoint is `https://dev.aws.dwn.enbox.id`.
   `meshd up --owner` uses it automatically when the owner DID does not
-  advertise a DWN endpoint.
+  advertise a DWN endpoint. The dashboard uses the same default when creating
+  a network for that owner.
 - The released CLI is installed on both machines.
 - The standalone meshd Admin dapp is deployed at
   `https://meshd-admin.pages.dev`.
