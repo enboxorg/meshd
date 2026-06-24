@@ -361,6 +361,7 @@ func TestPeerListRowsFromMapResponse(t *testing.T) {
 			DID:       "did:jwk:self",
 			MemberDID: "did:jwk:wallet",
 			Name:      "laptop",
+			Label:     "macbook",
 			MeshIP:    netip.MustParseAddr("10.200.0.5"),
 			ExpiresAt: "2026-07-01T00:00:00Z",
 		},
@@ -370,6 +371,7 @@ func TestPeerListRowsFromMapResponse(t *testing.T) {
 				MemberDID:      "did:jwk:wallet",
 				MemberRecordID: "member-record",
 				Name:           "server",
+				Label:          "server-label",
 				MeshIP:         netip.MustParseAddr("10.200.0.8"),
 				ExpiresAt:      "2026-07-02T00:00:00Z",
 			},
@@ -386,8 +388,8 @@ func TestPeerListRowsFromMapResponse(t *testing.T) {
 	if rows[1].Device != "peer" || rows[1].Owner != "did:jwk:wallet" || rows[1].Path != "network/member/node" {
 		t.Fatalf("peer row = %+v", rows[1])
 	}
-	if rows[1].MeshIP != "10.200.0.8" || rows[1].Label != "server" {
-		t.Fatalf("peer row data = %+v", rows[1])
+	if rows[0].Label != "macbook" || rows[1].MeshIP != "10.200.0.8" || rows[1].Label != "server-label" {
+		t.Fatalf("peer row data = %+v", rows)
 	}
 	if rows[0].Expires != "2026-07-01T00:00:00Z" || rows[1].Expires != "2026-07-02T00:00:00Z" {
 		t.Fatalf("peer row expiry = %+v", rows)
@@ -416,7 +418,8 @@ func TestRefreshLocalMembershipMetadataFromMap(t *testing.T) {
 	refreshed, changed, err := refreshLocalMembershipMetadataFromMap(dir, ns, &control.MapResponse{
 		Node: &control.Node{
 			DID:            "did:jwk:node",
-			Name:           "server-01",
+			Name:           "server-host",
+			Label:          "server-01",
 			MeshIP:         netip.MustParseAddr("10.200.0.9"),
 			MemberDID:      "did:jwk:wallet",
 			MemberRecordID: "member-2",

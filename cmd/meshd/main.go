@@ -2210,7 +2210,7 @@ func refreshLocalMembershipMetadataFromMap(stateDir string, ns *state.NetworkSta
 		changed = true
 	}
 
-	nodeLabel := strings.TrimSpace(resp.Node.Name)
+	nodeLabel := strings.TrimSpace(resp.Node.Label)
 	if refreshed.NodeLabel != nodeLabel {
 		refreshed.NodeLabel = nodeLabel
 		changed = true
@@ -2269,7 +2269,7 @@ func peerListRowsFromMapResponse(ns *state.NetworkState, resp *control.MapRespon
 			MeshIP:  peerListMeshIP(ns.MeshCIDR, node.DID, meshIP),
 			Device:  peerListDevice(node.DID, selfNodeDID),
 			Owner:   peerListOwner(node.DID, node.MemberDID, selfNodeDID, selfOwnerDID),
-			Label:   node.Name,
+			Label:   firstNonEmpty(node.Label, node.Name),
 			Expires: node.ExpiresAt,
 			Path:    peerListPath(node),
 		})
