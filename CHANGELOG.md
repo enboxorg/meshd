@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/enboxorg/meshd/compare/v0.12.0...v0.13.0) (2026-06-24)
+
+
+### Features
+
+* **admin:** auto-refresh selected network ([d871de2](https://github.com/enboxorg/meshd/commit/d871de20cb9fb7df8f23d355d6f66f5d5f087b6a))
+
 ## [0.12.0](https://github.com/enboxorg/meshd/compare/v0.11.0...v0.12.0) (2026-06-24)
 
 
