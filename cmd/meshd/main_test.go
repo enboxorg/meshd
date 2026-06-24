@@ -82,6 +82,45 @@ func TestPromptInteractiveJoinFallsBackToManualDetails(t *testing.T) {
 	}
 }
 
+func TestParseInteractiveSetupChoice(t *testing.T) {
+	u, err := invite.Encode(invite.New("https://dwn.example.com", "did:jwk:anchor", "net", "home", "", "", ""))
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		input     string
+		want      interactiveSetupChoice
+		wantValue string
+	}{
+		{name: "default", input: "", want: interactiveSetupOwner},
+		{name: "owner number", input: "1", want: interactiveSetupOwner},
+		{name: "owner word", input: "owner", want: interactiveSetupOwner},
+		{name: "owner DID", input: " did:jwk:owner ", want: interactiveSetupOwner, wantValue: "did:jwk:owner"},
+		{name: "create number", input: "2", want: interactiveSetupCreate},
+		{name: "create word", input: "create", want: interactiveSetupCreate},
+		{name: "join number", input: "3", want: interactiveSetupJoin},
+		{name: "join word", input: "invite", want: interactiveSetupJoin},
+		{name: "invite URL", input: u, want: interactiveSetupJoin, wantValue: u},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, value, err := parseInteractiveSetupChoice(tt.input)
+			if err != nil {
+				t.Fatalf("parseInteractiveSetupChoice: %v", err)
+			}
+			if got != tt.want || value != tt.wantValue {
+				t.Fatalf("choice = %q value = %q, want %q/%q", got, value, tt.want, tt.wantValue)
+			}
+		})
+	}
+
+	if _, _, err := parseInteractiveSetupChoice("wat"); err == nil {
+		t.Fatal("expected invalid setup choice to fail")
+	}
+}
+
 func TestDefaultTUNName(t *testing.T) {
 	if got := defaultTUNName("darwin"); got != "utun" {
 		t.Fatalf("defaultTUNName(darwin) = %q, want utun", got)

@@ -25,19 +25,16 @@ meshd --version
 
 ```bash
 # On your first machine
-meshd up --create my-network --endpoint https://dwn.example.com
-# prompts once to create a local vault password, creates the network, then starts meshd
+meshd up
+# choose "Create a new local-vault network", then enter the DWN endpoint and network name
 
 # In another terminal on the first machine, create an invite URL
 meshd invite create
 # prints: meshd://invite/eyJ...
 
 # On your second machine, join from the invite
-meshd join meshd://invite/eyJ...
-# prompts once to create a local vault password and submits a join request
-
-# Start meshd on the second machine
 meshd up
+# paste the meshd://invite/... URL at the setup prompt
 
 # That's it. After the anchor approves the invite, the machines can reach each other at 10.200.x.x
 # through encrypted WireGuard tunnels. NAT traversal is automatic.
@@ -56,6 +53,9 @@ meshd admin
 # In the dashboard, copy the setup command from the target network.
 # On a new device, run it to request approval from that owner.
 meshd up --owner did:example:owner
+
+# Or run the wizard and paste the owner DID at the setup prompt.
+meshd up
 
 # Approve the pending device in the dashboard, then start it.
 meshd up
@@ -160,6 +160,9 @@ an interactive terminal and meshd will prompt for the missing values.
 `meshd up` also acts as the first-run wizard: it can create a local node DID,
 request access from a wallet owner DID, create a local-vault network, or join
 with an invite URL.
+At the first setup prompt you can press Enter for owner approval, paste a
+wallet owner DID, paste a `meshd://invite/...` URL, or choose create/join
+manually.
 The join path asks for a `meshd://invite/...` URL first and only falls back to
 manual DWN endpoint, anchor DID, and network ID prompts if you leave it blank.
 For wallet-connected profiles, creating a network opens the wallet approval

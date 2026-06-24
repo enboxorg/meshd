@@ -87,6 +87,9 @@ meshd down || true
 meshd up --owner '<OWNER_DID>'
 ```
 
+You can also run `meshd up` without flags and paste the owner DID at the setup
+prompt.
+
 Expected result:
 
 - If the node has no local identity, meshd creates one and asks for a vault
@@ -174,6 +177,9 @@ meshd up
 meshd status
 meshd peer list
 ```
+
+You can also run `meshd up` without flags and paste the `meshd://invite/...`
+URL at the setup prompt.
 
 If the invite request appears pending in the dashboard, approve it and run
 `meshd up` again on the joining node.
