@@ -14,7 +14,6 @@ import (
 
 	"github.com/enboxorg/meshd/internal/did"
 	"github.com/enboxorg/meshd/internal/dwn"
-	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 	"github.com/enboxorg/meshd/protocols"
 )
 
@@ -35,21 +34,20 @@ const (
 )
 
 type Request struct {
-	Version          int                `json:"version"`
-	Type             string             `json:"type"`
-	AppName          string             `json:"appName"`
-	ProfileName      string             `json:"profileName,omitempty"`
-	NodeDID          string             `json:"nodeDid"`
-	DelegateDID      string             `json:"delegateDid,omitempty"`
-	NodeProof        string             `json:"nodeProof"`
-	Challenge        string             `json:"challenge"`
-	CallbackURL      string             `json:"callbackUrl,omitempty"`
-	ResponseEndpoint string             `json:"responseEndpoint,omitempty"`
-	ResponseToken    string             `json:"responseToken,omitempty"`
-	Protocol         string             `json:"protocol"`
-	Permissions      []string           `json:"permissions"`
-	NodeKeyDelivery  *KeyDeliveryPublic `json:"nodeKeyDelivery,omitempty"`
-	CreatedAt        string             `json:"createdAt"`
+	Version          int      `json:"version"`
+	Type             string   `json:"type"`
+	AppName          string   `json:"appName"`
+	ProfileName      string   `json:"profileName,omitempty"`
+	NodeDID          string   `json:"nodeDid"`
+	DelegateDID      string   `json:"delegateDid,omitempty"`
+	NodeProof        string   `json:"nodeProof"`
+	Challenge        string   `json:"challenge"`
+	CallbackURL      string   `json:"callbackUrl,omitempty"`
+	ResponseEndpoint string   `json:"responseEndpoint,omitempty"`
+	ResponseToken    string   `json:"responseToken,omitempty"`
+	Protocol         string   `json:"protocol"`
+	Permissions      []string `json:"permissions"`
+	CreatedAt        string   `json:"createdAt"`
 }
 
 type Response struct {
@@ -63,31 +61,28 @@ type Response struct {
 	WalletOrigin                string            `json:"walletOrigin,omitempty"`
 	ExpiresAt                   string            `json:"expiresAt,omitempty"`
 	Grants                      []json.RawMessage `json:"grants,omitempty"`
-	NodeContextKeys             []json.RawMessage `json:"nodeContextKeys,omitempty"`
 	NodeMultiPartyProtocols     []string          `json:"nodeMultiPartyProtocols,omitempty"`
 	DelegateDecryptionKeys      []json.RawMessage `json:"delegateDecryptionKeys,omitempty"`
-	DelegateContextKeys         []json.RawMessage `json:"delegateContextKeys,omitempty"`
 	DelegateMultiPartyProtocols []string          `json:"delegateMultiPartyProtocols,omitempty"`
 }
 
 type NetworkCreateRequest struct {
-	Version           int                `json:"version"`
-	Type              string             `json:"type"`
-	AppName           string             `json:"appName"`
-	ProfileName       string             `json:"profileName,omitempty"`
-	NodeDID           string             `json:"nodeDid"`
-	DelegateDID       string             `json:"delegateDid,omitempty"`
-	NodeProof         string             `json:"nodeProof"`
-	Challenge         string             `json:"challenge"`
-	CallbackURL       string             `json:"callbackUrl,omitempty"`
-	ResponseEndpoint  string             `json:"responseEndpoint,omitempty"`
-	ResponseToken     string             `json:"responseToken,omitempty"`
-	Protocol          string             `json:"protocol"`
-	NetworkName       string             `json:"networkName"`
-	MeshCIDR          string             `json:"meshCIDR"`
-	RequestedEndpoint string             `json:"requestedEndpoint,omitempty"`
-	NodeKeyDelivery   *KeyDeliveryPublic `json:"nodeKeyDelivery,omitempty"`
-	CreatedAt         string             `json:"createdAt"`
+	Version           int    `json:"version"`
+	Type              string `json:"type"`
+	AppName           string `json:"appName"`
+	ProfileName       string `json:"profileName,omitempty"`
+	NodeDID           string `json:"nodeDid"`
+	DelegateDID       string `json:"delegateDid,omitempty"`
+	NodeProof         string `json:"nodeProof"`
+	Challenge         string `json:"challenge"`
+	CallbackURL       string `json:"callbackUrl,omitempty"`
+	ResponseEndpoint  string `json:"responseEndpoint,omitempty"`
+	ResponseToken     string `json:"responseToken,omitempty"`
+	Protocol          string `json:"protocol"`
+	NetworkName       string `json:"networkName"`
+	MeshCIDR          string `json:"meshCIDR"`
+	RequestedEndpoint string `json:"requestedEndpoint,omitempty"`
+	CreatedAt         string `json:"createdAt"`
 }
 
 type NetworkCreateResponse struct {
@@ -110,9 +105,7 @@ type NetworkCreateResponse struct {
 	NodeRecordID                string            `json:"nodeRecordId,omitempty"`
 	NodeDateCreated             string            `json:"nodeDateCreated,omitempty"`
 	Grants                      []json.RawMessage `json:"grants,omitempty"`
-	NodeContextKeys             []json.RawMessage `json:"nodeContextKeys,omitempty"`
 	NodeMultiPartyProtocols     []string          `json:"nodeMultiPartyProtocols,omitempty"`
-	DelegateContextKeys         []json.RawMessage `json:"delegateContextKeys,omitempty"`
 	DelegateMultiPartyProtocols []string          `json:"delegateMultiPartyProtocols,omitempty"`
 }
 
@@ -122,15 +115,6 @@ type ResponseEnvelope struct {
 	ResponseToken string          `json:"responseToken"`
 	ResponseType  string          `json:"responseType"`
 	Response      json.RawMessage `json:"response"`
-}
-
-type KeyDeliveryPublic = dwncrypto.KeyDeliveryPublic
-
-func (r Response) EffectiveNodeContextKeys() []json.RawMessage {
-	if len(r.NodeContextKeys) > 0 {
-		return r.NodeContextKeys
-	}
-	return r.DelegateContextKeys
 }
 
 func (r Response) EffectiveNodeMultiPartyProtocols() []string {
@@ -157,13 +141,6 @@ func (r Response) EffectiveOwnerDID() string {
 		return r.OwnerDID
 	}
 	return r.ConnectedDID
-}
-
-func (r NetworkCreateResponse) EffectiveNodeContextKeys() []json.RawMessage {
-	if len(r.NodeContextKeys) > 0 {
-		return r.NodeContextKeys
-	}
-	return r.DelegateContextKeys
 }
 
 func (r NetworkCreateResponse) EffectiveNodeMultiPartyProtocols() []string {
@@ -204,26 +181,21 @@ func NewRequest(profileName string, identity *did.DID, delegateIdentities ...*di
 	if err != nil {
 		return Request{}, err
 	}
-	keyDelivery, err := NewKeyDeliveryPublic(identity)
-	if err != nil {
-		return Request{}, err
-	}
 	delegateDID := ""
 	if len(delegateIdentities) > 0 && delegateIdentities[0] != nil {
 		delegateDID = strings.TrimSpace(delegateIdentities[0].URI)
 	}
 	req := Request{
-		Version:         currentVersion,
-		Type:            RequestType,
-		AppName:         "meshd CLI",
-		ProfileName:     strings.TrimSpace(profileName),
-		NodeDID:         strings.TrimSpace(signer.DID),
-		DelegateDID:     delegateDID,
-		Challenge:       challenge,
-		Protocol:        protocols.MeshProtocolURI,
-		Permissions:     []string{"mesh-node"},
-		NodeKeyDelivery: keyDelivery,
-		CreatedAt:       time.Now().UTC().Format(time.RFC3339),
+		Version:     currentVersion,
+		Type:        RequestType,
+		AppName:     "meshd CLI",
+		ProfileName: strings.TrimSpace(profileName),
+		NodeDID:     strings.TrimSpace(signer.DID),
+		DelegateDID: delegateDID,
+		Challenge:   challenge,
+		Protocol:    protocols.MeshProtocolURI,
+		Permissions: []string{"mesh-node"},
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
 	req.NodeProof = SignNodeProof(signer, req.Challenge, req.NodeDID, req.DelegateDID, "", "", "", permissionsProofValue(req.Permissions))
 	return req, nil
@@ -246,10 +218,6 @@ func NewNetworkCreateRequest(profileName string, identity *did.DID, networkName 
 	if err != nil {
 		return NetworkCreateRequest{}, err
 	}
-	keyDelivery, err := NewKeyDeliveryPublic(identity)
-	if err != nil {
-		return NetworkCreateRequest{}, err
-	}
 	delegateDID := ""
 	if len(delegateIdentities) > 0 && delegateIdentities[0] != nil {
 		delegateDID = strings.TrimSpace(delegateIdentities[0].URI)
@@ -266,7 +234,6 @@ func NewNetworkCreateRequest(profileName string, identity *did.DID, networkName 
 		NetworkName:       networkName,
 		MeshCIDR:          meshCIDR,
 		RequestedEndpoint: strings.TrimSpace(endpoint),
-		NodeKeyDelivery:   keyDelivery,
 		CreatedAt:         time.Now().UTC().Format(time.RFC3339),
 	}
 	req.NodeProof = SignNetworkCreateProof(signer, req.Challenge, req.NodeDID, req.NetworkName, req.RequestedEndpoint, req.MeshCIDR, req.DelegateDID, "", "", "")
@@ -295,17 +262,6 @@ func SignNetworkCreateRequest(identity *did.DID, req *NetworkCreateRequest) erro
 	signer := &dwn.Signer{DID: identity.URI, PrivateKey: identity.SigningKey}
 	req.NodeProof = SignNetworkCreateProof(signer, req.Challenge, req.NodeDID, req.NetworkName, req.RequestedEndpoint, req.MeshCIDR, req.DelegateDID, req.CallbackURL, req.ResponseEndpoint, req.ResponseToken)
 	return nil
-}
-
-func NewKeyDeliveryPublic(identity *did.DID) (*KeyDeliveryPublic, error) {
-	if identity == nil {
-		return nil, fmt.Errorf("node identity is required")
-	}
-	return dwncrypto.NewKeyDeliveryPublic(
-		identity.EncryptionPrivateKey,
-		identity.EncryptionKeyID(),
-		protocols.KeyDeliveryProtocolURI,
-	)
 }
 
 func EncodeRequest(req Request) (string, error) {
@@ -399,14 +355,6 @@ func (r Request) Validate() error {
 	if !VerifyNodeProof(r.NodeDID, r.NodeProof, r.Challenge, r.DelegateDID, r.CallbackURL, r.ResponseEndpoint, r.ResponseToken, permissionsProofValue(r.Permissions)) {
 		return fmt.Errorf("wallet connect request node proof is invalid")
 	}
-	if r.NodeKeyDelivery != nil {
-		if r.NodeKeyDelivery.RootKeyID == "" {
-			return fmt.Errorf("wallet connect request node key delivery missing rootKeyId")
-		}
-		if r.NodeKeyDelivery.PublicKeyJWK.X == "" {
-			return fmt.Errorf("wallet connect request node key delivery missing publicKeyJwk.x")
-		}
-	}
 	return nil
 }
 
@@ -453,14 +401,6 @@ func (r NetworkCreateRequest) Validate() error {
 	}
 	if !VerifyNetworkCreateProof(r.NodeDID, r.NodeProof, r.Challenge, r.NetworkName, r.RequestedEndpoint, r.MeshCIDR, r.DelegateDID, r.CallbackURL, r.ResponseEndpoint, r.ResponseToken) {
 		return fmt.Errorf("network create request node proof is invalid")
-	}
-	if r.NodeKeyDelivery != nil {
-		if r.NodeKeyDelivery.RootKeyID == "" {
-			return fmt.Errorf("network create request node key delivery missing rootKeyId")
-		}
-		if r.NodeKeyDelivery.PublicKeyJWK.X == "" {
-			return fmt.Errorf("network create request node key delivery missing publicKeyJwk.x")
-		}
 	}
 	return nil
 }

@@ -68,7 +68,7 @@
     },
 
     "network": {
-      "$encryption": {
+      "$keyAgreement": {
         "rootKeyId": "#dwn-enc",
         "publicKeyJwk": {}
       },
@@ -78,7 +78,7 @@
 
       "member": {
         "$role": true,
-        "$encryption": {
+        "$keyAgreement": {
           "rootKeyId": "#dwn-enc",
           "publicKeyJwk": {}
         },
@@ -101,7 +101,7 @@
           "$role": true,
           "$squash": true,
           "$size": { "max": 10000 },
-          "$encryption": {
+          "$keyAgreement": {
             "rootKeyId": "#dwn-enc",
             "publicKeyJwk": {}
           },
@@ -114,7 +114,7 @@
           "nodeInfo": {
             "$squash": true,
             "$size": { "max": 5000 },
-            "$encryption": {
+            "$keyAgreement": {
               "rootKeyId": "#dwn-enc",
               "publicKeyJwk": {}
             },
@@ -128,7 +128,7 @@
           "endpoint": {
             "$squash": true,
             "$size": { "max": 2000 },
-            "$encryption": {
+            "$keyAgreement": {
               "rootKeyId": "#dwn-enc",
               "publicKeyJwk": {}
             },
@@ -153,7 +153,7 @@
         "$role": true,
         "$squash": true,
         "$size": { "max": 10000 },
-        "$encryption": {
+        "$keyAgreement": {
           "rootKeyId": "#dwn-enc",
           "publicKeyJwk": {}
         },
@@ -166,7 +166,7 @@
         "nodeInfo": {
           "$squash": true,
           "$size": { "max": 5000 },
-          "$encryption": {
+          "$keyAgreement": {
             "rootKeyId": "#dwn-enc",
             "publicKeyJwk": {}
           },
@@ -180,7 +180,7 @@
         "endpoint": {
           "$squash": true,
           "$size": { "max": 2000 },
-          "$encryption": {
+          "$keyAgreement": {
             "rootKeyId": "#dwn-enc",
             "publicKeyJwk": {}
           },
@@ -195,7 +195,7 @@
       "aclPolicy": {
         "$squash": true,
         "$size": { "max": 100000 },
-        "$encryption": {
+        "$keyAgreement": {
           "rootKeyId": "#dwn-enc",
           "publicKeyJwk": {}
         },
@@ -207,7 +207,7 @@
       },
 
       "relay": {
-        "$encryption": {
+        "$keyAgreement": {
           "rootKeyId": "#dwn-enc",
           "publicKeyJwk": {}
         },
@@ -219,7 +219,7 @@
       },
 
       "preAuthKey": {
-        "$encryption": {
+        "$keyAgreement": {
           "rootKeyId": "#dwn-enc",
           "publicKeyJwk": {}
         },

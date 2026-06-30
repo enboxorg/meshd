@@ -2,375 +2,242 @@ package crypto
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"strconv"
 )
 
-// JWE General JSON Serialization types for DWN encryption.
-//
-// The DWN uses a JWE-inspired structure as the "encryption" property on
-// RecordsWrite messages. Unlike standard JWE, the ciphertext is NOT included
-// in this structure — it is stored separately as the record's data. Only the
-// key wrapping metadata, IV, and authentication tag are stored here.
+// Encryption is the encryption-v1 envelope stored as the top-level "encryption"
+// field on a RecordsWrite message. The ciphertext is NOT included here — it is
+// stored separately as the record's data.
+type Encryption struct {
+	// Algorithm is the content encryption algorithm ("A256CTR").
+	Algorithm string `json:"algorithm"`
 
-// ProtectedHeader is the JWE Protected Header for DWN encryption.
-type ProtectedHeader struct {
-	Alg string `json:"alg"` // Key agreement algorithm (e.g., "ECDH-ES+A256KW")
-	Enc string `json:"enc"` // Content encryption algorithm (e.g., "A256GCM")
+	// InitializationVector is the base64url-encoded 16-byte AES-CTR counter.
+	InitializationVector string `json:"initializationVector"`
+
+	// KeyEncryption holds one CEK-wrapping entry per recipient / audience.
+	KeyEncryption []KeyEncryption `json:"keyEncryption"`
 }
 
-// RecipientHeader is the per-recipient unprotected header.
-type RecipientHeader struct {
-	// KID is the fully qualified key ID of the root key used in derivation
-	// (e.g., "did:example:alice#enc-1").
-	KID string `json:"kid"`
+// KeyEncryption is a single CEK-wrapping entry in an Encryption envelope.
+type KeyEncryption struct {
+	// Algorithm is the key wrap algorithm ("X25519-HKDF-SHA256+A256KW").
+	Algorithm string `json:"algorithm"`
 
-	// EPK is the ephemeral X25519 public key used for ECDH key agreement.
-	EPK *PublicKeyJWK `json:"epk"`
+	// EncryptedKey is the base64url-encoded AES-KeyWrapped CEK.
+	EncryptedKey string `json:"encryptedKey"`
 
-	// DerivationScheme is the key derivation scheme used
-	// ("protocolPath" or "protocolContext").
+	// EphemeralPublicKey is the ephemeral X25519 public key used for ECDH.
+	EphemeralPublicKey *PublicKeyJWK `json:"ephemeralPublicKey"`
+
+	// KeyID is the JWK thumbprint of the recipient public key:
+	//   - protocolPath: thumbprint of the derived leaf public key.
+	//   - roleAudience: thumbprint of the audience public key.
+	KeyID string `json:"keyId"`
+
+	// DerivationScheme is "protocolPath" or "roleAudience".
 	DerivationScheme string `json:"derivationScheme"`
 
-	// DerivedPublicKey is the derived public key. Present when derivation
-	// scheme is "protocolContext" to allow the recipient to identify which
-	// derived key was used.
-	DerivedPublicKey *PublicKeyJWK `json:"derivedPublicKey,omitempty"`
+	// Protocol, Role and Epoch are present only for roleAudience entries and
+	// feed the role-audience KEK info string.
+	Protocol string `json:"protocol,omitempty"`
+	Role     string `json:"role,omitempty"`
+	Epoch    int    `json:"epoch,omitempty"`
 }
 
-// Recipient is a single recipient entry in the JWE General JSON Serialization.
-type Recipient struct {
-	Header       RecipientHeader `json:"header"`
-	EncryptedKey string          `json:"encrypted_key"` // Base64url-encoded wrapped CEK
-}
-
-// Encryption is the JWE-inspired structure used as the "encryption" property
-// on RecordsWrite messages (JWE General JSON Serialization minus ciphertext).
-type Encryption struct {
-	// Protected is the base64url-encoded JWE Protected Header.
-	Protected string `json:"protected"`
-
-	// IV is the base64url-encoded initialization vector for content encryption.
-	IV string `json:"iv"`
-
-	// Tag is the base64url-encoded authentication tag from the AEAD cipher.
-	Tag string `json:"tag"`
-
-	// Recipients contains one entry per recipient or derivation path.
-	Recipients []Recipient `json:"recipients"`
-}
-
-// PublicKeyJWK represents an X25519 public key in JWK format.
-type PublicKeyJWK struct {
-	KTY string `json:"kty"`           // Key type: "OKP"
-	CRV string `json:"crv"`           // Curve: "X25519"
-	X   string `json:"x"`             // Base64url-encoded public key bytes
-	KID string `json:"kid,omitempty"` // Key ID (optional)
-}
-
-// KeyEncryptionInput describes how to encrypt the CEK for a single recipient.
+// KeyEncryptionInput describes how to wrap the CEK for a single recipient on
+// the write path. meshd writes protocolPath entries; roleAudience entries are
+// appended by the SDK when records are authored through the agent.
 type KeyEncryptionInput struct {
-	// PublicKeyID is the fully qualified key ID of the recipient's root
-	// encryption key (e.g., "did:dht:xyz#enc-1").
-	PublicKeyID string
-
 	// PublicKey is the recipient's derived X25519 public key (raw 32 bytes).
 	PublicKey []byte
 
-	// DerivationScheme is the key derivation scheme.
+	// DerivationScheme is the key derivation scheme (protocolPath).
 	DerivationScheme string
 }
 
-// EncryptionInput describes the inputs for encrypting a record.
-type EncryptionInput struct {
-	// Algorithm is the content encryption algorithm. Defaults to A256GCM.
-	Algorithm string
-
-	// CEK is the Content Encryption Key (32 bytes).
-	CEK []byte
-
-	// IV is the initialization vector.
-	IV []byte
-
-	// Tag is the authentication tag from the AEAD encryption of the record data.
-	Tag []byte
-
-	// KeyEncryptionInputs describes how to wrap the CEK for each recipient.
-	KeyEncryptionInputs []KeyEncryptionInput
+// protocolPathKEKInfo returns the HKDF info string for a protocolPath entry.
+func protocolPathKEKInfo(keyID string) string {
+	return AlgX25519HKDFA256KW + "|" + DerivationSchemeProtocolPath + "|" + keyID
 }
 
-// EncryptData encrypts plaintext using A256GCM and wraps the CEK for all recipients.
-// Returns the encrypted data (ciphertext) and the Encryption structure.
-//
-// This is the main entry point for encrypting a DWN record:
-//  1. Generate random CEK and IV
-//  2. AEAD encrypt the plaintext
-//  3. Build JWE with per-recipient key wrapping
+// roleAudienceKEKInfo returns the HKDF info string for a roleAudience entry.
+func roleAudienceKEKInfo(protocol, role string, epoch int, keyID string) string {
+	return AlgX25519HKDFA256KW + "|" + DerivationSchemeRoleAudience + "|" +
+		protocol + "|" + role + "|" + strconv.Itoa(epoch) + "|" + keyID
+}
+
+// kekInfo returns the HKDF info string for the given keyEncryption entry.
+func kekInfo(entry *KeyEncryption) (string, error) {
+	switch entry.DerivationScheme {
+	case DerivationSchemeProtocolPath:
+		return protocolPathKEKInfo(entry.KeyID), nil
+	case DerivationSchemeRoleAudience:
+		return roleAudienceKEKInfo(entry.Protocol, entry.Role, entry.Epoch, entry.KeyID), nil
+	default:
+		return "", fmt.Errorf("unsupported derivation scheme %q", entry.DerivationScheme)
+	}
+}
+
+// EncryptData encrypts plaintext with AES-256-CTR and wraps the CEK for each
+// recipient using X25519-HKDF-SHA256+A256KW. Returns the ciphertext and the
+// encryption-v1 envelope.
 func EncryptData(plaintext []byte, recipients []KeyEncryptionInput) (ciphertext []byte, enc *Encryption, err error) {
 	if len(recipients) == 0 {
 		return nil, nil, fmt.Errorf("at least one recipient is required")
 	}
 
-	// Generate random CEK and IV.
 	cek, err := GenerateCEK()
 	if err != nil {
 		return nil, nil, err
 	}
-	defer clear(cek) // Zero CEK after wrapping for recipients.
+	defer clear(cek)
 
-	iv, err := GenerateIV(EncA256GCM)
+	iv, err := GenerateIV()
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Encrypt the plaintext.
-	ct, tag, err := AEADEncrypt(EncA256GCM, cek, iv, plaintext, nil)
+	ct, err := CTRXor(cek, iv, plaintext)
 	if err != nil {
 		return nil, nil, fmt.Errorf("encrypting data: %w", err)
 	}
 
-	// Build JWE structure.
-	input := EncryptionInput{
-		Algorithm:           EncA256GCM,
-		CEK:                 cek,
-		IV:                  iv,
-		Tag:                 tag,
-		KeyEncryptionInputs: recipients,
-	}
-
-	jwe, err := BuildJWE(input)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return ct, jwe, nil
-}
-
-// DecryptData decrypts a DWN record using the recipient's private key.
-// It finds the matching recipient entry, unwraps the CEK, and decrypts.
-func DecryptData(ciphertext []byte, enc *Encryption, recipientPrivateKey []byte, recipientKID string) ([]byte, error) {
-	// Parse protected header to get the content encryption algorithm.
-	header, err := ParseProtectedHeader(enc.Protected)
-	if err != nil {
-		return nil, err
-	}
-
-	// Decode IV and tag.
-	iv, err := base64URLDecode(enc.IV)
-	if err != nil {
-		return nil, fmt.Errorf("decoding IV: %w", err)
-	}
-
-	tag, err := base64URLDecode(enc.Tag)
-	if err != nil {
-		return nil, fmt.Errorf("decoding tag: %w", err)
-	}
-
-	// Find matching recipient and unwrap CEK.
-	cek, err := unwrapCEKForRecipient(enc.Recipients, recipientPrivateKey, recipientKID)
-	if err != nil {
-		return nil, err
-	}
-	defer clear(cek) // Zero CEK after decryption.
-
-	// Decrypt the data.
-	plaintext, err := AEADDecrypt(header.Enc, cek, iv, ciphertext, tag, nil)
-	if err != nil {
-		return nil, fmt.Errorf("decrypting data: %w", err)
-	}
-
-	return plaintext, nil
-}
-
-// BuildJWE constructs the JWE Encryption structure from encryption input.
-// For each recipient, it generates an ephemeral X25519 key pair, performs
-// ECDH-ES key agreement, and wraps the CEK.
-func BuildJWE(input EncryptionInput) (*Encryption, error) {
-	enc := input.Algorithm
-	if enc == "" {
-		enc = EncA256GCM
-	}
-
-	// Build and encode protected header.
-	header := ProtectedHeader{
-		Alg: AlgECDHESA256KW,
-		Enc: enc,
-	}
-	headerJSON, err := json.Marshal(header)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling protected header: %w", err)
-	}
-	protectedB64 := base64URLEncode(headerJSON)
-
-	// Build recipients.
-	recipients := make([]Recipient, 0, len(input.KeyEncryptionInputs))
-	for _, keyInput := range input.KeyEncryptionInputs {
-		// ECDH-ES+A256KW: generate ephemeral key, compute shared secret, wrap CEK.
-		ephPub, wrappedKey, err := ECDHESWrapKey(keyInput.PublicKey, input.CEK)
-		if err != nil {
-			return nil, fmt.Errorf("wrapping CEK for recipient %s: %w", keyInput.PublicKeyID, err)
+	keyEncryption := make([]KeyEncryption, 0, len(recipients))
+	for _, in := range recipients {
+		scheme := in.DerivationScheme
+		if scheme == "" {
+			scheme = DerivationSchemeProtocolPath
+		}
+		if scheme != DerivationSchemeProtocolPath {
+			return nil, nil, fmt.Errorf("unsupported write derivation scheme %q", scheme)
+		}
+		if len(in.PublicKey) != X25519KeySize {
+			return nil, nil, fmt.Errorf("recipient public key must be %d bytes, got %d", X25519KeySize, len(in.PublicKey))
 		}
 
-		recipientHeader := RecipientHeader{
-			KID: keyInput.PublicKeyID,
-			EPK: &PublicKeyJWK{
+		keyID := thumbprintForPublicKey(in.PublicKey)
+		ephPub, wrapped, err := WrapCEK(in.PublicKey, cek, protocolPathKEKInfo(keyID))
+		if err != nil {
+			return nil, nil, fmt.Errorf("wrapping CEK: %w", err)
+		}
+
+		keyEncryption = append(keyEncryption, KeyEncryption{
+			Algorithm:    AlgX25519HKDFA256KW,
+			EncryptedKey: base64URLEncode(wrapped),
+			EphemeralPublicKey: &PublicKeyJWK{
 				KTY: "OKP",
 				CRV: "X25519",
 				X:   base64URLEncode(ephPub),
 			},
-			DerivationScheme: keyInput.DerivationScheme,
-		}
-
-		// For protocolContext scheme, include the derived public key so
-		// the recipient can identify which derived key was used.
-		if keyInput.DerivationScheme == DerivationSchemeProtocolContext {
-			recipientHeader.DerivedPublicKey = &PublicKeyJWK{
-				KTY: "OKP",
-				CRV: "X25519",
-				X:   base64URLEncode(keyInput.PublicKey),
-			}
-		}
-
-		recipients = append(recipients, Recipient{
-			Header:       recipientHeader,
-			EncryptedKey: base64URLEncode(wrappedKey),
+			KeyID:            keyID,
+			DerivationScheme: DerivationSchemeProtocolPath,
 		})
 	}
 
-	return &Encryption{
-		Protected:  protectedB64,
-		IV:         base64URLEncode(input.IV),
-		Tag:        base64URLEncode(input.Tag),
-		Recipients: recipients,
+	return ct, &Encryption{
+		Algorithm:            EncA256CTR,
+		InitializationVector: base64URLEncode(iv),
+		KeyEncryption:        keyEncryption,
 	}, nil
 }
 
-// ParseProtectedHeader decodes and parses the JWE protected header.
-func ParseProtectedHeader(protectedB64 string) (*ProtectedHeader, error) {
-	headerJSON, err := base64URLDecode(protectedB64)
-	if err != nil {
-		return nil, fmt.Errorf("decoding protected header: %w", err)
-	}
-
-	var header ProtectedHeader
-	if err := json.Unmarshal(headerJSON, &header); err != nil {
-		return nil, fmt.Errorf("parsing protected header: %w", err)
-	}
-
-	return &header, nil
-}
-
-// DecryptDataWithScheme decrypts a DWN record by matching the recipient entry
-// based on derivation scheme. This is useful for Protocol Context decryption
-// where the recipient's KID is the DWN owner's key ID, but the decryptor
-// holds a delivered context key.
-//
-// It tries each recipient whose derivationScheme matches, attempting to
-// unwrap the CEK with the provided private key.
-func DecryptDataWithScheme(ciphertext []byte, enc *Encryption, privateKey []byte, scheme string) ([]byte, error) {
-	header, err := ParseProtectedHeader(enc.Protected)
+// DecryptData decrypts a protocolPath-encrypted record. recipientPrivateKey is
+// the X25519 private key derived for the record's protocolPath leaf.
+func DecryptData(ciphertext []byte, enc *Encryption, recipientPrivateKey []byte) ([]byte, error) {
+	entry, err := selectProtocolPathEntry(enc, recipientPrivateKey)
 	if err != nil {
 		return nil, err
 	}
-
-	iv, err := base64URLDecode(enc.IV)
-	if err != nil {
-		return nil, fmt.Errorf("decoding IV: %w", err)
-	}
-
-	tag, err := base64URLDecode(enc.Tag)
-	if err != nil {
-		return nil, fmt.Errorf("decoding tag: %w", err)
-	}
-
-	cek, err := unwrapCEKByScheme(enc.Recipients, privateKey, scheme)
+	cek, err := unwrapEntry(entry, recipientPrivateKey)
 	if err != nil {
 		return nil, err
 	}
-	defer clear(cek) // Zero CEK after decryption.
+	defer clear(cek)
+	return decryptContent(enc, cek, ciphertext)
+}
 
-	plaintext, err := AEADDecrypt(header.Enc, cek, iv, ciphertext, tag, nil)
+// FindKeyEncryption returns the first keyEncryption entry with the given
+// derivation scheme, or nil when none is present.
+func FindKeyEncryption(enc *Encryption, scheme string) *KeyEncryption {
+	if enc == nil {
+		return nil
+	}
+	for i := range enc.KeyEncryption {
+		if enc.KeyEncryption[i].DerivationScheme == scheme {
+			return &enc.KeyEncryption[i]
+		}
+	}
+	return nil
+}
+
+// selectProtocolPathEntry picks the protocolPath entry that matches the
+// recipient's derived key. When several protocolPath entries exist it matches
+// by keyId == thumbprint(recipient public key); otherwise it returns the only
+// protocolPath entry.
+func selectProtocolPathEntry(enc *Encryption, recipientPrivateKey []byte) (*KeyEncryption, error) {
+	if enc == nil {
+		return nil, fmt.Errorf("missing encryption envelope")
+	}
+
+	pub, err := X25519PublicKey(recipientPrivateKey)
 	if err != nil {
-		return nil, fmt.Errorf("decrypting data: %w", err)
+		return nil, err
 	}
+	wantKeyID := thumbprintForPublicKey(pub)
 
-	return plaintext, nil
+	var first *KeyEncryption
+	for i := range enc.KeyEncryption {
+		entry := &enc.KeyEncryption[i]
+		if entry.DerivationScheme != DerivationSchemeProtocolPath {
+			continue
+		}
+		if entry.KeyID == wantKeyID {
+			return entry, nil
+		}
+		if first == nil {
+			first = entry
+		}
+	}
+	if first != nil {
+		return first, nil
+	}
+	return nil, fmt.Errorf("no protocolPath keyEncryption entry found")
 }
 
-// unwrapCEKForRecipient finds the recipient matching the given KID and
-// unwraps the CEK using ECDH-ES+A256KW.
-func unwrapCEKForRecipient(recipients []Recipient, privateKey []byte, kid string) ([]byte, error) {
-	for _, r := range recipients {
-		if r.Header.KID != kid {
-			continue
-		}
-
-		// Decode ephemeral public key.
-		if r.Header.EPK == nil {
-			return nil, fmt.Errorf("recipient %s: missing ephemeral public key", kid)
-		}
-		ephPub, err := base64URLDecode(r.Header.EPK.X)
-		if err != nil {
-			return nil, fmt.Errorf("recipient %s: decoding ephemeral public key: %w", kid, err)
-		}
-
-		// Decode wrapped key.
-		wrappedKey, err := base64URLDecode(r.EncryptedKey)
-		if err != nil {
-			return nil, fmt.Errorf("recipient %s: decoding wrapped key: %w", kid, err)
-		}
-
-		// ECDH-ES+A256KW unwrap.
-		cek, err := ECDHESUnwrapKey(privateKey, ephPub, wrappedKey)
-		if err != nil {
-			return nil, fmt.Errorf("recipient %s: unwrapping CEK: %w", kid, err)
-		}
-
-		return cek, nil
+// unwrapEntry unwraps the CEK from a keyEncryption entry using the recipient's
+// X25519 private key.
+func unwrapEntry(entry *KeyEncryption, recipientPrivateKey []byte) ([]byte, error) {
+	if entry.EphemeralPublicKey == nil {
+		return nil, fmt.Errorf("keyEncryption entry missing ephemeralPublicKey")
 	}
-
-	return nil, fmt.Errorf("no matching recipient found for kid %q", kid)
+	ephPub, err := base64URLDecode(entry.EphemeralPublicKey.X)
+	if err != nil {
+		return nil, fmt.Errorf("decoding ephemeralPublicKey: %w", err)
+	}
+	wrapped, err := base64URLDecode(entry.EncryptedKey)
+	if err != nil {
+		return nil, fmt.Errorf("decoding encryptedKey: %w", err)
+	}
+	info, err := kekInfo(entry)
+	if err != nil {
+		return nil, err
+	}
+	return UnwrapCEK(recipientPrivateKey, ephPub, wrapped, info)
 }
 
-// unwrapCEKByScheme tries to unwrap the CEK from any recipient entry
-// matching the given derivation scheme. This enables decryption with
-// a delivered context key where the KID doesn't directly match.
-func unwrapCEKByScheme(recipients []Recipient, privateKey []byte, scheme string) ([]byte, error) {
-	var lastErr error
-	for _, r := range recipients {
-		if r.Header.DerivationScheme != scheme {
-			continue
-		}
-
-		if r.Header.EPK == nil {
-			lastErr = fmt.Errorf("recipient (scheme=%s): missing ephemeral public key", scheme)
-			continue
-		}
-		ephPub, err := base64URLDecode(r.Header.EPK.X)
-		if err != nil {
-			lastErr = fmt.Errorf("recipient (scheme=%s): decoding ephemeral key: %w", scheme, err)
-			continue
-		}
-
-		wrappedKey, err := base64URLDecode(r.EncryptedKey)
-		if err != nil {
-			lastErr = fmt.Errorf("recipient (scheme=%s): decoding wrapped key: %w", scheme, err)
-			continue
-		}
-
-		cek, err := ECDHESUnwrapKey(privateKey, ephPub, wrappedKey)
-		if err != nil {
-			lastErr = fmt.Errorf("recipient (scheme=%s): unwrapping CEK: %w", scheme, err)
-			continue
-		}
-
-		return cek, nil
+// decryptContent decrypts the record ciphertext using the CEK and the
+// envelope's IV. Only AES-256-CTR is supported in encryption-v1.
+func decryptContent(enc *Encryption, cek, ciphertext []byte) ([]byte, error) {
+	if enc.Algorithm != EncA256CTR {
+		return nil, fmt.Errorf("unsupported content algorithm %q", enc.Algorithm)
 	}
-
-	if lastErr != nil {
-		return nil, lastErr
+	iv, err := base64URLDecode(enc.InitializationVector)
+	if err != nil {
+		return nil, fmt.Errorf("decoding initializationVector: %w", err)
 	}
-	return nil, fmt.Errorf("no matching recipient found for scheme %q", scheme)
+	return CTRXor(cek, iv, ciphertext)
 }
 
 // base64URLEncode encodes bytes as base64url without padding.
@@ -380,7 +247,6 @@ func base64URLEncode(data []byte) string {
 
 // base64URLDecode decodes a base64url string (with or without padding).
 func base64URLDecode(s string) ([]byte, error) {
-	// Try without padding first (canonical), then with padding.
 	data, err := base64.RawURLEncoding.DecodeString(s)
 	if err != nil {
 		data, err = base64.URLEncoding.DecodeString(s)

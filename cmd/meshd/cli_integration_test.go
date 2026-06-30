@@ -96,17 +96,6 @@ func TestCLIInviteJoinFlow(t *testing.T) {
 	if joinerState == nil || joinerState.NodeRecordID == "" {
 		t.Fatalf("joiner state was not approved/refreshed: %#v", joinerState)
 	}
-	if joinerState.ContextKey != "" {
-		t.Fatalf("joiner plaintext context key = %q, want encrypted local secret", joinerState.ContextKey)
-	}
-	if !state.EncryptedSecretsExist(joinerStateDir) {
-		t.Fatal("joiner encrypted local secrets were not created")
-	}
-	if key, ok, err := state.LoadContextKey(joinerStateDir, "cli-e2e-password", anchorState.NetworkRecordID); err != nil {
-		t.Fatalf("LoadContextKey(joiner): %v", err)
-	} else if !ok || len(key) == 0 {
-		t.Fatalf("joiner context key not stored in encrypted secrets: ok=%v len=%d", ok, len(key))
-	}
 
 	if !did.EncryptedExists(anchorStateDir) {
 		t.Fatal("anchor identity was not stored in encrypted vault")

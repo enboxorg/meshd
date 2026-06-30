@@ -1,10 +1,8 @@
 import type { AuthManagerOptions, Permission, ProtocolRequest, WalletOption } from "@enbox/browser";
 
 import meshProtocolDefinition from "../../../protocols/wireguard-mesh.json";
-import keyDeliveryProtocolDefinition from "../../../protocols/key-delivery.json";
 
 export const MESHD_PROTOCOL_URI = "https://enbox.id/protocols/wireguard-mesh";
-export const MESHD_KEY_DELIVERY_PROTOCOL_URI = "https://identity.foundation/protocols/key-delivery";
 
 type IdentitySyncProtocols = NonNullable<AuthManagerOptions["identitySyncProtocols"]>;
 
@@ -33,16 +31,13 @@ export const DWN_ENDPOINTS = (
 export const DEFAULT_DWN_ENDPOINT = DWN_ENDPOINTS[0] || "https://dev.aws.dwn.enbox.id";
 
 export const MeshProtocolDefinition = meshProtocolDefinition;
-export const KeyDeliveryProtocolDefinition = keyDeliveryProtocolDefinition;
 
 export const DAPP_PROTOCOLS = [
-  { definition: MeshProtocolDefinition, permissions: ADMIN_PERMISSIONS },
-  { definition: KeyDeliveryProtocolDefinition, permissions: ADMIN_PERMISSIONS }
+  { definition: MeshProtocolDefinition, permissions: ADMIN_PERMISSIONS }
 ] as unknown as ProtocolRequest[];
 
 export const IDENTITY_SYNC_PROTOCOLS: IdentitySyncProtocols = [
-  MESHD_PROTOCOL_URI,
-  MESHD_KEY_DELIVERY_PROTOCOL_URI
+  MESHD_PROTOCOL_URI
 ];
 
 export const AUTH_DATA_PATH = "DATA/ENBOX_MESHD_ADMIN_DAPP";

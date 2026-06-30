@@ -3,16 +3,17 @@ package crypto
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"io"
 
 	"golang.org/x/crypto/curve25519"
+	"golang.org/x/crypto/hkdf"
 )
 
-// Key agreement algorithm identifiers (JWE "alg" values).
+// Key agreement algorithm identifier (encryption-v1 keyEncryption "algorithm").
 const (
-	AlgECDHESA256KW = "ECDH-ES+A256KW" // ECDH-ES with X25519 + AES-256 Key Wrap
+	// AlgX25519HKDFA256KW is X25519 ECDH -> HKDF-SHA256 KEK -> AES-256 Key Wrap.
+	AlgX25519HKDFA256KW = "X25519-HKDF-SHA256+A256KW"
 )
 
 // X25519KeySize is the size of X25519 keys in bytes (32 bytes = 256 bits).
@@ -64,120 +65,45 @@ func X25519SharedSecret(privateKey, publicKey []byte) ([]byte, error) {
 	return shared, nil
 }
 
-// ConcatKDFParams contains the fixed info parameters for Concat KDF
-// as defined in RFC 7518 Section 4.6.2.
-type ConcatKDFParams struct {
-	// AlgorithmID is the algorithm identifier (e.g., "A256KW").
-	AlgorithmID string
-	// PartyUInfo is the producer info (typically empty for DWN).
-	PartyUInfo string
-	// PartyVInfo is the consumer info (typically empty for DWN).
-	PartyVInfo string
-	// SuppPubInfo is the key length in bits (e.g., 256).
-	SuppPubInfo uint32
-}
-
-// ConcatKDF derives key material using the Concat KDF as defined in
-// NIST SP 800-56A Section 5.8.1 and RFC 7518 Section 4.6.2.
+// deriveKEK derives the 256-bit Key Encryption Key from the ECDH shared secret
+// using HKDF-SHA256 with an empty salt and the encryption-v1 info string.
 //
-// The derived key is:
-//
-//	SHA-256(counter || Z || FixedInfo)
-//
-// Where FixedInfo = AlgorithmID || PartyUInfo || PartyVInfo || SuppPubInfo
-// Each variable-length field is encoded as [4-byte big-endian length][data].
-// SuppPubInfo is encoded as a fixed 4-byte big-endian value.
-//
-// Only single-round derivation is supported (keyDataLen <= 256 bits).
-func ConcatKDF(sharedSecret []byte, keyDataLen uint32, params ConcatKDFParams) ([]byte, error) {
-	if keyDataLen > 256 {
-		return nil, fmt.Errorf("ConcatKDF: keyDataLen %d > 256 bits (multi-round not supported)", keyDataLen)
+//	kek = HKDF-SHA256(ikm=sharedSecret, salt="", info=info, L=32)
+func deriveKEK(sharedSecret []byte, info string) ([]byte, error) {
+	r := hkdf.New(sha256.New, sharedSecret, nil, []byte(info))
+	kek := make([]byte, 32)
+	if _, err := io.ReadFull(r, kek); err != nil {
+		return nil, fmt.Errorf("deriving KEK: %w", err)
 	}
-
-	// Build FixedInfo.
-	fixedInfo := computeFixedInfo(params)
-
-	// counter = 0x00000001 (4 bytes, big-endian).
-	var counter [4]byte
-	binary.BigEndian.PutUint32(counter[:], 1)
-
-	// K(1) = SHA-256(counter || Z || FixedInfo)
-	h := sha256.New()
-	h.Write(counter[:])
-	h.Write(sharedSecret)
-	h.Write(fixedInfo)
-	derived := h.Sum(nil)
-
-	// Return only the requested number of bytes.
-	return derived[:keyDataLen/8], nil
+	return kek, nil
 }
 
-// computeFixedInfo builds the FixedInfo per RFC 7518 Section 4.6.2.
-func computeFixedInfo(params ConcatKDFParams) []byte {
-	var fixedInfo []byte
-
-	// AlgorithmID: variable-length [len][data]
-	fixedInfo = append(fixedInfo, toLenData([]byte(params.AlgorithmID))...)
-
-	// PartyUInfo: variable-length [len][data]
-	fixedInfo = append(fixedInfo, toLenData([]byte(params.PartyUInfo))...)
-
-	// PartyVInfo: variable-length [len][data]
-	fixedInfo = append(fixedInfo, toLenData([]byte(params.PartyVInfo))...)
-
-	// SuppPubInfo: fixed 4-byte big-endian uint32
-	var suppPub [4]byte
-	binary.BigEndian.PutUint32(suppPub[:], params.SuppPubInfo)
-	fixedInfo = append(fixedInfo, suppPub[:]...)
-
-	return fixedInfo
-}
-
-// toLenData encodes a variable-length field as [4-byte big-endian length][data].
-func toLenData(data []byte) []byte {
-	var lenBytes [4]byte
-	binary.BigEndian.PutUint32(lenBytes[:], uint32(len(data)))
-	result := make([]byte, 4+len(data))
-	copy(result, lenBytes[:])
-	copy(result[4:], data)
-	return result
-}
-
-// ECDHESWrapKey performs ECDH-ES+A256KW key wrapping:
-//  1. Generate ephemeral X25519 key pair
-//  2. Compute ECDH shared secret with the recipient's public key
-//  3. Derive KEK via Concat KDF
-//  4. Wrap the CEK using AES-256 Key Wrap
+// WrapCEK performs X25519-HKDF-SHA256+A256KW key wrapping:
+//  1. Generate an ephemeral X25519 key pair.
+//  2. Compute the ECDH shared secret with the recipient's public key.
+//  3. Derive the KEK via HKDF-SHA256 with the given info string.
+//  4. Wrap the CEK using AES-256 Key Wrap (RFC 3394).
 //
 // Returns the ephemeral public key and the wrapped CEK.
-func ECDHESWrapKey(recipientPublicKey, cek []byte) (ephemeralPublicKey, wrappedKey []byte, err error) {
-	// 1. Generate ephemeral X25519 key pair.
+func WrapCEK(recipientPublicKey, cek []byte, info string) (ephemeralPublicKey, wrappedKey []byte, err error) {
 	ephPriv, ephPub, err := GenerateX25519KeyPair()
 	if err != nil {
 		return nil, nil, fmt.Errorf("generating ephemeral key: %w", err)
 	}
-	defer clear(ephPriv) // Zero ephemeral private key after use.
+	defer clear(ephPriv)
 
-	// 2. Compute ECDH shared secret.
 	sharedSecret, err := X25519SharedSecret(ephPriv, recipientPublicKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("computing shared secret: %w", err)
 	}
-	defer clear(sharedSecret) // Zero shared secret after use.
+	defer clear(sharedSecret)
 
-	// 3. Derive KEK via Concat KDF (RFC 7518 Section 4.6.2).
-	kek, err := ConcatKDF(sharedSecret, 256, ConcatKDFParams{
-		AlgorithmID: "A256KW",
-		PartyUInfo:  "",
-		PartyVInfo:  "",
-		SuppPubInfo: 256,
-	})
+	kek, err := deriveKEK(sharedSecret, info)
 	if err != nil {
-		return nil, nil, fmt.Errorf("deriving KEK: %w", err)
+		return nil, nil, err
 	}
-	defer clear(kek) // Zero KEK after use.
+	defer clear(kek)
 
-	// 4. AES-256 Key Wrap.
 	wrapped, err := AESKeyWrap(kek, cek)
 	if err != nil {
 		return nil, nil, fmt.Errorf("wrapping CEK: %w", err)
@@ -186,33 +112,24 @@ func ECDHESWrapKey(recipientPublicKey, cek []byte) (ephemeralPublicKey, wrappedK
 	return ephPub, wrapped, nil
 }
 
-// ECDHESUnwrapKey performs ECDH-ES+A256KW key unwrapping:
-//  1. Compute ECDH shared secret using recipient's private key and the ephemeral public key
-//  2. Derive KEK via Concat KDF
-//  3. Unwrap the CEK using AES-256 Key Unwrap
-//
-// Returns the unwrapped CEK.
-func ECDHESUnwrapKey(recipientPrivateKey, ephemeralPublicKey, wrappedKey []byte) ([]byte, error) {
-	// 1. Compute ECDH shared secret.
+// UnwrapCEK performs X25519-HKDF-SHA256+A256KW key unwrapping:
+//  1. Compute the ECDH shared secret from the recipient's private key and the
+//     ephemeral public key.
+//  2. Derive the KEK via HKDF-SHA256 with the given info string.
+//  3. Unwrap the CEK using AES-256 Key Unwrap (RFC 3394).
+func UnwrapCEK(recipientPrivateKey, ephemeralPublicKey, wrappedKey []byte, info string) ([]byte, error) {
 	sharedSecret, err := X25519SharedSecret(recipientPrivateKey, ephemeralPublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("computing shared secret: %w", err)
 	}
-	defer clear(sharedSecret) // Zero shared secret after use.
+	defer clear(sharedSecret)
 
-	// 2. Derive KEK via Concat KDF.
-	kek, err := ConcatKDF(sharedSecret, 256, ConcatKDFParams{
-		AlgorithmID: "A256KW",
-		PartyUInfo:  "",
-		PartyVInfo:  "",
-		SuppPubInfo: 256,
-	})
+	kek, err := deriveKEK(sharedSecret, info)
 	if err != nil {
-		return nil, fmt.Errorf("deriving KEK: %w", err)
+		return nil, err
 	}
-	defer clear(kek) // Zero KEK after use.
+	defer clear(kek)
 
-	// 3. AES-256 Key Unwrap.
 	cek, err := AESKeyUnwrap(kek, wrappedKey)
 	if err != nil {
 		return nil, fmt.Errorf("unwrapping CEK: %w", err)

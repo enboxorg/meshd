@@ -182,9 +182,9 @@ type RecordsWriteOptions struct {
 	Squash bool
 
 	// EncryptionRecipients enables encryption for this write.
-	// When set, the plaintext Data is encrypted with A256GCM and the CEK
-	// is wrapped per-recipient. The descriptor's dataCid and dataSize will
-	// reference the ciphertext, not the plaintext.
+	// When set, the plaintext Data is encrypted with AES-256-CTR (encryption-v1)
+	// and the CEK is wrapped per-recipient. The descriptor's dataCid and
+	// dataSize will reference the ciphertext, not the plaintext.
 	EncryptionRecipients []dwncrypto.KeyEncryptionInput
 }
 
@@ -202,9 +202,9 @@ type BuildRecordsWriteResult struct {
 // BuildRecordsWrite constructs and signs a RecordsWrite message.
 //
 // When EncryptionRecipients is set, the plaintext data is encrypted using
-// A256GCM. The descriptor's dataCid and dataSize will reference the ciphertext.
-// The encryption property (JWE) is set on the message and its CID is included
-// in the authorization signature payload.
+// AES-256-CTR (encryption-v1). The descriptor's dataCid and dataSize will
+// reference the ciphertext. The encryption property is set on the message and
+// its CID is included in the authorization signature payload.
 func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteResult, error) {
 	if opts.Protocol == "" || opts.ProtocolPath == "" {
 		return nil, ErrMissingProtocol

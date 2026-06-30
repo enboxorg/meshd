@@ -6,7 +6,6 @@
 //	  identity.vault.json  # encrypted DID private key (from the did package)
 //	  identity.json        # legacy plaintext DID private key
 //	  network.json         # current network membership info
-//	  secrets.vault.json   # encrypted network context keys and local secrets
 //
 // The state directory is resolved by the profile package. The functions in
 // this package accept a stateDir parameter and are agnostic to profiles.
@@ -114,14 +113,6 @@ type NetworkState struct {
 
 	// PendingOwnerRequestAt is when the owner-scoped node request was written.
 	PendingOwnerRequestAt string `json:"pendingOwnerRequestAt,omitempty"`
-
-	// ContextKey is a legacy plaintext cache of the Protocol Context
-	// encryption key (base64-encoded X25519 private key). New encrypted
-	// identity profiles store context keys in secrets.vault.json instead.
-	//
-	// For the anchor, this is empty — the anchor derives the context key
-	// from its root key via HKDF on every startup.
-	ContextKey string `json:"contextKey,omitempty"`
 }
 
 // NormalizeOwnerDID keeps the newer ownerDid field and the older memberDid

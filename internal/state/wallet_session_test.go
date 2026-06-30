@@ -14,7 +14,6 @@ func TestWalletSessionRoundTrip(t *testing.T) {
 		WalletOrigin:            "https://wallet.enbox.id",
 		ExpiresAt:               "2026-07-23T00:00:00Z",
 		Grants:                  []json.RawMessage{json.RawMessage(`{"id":"grant-1"}`)},
-		NodeContextKeys:         []json.RawMessage{json.RawMessage(`{"contextId":"network-1"}`)},
 		NodeMultiPartyProtocols: []string{"https://enbox.id/protocols/wireguard-mesh"},
 	}
 	if err := StoreWalletSession(dir, "password", session); err != nil {
@@ -40,9 +39,6 @@ func TestWalletSessionRoundTrip(t *testing.T) {
 	if len(got.Grants) != 1 || string(got.Grants[0]) != `{"id":"grant-1"}` {
 		t.Fatalf("grants = %v", got.Grants)
 	}
-	if len(got.EffectiveNodeContextKeys()) != 1 {
-		t.Fatalf("node context keys = %v", got.EffectiveNodeContextKeys())
-	}
 	if len(got.EffectiveNodeMultiPartyProtocols()) != 1 {
 		t.Fatalf("node protocols = %v", got.EffectiveNodeMultiPartyProtocols())
 	}
@@ -67,12 +63,11 @@ func TestWalletSessionLegacyConnectedDIDFallback(t *testing.T) {
 	}
 }
 
-func TestWalletSessionLegacyDelegateContextKeysFallback(t *testing.T) {
+func TestWalletSessionLegacyDelegateMultiPartyProtocolsFallback(t *testing.T) {
 	dir := t.TempDir()
 	session := &WalletSession{
 		ConnectedDID:                "did:dht:wallet",
 		NodeDID:                     "did:jwk:node",
-		DelegateContextKeys:         []json.RawMessage{json.RawMessage(`{"contextId":"network-1"}`)},
 		DelegateMultiPartyProtocols: []string{"https://enbox.id/protocols/wireguard-mesh"},
 	}
 	if err := StoreWalletSession(dir, "password", session); err != nil {
@@ -82,9 +77,6 @@ func TestWalletSessionLegacyDelegateContextKeysFallback(t *testing.T) {
 	got, err := LoadWalletSession(dir, "password")
 	if err != nil {
 		t.Fatalf("LoadWalletSession: %v", err)
-	}
-	if len(got.NodeContextKeys) != 1 || len(got.EffectiveNodeContextKeys()) != 1 {
-		t.Fatalf("node context keys = direct %v effective %v", got.NodeContextKeys, got.EffectiveNodeContextKeys())
 	}
 	if len(got.NodeMultiPartyProtocols) != 1 || len(got.EffectiveNodeMultiPartyProtocols()) != 1 {
 		t.Fatalf("node protocols = direct %v effective %v", got.NodeMultiPartyProtocols, got.EffectiveNodeMultiPartyProtocols())

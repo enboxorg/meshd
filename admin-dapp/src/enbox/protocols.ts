@@ -3,8 +3,6 @@ import type { Enbox } from "@enbox/browser";
 import type { ConnectPermissionRequest } from "@enbox/agent";
 
 import {
-  KeyDeliveryProtocolDefinition,
-  MESHD_KEY_DELIVERY_PROTOCOL_URI,
   MESHD_PROTOCOL_URI,
   MeshProtocolDefinition
 } from "./config";
@@ -22,10 +20,6 @@ type MeshProtocolSchemaMap = {
   preAuthKey: Record<string, unknown>;
 };
 
-type KeyDeliverySchemaMap = {
-  contextKey: Record<string, unknown>;
-};
-
 type ProtocolDefinition = {
   protocol?: unknown;
   types?: unknown;
@@ -39,11 +33,6 @@ type InstalledProtocol = {
 export const MeshProtocol = defineProtocol(
   MeshProtocolDefinition as never,
   {} as MeshProtocolSchemaMap
-);
-
-export const KeyDeliveryProtocol = defineProtocol(
-  KeyDeliveryProtocolDefinition as never,
-  {} as KeyDeliverySchemaMap
 );
 
 export const MeshNodePermissionRequest: ConnectPermissionRequest = {
@@ -63,15 +52,6 @@ export const MeshAdminPermissionRequest: ConnectPermissionRequest = {
     { interface: "Records", method: "Read", protocol: MESHD_PROTOCOL_URI },
     { interface: "Records", method: "Write", protocol: MESHD_PROTOCOL_URI },
     { interface: "Records", method: "Delete", protocol: MESHD_PROTOCOL_URI }
-  ] as never
-};
-
-export const KeyDeliveryAdminPermissionRequest: ConnectPermissionRequest = {
-  protocolDefinition: KeyDeliveryProtocolDefinition as never,
-  permissionScopes: [
-    { interface: "Records", method: "Read", protocol: MESHD_KEY_DELIVERY_PROTOCOL_URI },
-    { interface: "Records", method: "Write", protocol: MESHD_KEY_DELIVERY_PROTOCOL_URI },
-    { interface: "Records", method: "Delete", protocol: MESHD_KEY_DELIVERY_PROTOCOL_URI }
   ] as never
 };
 
@@ -148,15 +128,7 @@ function assertExpectedProtocolDefinition(
 }
 
 export async function ensureProtocolsReady(enbox: Enbox) {
-  const [mesh, keyDelivery] = await Promise.all([
-    configure(enbox.using(MeshProtocol) as ConfigurableProtocol),
-    configure(enbox.using(KeyDeliveryProtocol) as ConfigurableProtocol)
-  ]);
+  const mesh = await configure(enbox.using(MeshProtocol) as ConfigurableProtocol);
 
   assertExpectedProtocolDefinition("meshd mesh protocol", MeshProtocolDefinition as ProtocolDefinition, mesh?.definition);
-  assertExpectedProtocolDefinition(
-    "meshd key-delivery protocol",
-    KeyDeliveryProtocolDefinition as ProtocolDefinition,
-    keyDelivery?.definition
-  );
 }

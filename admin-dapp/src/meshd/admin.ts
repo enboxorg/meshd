@@ -1,19 +1,11 @@
-import {
-  DwnInterface,
-  EnboxConnectProtocol,
-  writeContextKeyRecord as writeContextKeyRecordWithAgent
-} from "@enbox/agent";
-import type { DwnMessage } from "@enbox/agent";
+import { DwnInterface } from "@enbox/agent";
 import { Ed25519 } from "@enbox/crypto";
 import { DidJwk } from "@enbox/dids";
-import { Message } from "@enbox/dwn-sdk-js";
 
 import {
   DEFAULT_DWN_ENDPOINT,
-  MESHD_KEY_DELIVERY_PROTOCOL_URI,
   MESHD_PROTOCOL_URI
 } from "@/enbox/config";
-import { MeshNodePermissionRequest } from "@/enbox/protocols";
 
 export type MeshdAdminAgent = {
   permissions?: {
@@ -46,8 +38,6 @@ export type MeshdAdminAgent = {
   }>;
   dwn?: {
     getDwnEndpointUrlsForTarget?: (targetDid: string) => Promise<string[]>;
-    getProtocolDefinition?: (tenantDid: string, protocolUri: string, granteeDid?: string) => Promise<unknown>;
-    exportDelegateContextKeys?: (delegateDid: string) => unknown[];
   };
 };
 
@@ -156,7 +146,6 @@ export type ApproveMeshdNodeRequestResult = {
   memberRecordId: string;
   nodeRecordId: string;
   meshIP: string;
-  deliveredContextKey: boolean;
 };
 
 type AuthoredRecord = {
@@ -1083,88 +1072,6 @@ async function ensureMemberRecord(
   );
 }
 
-function exportedContextKeyFor(session: MeshdAdminSession, network: MeshdNetworkSummary) {
-  if (!session.delegateDid) {
-    return undefined;
-  }
-  const exported = session.agent.dwn?.exportDelegateContextKeys?.(session.delegateDid) ?? [];
-  return exported.find((value): value is { protocol: string; contextId: string; derivedPrivateKey: unknown } => {
-    if (!isObject(value)) return false;
-    return value.protocol === MESHD_PROTOCOL_URI
-      && value.contextId === network.recordId
-      && isObject(value.derivedPrivateKey);
-  });
-}
-
-async function deriveNetworkContextKey(
-  session: MeshdAdminSession,
-  network: MeshdNetworkSummary
-): Promise<unknown> {
-  const exported = exportedContextKeyFor(session, network);
-  if (exported?.derivedPrivateKey) {
-    return exported.derivedPrivateKey;
-  }
-
-  const contextKeys = await EnboxConnectProtocol.deriveContextKeysForDelegate(
-    session.agent as never,
-    session.ownerDid,
-    MeshNodePermissionRequest.protocolDefinition as never,
-    MeshNodePermissionRequest.permissionScopes as never
-  );
-  const networkContextKey = (contextKeys as unknown[]).find((value): value is { protocol: string; contextId: string; derivedPrivateKey: unknown } => {
-    if (!isObject(value)) return false;
-    return value.protocol === MESHD_PROTOCOL_URI
-      && value.contextId === network.recordId
-      && isObject(value.derivedPrivateKey);
-  });
-  if (!networkContextKey?.derivedPrivateKey) {
-    throw new Error("Could not derive or export the mesh network context key. Reconnect the dashboard wallet session and try again.");
-  }
-  return networkContextKey.derivedPrivateKey;
-}
-
-async function ensureKeyDeliveryReady(session: MeshdAdminSession) {
-  const existing = await session.agent.dwn?.getProtocolDefinition?.(
-    session.ownerDid,
-    MESHD_KEY_DELIVERY_PROTOCOL_URI,
-    session.delegateDid
-  );
-  if (!existing) {
-    throw new Error("The key-delivery protocol is not installed for this owner. Reconnect the wallet and approve meshd Admin again.");
-  }
-}
-
-async function deliverNetworkContextKey(
-  session: MeshdAdminSession,
-  network: MeshdNetworkSummary,
-  request: MeshdNodeRequestSummary,
-  nodeKeyDelivery: MeshdNodeKeyDelivery
-) {
-  const contextKeyData = await deriveNetworkContextKey(session, network);
-  await writeContextKeyRecordWithAgent(
-    session.agent as never,
-    {
-      tenantDid: session.ownerDid,
-      recipientDid: request.nodeDID,
-      contextKeyData: contextKeyData as never,
-      sourceProtocol: MESHD_PROTOCOL_URI,
-      sourceContextId: network.recordId,
-      recipientKeyDeliveryPublicKey: nodeKeyDelivery as never
-    },
-    (requestParams: Record<string, unknown>) =>
-      processDwnRequest(session, requestParams, MESHD_KEY_DELIVERY_PROTOCOL_URI) as never,
-    () => ensureKeyDeliveryReady(session),
-    async (_tenantDid: string, message: DwnMessage[typeof DwnInterface.RecordsWrite]) => {
-      if (!session.agent.sendDwnRequest) {
-        return;
-      }
-      const messageCid = await Message.getCid(message as never);
-      await sendDwnMessage(session, DwnInterface.RecordsWrite, messageCid);
-    },
-    (promise: Promise<void>) => promise
-  );
-}
-
 export async function approveMeshdNodeRequest(
   session: MeshdAdminSession,
   network: MeshdNetworkSummary,
@@ -1213,7 +1120,6 @@ export async function approveMeshdNodeRequest(
     true
   );
 
-  await deliverNetworkContextKey(session, network, request, nodeKeyDelivery);
   if (preAuthKey) {
     await markPreAuthKeyUsed(session, network, preAuthKey, request.nodeDID);
   }
@@ -1253,8 +1159,7 @@ export async function approveMeshdNodeRequest(
   return {
     memberRecordId: member.recordId,
     nodeRecordId: nodeRecord.recordId,
-    meshIP,
-    deliveredContextKey: true
+    meshIP
   };
 }
 
@@ -1387,46 +1292,10 @@ async function writeNodeApprovalRefresh(
   );
 }
 
-function getRecordIdFromEntry(rawEntry: unknown): string | undefined {
-  const wrapper = isObject(rawEntry) ? rawEntry : undefined;
-  const entry = getRecordWrite(rawEntry);
-  if (!entry || !wrapper) return undefined;
-  const descriptor = isObject(entry.descriptor) ? entry.descriptor : {};
-  return getRecordId(entry, wrapper, descriptor);
-}
-
 export async function removeMeshdNode(
   session: MeshdAdminSession,
-  network: MeshdNetworkSummary,
+  _network: MeshdNetworkSummary,
   node: MeshdNodeSummary
-): Promise<{ removedContextKeys: number; contextKeyCleanupError?: string }> {
+): Promise<void> {
   await deleteRecord(session, MESHD_PROTOCOL_URI, node.recordId, true);
-  try {
-    const contextKeyEntries = await queryRecords(
-      session,
-      MESHD_KEY_DELIVERY_PROTOCOL_URI,
-      "contextKey",
-      undefined,
-      {
-        recipient: node.did,
-        tags: {
-          protocol: MESHD_PROTOCOL_URI,
-          contextId: network.recordId
-        }
-      }
-    );
-    let removedContextKeys = 0;
-    for (const entry of contextKeyEntries) {
-      const recordId = getRecordIdFromEntry(entry);
-      if (!recordId) continue;
-      await deleteRecord(session, MESHD_KEY_DELIVERY_PROTOCOL_URI, recordId, false);
-      removedContextKeys++;
-    }
-    return { removedContextKeys };
-  } catch (error) {
-    return {
-      removedContextKeys: 0,
-      contextKeyCleanupError: error instanceof Error ? error.message : "Context key cleanup failed"
-    };
-  }
 }

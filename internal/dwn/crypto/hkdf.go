@@ -8,16 +8,18 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-// Key derivation scheme identifiers used by the DWN encryption model.
+// Key derivation / audience scheme identifiers used by encryption-v1.
 const (
 	// DerivationSchemeProtocolPath derives keys hierarchically through the
 	// protocol's type structure. A parent key can decrypt all descendants.
 	// Path: ["protocolPath", "<protocol-uri>", "<root-type>", "<child-type>", ...]
 	DerivationSchemeProtocolPath = "protocolPath"
 
-	// DerivationSchemeProtocolContext derives keys per-conversation/thread.
-	// Path: ["protocolContext", "<root-context-id>"]
-	DerivationSchemeProtocolContext = "protocolContext"
+	// DerivationSchemeRoleAudience marks a keyEncryption entry that wraps the
+	// CEK to a per-epoch role audience key. The audience key is random (not
+	// HD-derived) and delivered to role holders via EncryptionProtocol
+	// audienceKey records.
+	DerivationSchemeRoleAudience = "roleAudience"
 )
 
 // DeriveKeyBytes derives a descendant key from an ancestor private key by
@@ -29,7 +31,6 @@ const (
 //
 // The derivation path segments are typically:
 //   - protocolPath: ["protocolPath", "<protocol-uri>", "<type1>", "<type2>", ...]
-//   - protocolContext: ["protocolContext", "<context-id>"]
 //
 // Each step: nextKey = HKDF-SHA256(salt=empty, ikm=currentKey, info=UTF8(segment), L=32)
 func DeriveKeyBytes(ancestorKey []byte, derivationPath []string) ([]byte, error) {
@@ -80,15 +81,6 @@ func BuildProtocolPathDerivation(protocolURI string, typeSegments ...string) []s
 	path = append(path, protocolURI)
 	path = append(path, typeSegments...)
 	return path
-}
-
-// BuildProtocolContextDerivation builds the derivation path for the
-// "protocolContext" scheme given a root context ID.
-//
-// Example: BuildProtocolContextDerivation("bafyreiabc123")
-// returns ["protocolContext", "bafyreiabc123"]
-func BuildProtocolContextDerivation(contextID string) []string {
-	return []string{DerivationSchemeProtocolContext, contextID}
 }
 
 // hkdfDerive performs a single HKDF-SHA256 derivation step.

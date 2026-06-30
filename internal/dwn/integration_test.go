@@ -339,7 +339,6 @@ func TestIntegrationEncryptedRecordsWrite(t *testing.T) {
 		t.Fatalf("did.FromPrivateKey: %v", err)
 	}
 
-	encKID := identity.EncryptionKeyID()
 	encPub := identity.EncryptionPublicKey
 	encPriv := identity.EncryptionPrivateKey
 
@@ -353,7 +352,6 @@ func TestIntegrationEncryptedRecordsWrite(t *testing.T) {
 		DataFormat:   "application/json",
 		Data:         plaintext,
 		EncryptionRecipients: []dwncrypto.KeyEncryptionInput{{
-			PublicKeyID:      encKID,
 			PublicKey:        encPub,
 			DerivationScheme: dwncrypto.DerivationSchemeProtocolPath,
 		}},
@@ -429,7 +427,7 @@ func TestIntegrationEncryptedRecordsWrite(t *testing.T) {
 				enc = entry.RecordsWrite.Encryption
 			}
 			if enc != nil {
-				decrypted, err := dwncrypto.DecryptData(ciphertext, enc, encPriv, encKID)
+				decrypted, err := dwncrypto.DecryptData(ciphertext, enc, encPriv)
 				if err != nil {
 					t.Fatalf("DecryptData: %v", err)
 				}
@@ -499,7 +497,6 @@ func TestIntegrationEncryptedWriteQueryDelete(t *testing.T) {
 			DataFormat:   "application/json",
 			Data:         plaintext,
 			EncryptionRecipients: []dwncrypto.KeyEncryptionInput{{
-				PublicKeyID:      identity.EncryptionKeyID(),
 				PublicKey:        identity.EncryptionPublicKey,
 				DerivationScheme: dwncrypto.DerivationSchemeProtocolPath,
 			}},
@@ -614,12 +611,10 @@ func TestIntegrationEncryptedMultiRecipient(t *testing.T) {
 		Data:         plaintext,
 		EncryptionRecipients: []dwncrypto.KeyEncryptionInput{
 			{
-				PublicKeyID:      identity.EncryptionKeyID(),
 				PublicKey:        identity.EncryptionPublicKey,
 				DerivationScheme: dwncrypto.DerivationSchemeProtocolPath,
 			},
 			{
-				PublicKeyID:      "did:test:recipient2#enc",
 				PublicKey:        recipientPub2,
 				DerivationScheme: dwncrypto.DerivationSchemeProtocolPath,
 			},
@@ -647,12 +642,10 @@ func TestIntegrationEncryptedMultiRecipient(t *testing.T) {
 		Data:         plaintext,
 		EncryptionRecipients: []dwncrypto.KeyEncryptionInput{
 			{
-				PublicKeyID:      identity.EncryptionKeyID(),
 				PublicKey:        identity.EncryptionPublicKey,
 				DerivationScheme: dwncrypto.DerivationSchemeProtocolPath,
 			},
 			{
-				PublicKeyID:      "did:test:recipient2#enc",
 				PublicKey:        recipientPub2,
 				DerivationScheme: dwncrypto.DerivationSchemeProtocolPath,
 			},
@@ -666,7 +659,7 @@ func TestIntegrationEncryptedMultiRecipient(t *testing.T) {
 	ct := builtResult.WireData
 
 	// Recipient 1 (identity owner) can decrypt.
-	decrypted1, err := dwncrypto.DecryptData(ct, msg.Encryption, identity.EncryptionPrivateKey, identity.EncryptionKeyID())
+	decrypted1, err := dwncrypto.DecryptData(ct, msg.Encryption, identity.EncryptionPrivateKey)
 	if err != nil {
 		t.Fatalf("DecryptData (recipient 1): %v", err)
 	}
@@ -676,7 +669,7 @@ func TestIntegrationEncryptedMultiRecipient(t *testing.T) {
 	t.Log("Recipient 1 decryption: OK")
 
 	// Recipient 2 can decrypt.
-	decrypted2, err := dwncrypto.DecryptData(ct, msg.Encryption, recipientPriv2, "did:test:recipient2#enc")
+	decrypted2, err := dwncrypto.DecryptData(ct, msg.Encryption, recipientPriv2)
 	if err != nil {
 		t.Fatalf("DecryptData (recipient 2): %v", err)
 	}

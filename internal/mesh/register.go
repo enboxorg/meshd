@@ -43,7 +43,6 @@ type CreateMemberParams struct {
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 	Label                string
 	PermissionGrantID    string
-	UseContextEncryption bool
 }
 
 // CreateMember creates a member record on the anchor DWN.
@@ -63,16 +62,9 @@ func CreateMember(ctx context.Context, params CreateMemberParams) (*MemberRegist
 
 	var recipients []dwncrypto.KeyEncryptionInput
 	if params.EncryptionKeyManager != nil {
-		if params.UseContextEncryption {
-			recipients, err = params.EncryptionKeyManager.DeriveContextWriteEncryption(params.NetworkRecordID)
-			if err != nil {
-				return nil, fmt.Errorf("deriving member context encryption: %w", err)
-			}
-		} else {
-			recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/member")
-			if err != nil {
-				return nil, fmt.Errorf("deriving member encryption: %w", err)
-			}
+		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/member")
+		if err != nil {
+			return nil, fmt.Errorf("deriving member encryption: %w", err)
 		}
 	}
 
@@ -162,10 +154,6 @@ type RegisterNodeParams struct {
 	// the node membership does not expire automatically.
 	ExpiresAt string
 
-	// NodeKeyDelivery is this node's key-delivery ProtocolPath public key,
-	// used by anchors to encrypt delivered network context keys to the node.
-	NodeKeyDelivery *dwncrypto.KeyDeliveryPublic
-
 	// ExistingNodeRecordID is set when updating an existing node record.
 	// Leave empty for initial registration.
 	ExistingNodeRecordID string
@@ -174,11 +162,6 @@ type RegisterNodeParams struct {
 	// Required when ExistingNodeRecordID is set (updates), because
 	// dateCreated is immutable across record updates.
 	ExistingDateCreated string
-
-	// UseContextEncryption enables Protocol Context encryption instead of
-	// Protocol Path encryption. Non-anchor nodes MUST set this to true so
-	// the anchor can decrypt their records using the shared context key.
-	UseContextEncryption bool
 
 	// Squash indicates this is a squash (snapshot) write.
 	Squash bool
@@ -219,12 +202,6 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 	if params.ExpiresAt != "" {
 		nodeData["expiresAt"] = params.ExpiresAt
 	}
-	if params.NodeKeyDelivery != nil {
-		if err := validateNodeKeyDelivery(params.NodeDID, params.NodeKeyDelivery); err != nil {
-			return nil, err
-		}
-		nodeData["nodeKeyDelivery"] = params.NodeKeyDelivery
-	}
 	nodeDataBytes, err := json.Marshal(nodeData)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling node data: %w", err)
@@ -249,17 +226,9 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 	}
 
 	// Derive encryption recipients.
-	var recipients []dwncrypto.KeyEncryptionInput
-	if params.UseContextEncryption {
-		recipients, err = params.EncryptionKeyManager.DeriveContextWriteEncryption(params.NetworkRecordID)
-		if err != nil {
-			return nil, fmt.Errorf("deriving node context encryption: %w", err)
-		}
-	} else {
-		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
-		if err != nil {
-			return nil, fmt.Errorf("deriving node encryption: %w", err)
-		}
+	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
+	if err != nil {
+		return nil, fmt.Errorf("deriving node encryption: %w", err)
 	}
 
 	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
@@ -314,9 +283,6 @@ type WriteNodeInfoParams struct {
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 	Hostname             string
 	PermissionGrantID    string
-
-	// UseContextEncryption enables Protocol Context encryption.
-	UseContextEncryption bool
 }
 
 // WriteNodeInfo writes or updates the node's operational info record (encrypted).
@@ -358,17 +324,9 @@ func WriteNodeInfo(ctx context.Context, params WriteNodeInfoParams) error {
 		encryptionPath = "network/node/nodeInfo"
 	}
 
-	var recipients []dwncrypto.KeyEncryptionInput
-	if params.UseContextEncryption {
-		recipients, err = params.EncryptionKeyManager.DeriveContextWriteEncryption(params.NetworkRecordID)
-		if err != nil {
-			return fmt.Errorf("deriving nodeInfo context encryption: %w", err)
-		}
-	} else {
-		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
-		if err != nil {
-			return fmt.Errorf("deriving nodeInfo encryption: %w", err)
-		}
+	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
+	if err != nil {
+		return fmt.Errorf("deriving nodeInfo encryption: %w", err)
 	}
 
 	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
@@ -434,17 +392,9 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 		encryptionPath = "network/node/endpoint"
 	}
 
-	var recipients []dwncrypto.KeyEncryptionInput
-	if params.UseContextEncryption {
-		recipients, err = params.EncryptionKeyManager.DeriveContextWriteEncryption(params.NetworkRecordID)
-		if err != nil {
-			return fmt.Errorf("deriving endpoint context encryption: %w", err)
-		}
-	} else {
-		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
-		if err != nil {
-			return fmt.Errorf("deriving endpoint encryption: %w", err)
-		}
+	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
+	if err != nil {
+		return fmt.Errorf("deriving endpoint encryption: %w", err)
 	}
 
 	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
@@ -488,9 +438,6 @@ type WriteEndpointParams struct {
 
 	// DiscoKey is this node's current disco public key (base64).
 	DiscoKey string
-
-	// UseContextEncryption enables Protocol Context encryption.
-	UseContextEncryption bool
 }
 
 // WriteACLPolicyParams configures an ACL policy write.
@@ -501,7 +448,6 @@ type WriteACLPolicyParams struct {
 	Signer               *dwn.Signer
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 	PermissionGrantID    string
-	UseContextEncryption bool
 
 	// PolicyData is the JSON-encoded ACL policy payload.
 	PolicyData []byte
@@ -514,18 +460,9 @@ func WriteACLPolicy(ctx context.Context, params WriteACLPolicyParams) error {
 		return fmt.Errorf("EncryptionKeyManager is required for encrypted writes")
 	}
 
-	var recipients []dwncrypto.KeyEncryptionInput
-	var err error
-	if params.UseContextEncryption {
-		recipients, err = params.EncryptionKeyManager.DeriveContextWriteEncryption(params.NetworkRecordID)
-		if err != nil {
-			return fmt.Errorf("deriving ACL policy context encryption: %w", err)
-		}
-	} else {
-		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/aclPolicy")
-		if err != nil {
-			return fmt.Errorf("deriving ACL policy encryption: %w", err)
-		}
+	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption("network/aclPolicy")
+	if err != nil {
+		return fmt.Errorf("deriving ACL policy encryption: %w", err)
 	}
 
 	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
