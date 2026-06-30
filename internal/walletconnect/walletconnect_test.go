@@ -19,9 +19,6 @@ func TestRequestEncodeDecodeVerifiesNodeProof(t *testing.T) {
 	if req.NodeProof == "" {
 		t.Fatal("node proof is empty")
 	}
-	if req.NodeKeyDelivery == nil || req.NodeKeyDelivery.RootKeyID != node.EncryptionKeyID() {
-		t.Fatalf("node key delivery = %+v, want root %s", req.NodeKeyDelivery, node.EncryptionKeyID())
-	}
 
 	encoded, err := EncodeRequest(req)
 	if err != nil {
@@ -114,9 +111,6 @@ func TestNetworkCreateRequestEncodeDecodeVerifiesNodeProof(t *testing.T) {
 	}
 	if req.NodeProof == "" {
 		t.Fatal("node proof is empty")
-	}
-	if req.NodeKeyDelivery == nil || req.NodeKeyDelivery.RootKeyID != node.EncryptionKeyID() {
-		t.Fatalf("node key delivery = %+v, want root %s", req.NodeKeyDelivery, node.EncryptionKeyID())
 	}
 
 	encoded, err := EncodeNetworkCreateRequest(req)
@@ -211,29 +205,17 @@ func TestNetworkCreateResponseOwnerDIDCompatibility(t *testing.T) {
 	}
 }
 
-func TestResponseNodeContextKeysPreferNodeFieldsWithDelegateFallback(t *testing.T) {
-	nodeKey := json.RawMessage(`{"contextId":"node"}`)
-	delegateKey := json.RawMessage(`{"contextId":"legacy"}`)
-
+func TestResponseMultiPartyProtocolsPreferNodeFieldsWithDelegateFallback(t *testing.T) {
 	resp := Response{
-		NodeContextKeys:             []json.RawMessage{nodeKey},
 		NodeMultiPartyProtocols:     []string{"node-protocol"},
-		DelegateContextKeys:         []json.RawMessage{delegateKey},
 		DelegateMultiPartyProtocols: []string{"legacy-protocol"},
-	}
-	if got := resp.EffectiveNodeContextKeys(); len(got) != 1 || string(got[0]) != string(nodeKey) {
-		t.Fatalf("response node context keys = %v", got)
 	}
 	if got := resp.EffectiveNodeMultiPartyProtocols(); len(got) != 1 || got[0] != "node-protocol" {
 		t.Fatalf("response node protocols = %v", got)
 	}
 
 	legacy := NetworkCreateResponse{
-		DelegateContextKeys:         []json.RawMessage{delegateKey},
 		DelegateMultiPartyProtocols: []string{"legacy-protocol"},
-	}
-	if got := legacy.EffectiveNodeContextKeys(); len(got) != 1 || string(got[0]) != string(delegateKey) {
-		t.Fatalf("legacy network response context keys = %v", got)
 	}
 	if got := legacy.EffectiveNodeMultiPartyProtocols(); len(got) != 1 || got[0] != "legacy-protocol" {
 		t.Fatalf("legacy network response protocols = %v", got)

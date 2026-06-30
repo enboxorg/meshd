@@ -552,14 +552,12 @@ func TestBuildRecordsWriteEncrypted(t *testing.T) {
 		t.Fatalf("GenerateX25519KeyPair: %v", err)
 	}
 
-	kid := "did:dht:recipient#enc-1"
 	result, err := BuildRecordsWrite(s, RecordsWriteOptions{
 		Protocol:     "https://enbox.id/protocols/wireguard-mesh",
 		ProtocolPath: "network",
 		DataFormat:   "application/json",
 		Data:         plaintext,
 		EncryptionRecipients: []dwncrypto.KeyEncryptionInput{{
-			PublicKeyID:      kid,
 			PublicKey:        recipientPub,
 			DerivationScheme: dwncrypto.DerivationSchemeProtocolPath,
 		}},
@@ -573,11 +571,19 @@ func TestBuildRecordsWriteEncrypted(t *testing.T) {
 		if msg.Encryption == nil {
 			t.Fatal("encryption property should be set")
 		}
-		if len(msg.Encryption.Recipients) != 1 {
-			t.Fatalf("recipients = %d, want 1", len(msg.Encryption.Recipients))
+		if msg.Encryption.Algorithm != dwncrypto.EncA256CTR {
+			t.Errorf("algorithm = %q, want %q", msg.Encryption.Algorithm, dwncrypto.EncA256CTR)
 		}
-		if msg.Encryption.Recipients[0].Header.KID != kid {
-			t.Errorf("kid = %q, want %q", msg.Encryption.Recipients[0].Header.KID, kid)
+		if len(msg.Encryption.KeyEncryption) != 1 {
+			t.Fatalf("keyEncryption = %d, want 1", len(msg.Encryption.KeyEncryption))
+		}
+		entry := msg.Encryption.KeyEncryption[0]
+		if entry.DerivationScheme != dwncrypto.DerivationSchemeProtocolPath {
+			t.Errorf("derivationScheme = %q, want protocolPath", entry.DerivationScheme)
+		}
+		wantKeyID := dwncrypto.JWKThumbprintX25519(base64.RawURLEncoding.EncodeToString(recipientPub))
+		if entry.KeyID != wantKeyID {
+			t.Errorf("keyId = %q, want %q", entry.KeyID, wantKeyID)
 		}
 	})
 
@@ -614,7 +620,7 @@ func TestBuildRecordsWriteEncrypted(t *testing.T) {
 	})
 
 	t.Run("ciphertext decrypts to plaintext", func(t *testing.T) {
-		decrypted, err := dwncrypto.DecryptData(result.WireData, msg.Encryption, recipientPriv, kid)
+		decrypted, err := dwncrypto.DecryptData(result.WireData, msg.Encryption, recipientPriv)
 		if err != nil {
 			t.Fatalf("DecryptData: %v", err)
 		}

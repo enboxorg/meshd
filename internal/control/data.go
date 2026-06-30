@@ -1,7 +1,5 @@
 package control
 
-import dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
-
 // NetworkConfig is the parsed network record data.
 type NetworkConfig struct {
 	Name           string   `json:"name"`
@@ -24,17 +22,16 @@ type MemberRecord struct {
 // The WireGuard public key is NOT stored here — it is derived from
 // the DID (did:jwk → X25519 birational map) at conversion time.
 type NodeRecord struct {
-	DID             string                       `json:"-"` // did:jwk from the recipient descriptor field
-	MeshIP          string                       `json:"meshIP"`
-	AllowedIPs      []string                     `json:"allowedIPs,omitempty"`
-	AddedAt         string                       `json:"addedAt"`
-	ExpiresAt       string                       `json:"expiresAt,omitempty"`
-	Label           string                       `json:"label,omitempty"`
-	MemberDID       string                       `json:"memberDID,omitempty"`
-	OwnerDID        string                       `json:"ownerDID,omitempty"`
-	DelegateDID     string                       `json:"delegateDID,omitempty"`
-	SourceDWN       string                       `json:"sourceDWN,omitempty"` // for cross-DWN member devices
-	NodeKeyDelivery *dwncrypto.KeyDeliveryPublic `json:"nodeKeyDelivery,omitempty"`
+	DID         string   `json:"-"` // did:jwk from the recipient descriptor field
+	MeshIP      string   `json:"meshIP"`
+	AllowedIPs  []string `json:"allowedIPs,omitempty"`
+	AddedAt     string   `json:"addedAt"`
+	ExpiresAt   string   `json:"expiresAt,omitempty"`
+	Label       string   `json:"label,omitempty"`
+	MemberDID   string   `json:"memberDID,omitempty"`
+	OwnerDID    string   `json:"ownerDID,omitempty"`
+	DelegateDID string   `json:"delegateDID,omitempty"`
+	SourceDWN   string   `json:"sourceDWN,omitempty"` // for cross-DWN member devices
 
 	// Fields populated from child records (not from this record's data).
 	Info      *NodeInfoData  `json:"-"`

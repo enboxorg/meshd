@@ -423,20 +423,34 @@ Root Key (#dwn-enc from DID document)
 for all descending levels. The network owner, possessing the root key, can
 decrypt everything.
 
-### Multi-Party Decryption: Context Key Delivery
+### Multi-Party Decryption: Role-Audience Key Delivery
 
-Since all members need to read each other's encrypted data, the DWN owner
-distributes **context keys** to members using the key-delivery protocol
-(`https://identity.foundation/protocols/key-delivery`):
+Members and nodes must read each other's encrypted records, but each holds only
+its own `#dwn-enc` root key. Encryption v1 solves this with **role-audience
+keys** that the DWN owner's agent provisions automatically — meshd no longer
+derives or hand-delivers per-network keys.
 
-1. When a new member is added, the anchor DWN owner derives the context
-   private key using the Protocol Context scheme for that network's context.
-2. The owner writes a `contextKey` record encrypted with the Protocol Path
-   key for the key-delivery protocol, with `recipient` set to the new member.
-3. The member reads the contextKey, decrypts it using their own Protocol Path
-   key for key-delivery, and caches the context key locally.
-4. The member uses the context key to decrypt all records in that network
-   context.
+A `$role` type that carries records readable by that role declares a
+`$keyAgreement` block in the protocol definition (the v1 directive, renamed
+from `$encryption`). Then:
+
+1. When the owner writes a `$role` record (e.g. `network/node` or
+   `network/member`) with `recipient` set to the new node/member, the owner's
+   agent auto-provisions a per-`(network context, role, epoch)` audience
+   keypair and writes an encrypted `audienceKey` delivery record (under the
+   built-in `EncryptionProtocol`) addressed to that recipient. The audience key
+   is wrapped to the recipient's **role-path key** (derived from the
+   recipient's `#dwn-enc` root along `["protocolPath", <protocol>, …role]`).
+2. Records the role can read carry an additional `roleAudience` key-wrap entry
+   bound to that audience key.
+3. The recipient derives its role-path key from its own `#dwn-enc` root, reads
+   and decrypts the `audienceKey` record to recover the audience private key,
+   then uses it to decrypt every record in that network/role.
+
+Isolation is per `(network context, role)`: the audience key is keyed by
+`(protocol, contextId, role, epoch)`, so a node only decrypts the network(s)
+and role(s) it was granted, and membership changes rotate the `epoch`. The
+legacy `key-delivery` / `contextKey` protocol has been removed.
 
 ### Per-Node DWN Encryption
 

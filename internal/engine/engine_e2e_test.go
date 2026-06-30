@@ -153,27 +153,3 @@ func TestEngineWithStaticMapResponse(t *testing.T) {
 		t.Errorf("domain = %q, want %q", nm.Domain, "test-mesh")
 	}
 }
-
-// TestEngineAutoKeyDeliveryIntegration verifies the auto key delivery
-// is wired into the MapResponseFunc correctly.
-func TestEngineAutoKeyDeliveryIntegration(t *testing.T) {
-	// Create an auto key delivery tracker (without a real encryption manager
-	// so it won't actually deliver, but we can test the tracking).
-	akd := &AutoKeyDelivery{
-		delivered: make(map[string]bool),
-	}
-
-	// Pre-mark some as delivered.
-	akd.MarkDelivered("did:dht:alice")
-
-	// Simulate what MapResponseFunc does internally.
-	memberDIDs := []string{"did:dht:alice", "did:dht:bob"}
-	pending := akd.PendingDelivery(memberDIDs)
-
-	if len(pending) != 1 {
-		t.Fatalf("pending = %d, want 1", len(pending))
-	}
-	if pending[0] != "did:dht:bob" {
-		t.Errorf("pending[0] = %q, want %q", pending[0], "did:dht:bob")
-	}
-}

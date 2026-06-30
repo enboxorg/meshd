@@ -265,12 +265,11 @@ func TestNodeRecordToNode(t *testing.T) {
 	didURI, wantKey := testDIDJWK(t)
 
 	rec := &NodeRecord{
-		MeshIP:          "10.200.0.5",
-		AllowedIPs:      []string{"192.168.1.0/24"},
-		AddedAt:         "2026-01-01T00:00:00Z",
-		ExpiresAt:       "2026-07-01T00:00:00Z",
-		OwnerDID:        "did:jwk:wallet",
-		NodeKeyDelivery: &dwncrypto.KeyDeliveryPublic{RootKeyID: didURI + "#1"},
+		MeshIP:     "10.200.0.5",
+		AllowedIPs: []string{"192.168.1.0/24"},
+		AddedAt:    "2026-01-01T00:00:00Z",
+		ExpiresAt:  "2026-07-01T00:00:00Z",
+		OwnerDID:   "did:jwk:wallet",
 		Info: &NodeInfoData{
 			Hostname:     "myhost",
 			OS:           "linux",
@@ -339,10 +338,6 @@ func TestNodeRecordToNode(t *testing.T) {
 			t.Errorf("[1] = %q", node.Endpoints[1])
 		}
 	})
-
-	if node.KeyDelivery == nil || node.KeyDelivery.RootKeyID != didURI+"#1" {
-		t.Fatalf("KeyDelivery = %+v, want root %s", node.KeyDelivery, didURI+"#1")
-	}
 
 	t.Run("non-jwk DID yields empty key", func(t *testing.T) {
 		// nodeRecordToNode should not panic on a non-jwk DID.
@@ -696,46 +691,39 @@ func TestNodeChildRecordQueriesUseDirectNodeContexts(t *testing.T) {
 	}
 }
 
-func TestDetectDerivationScheme(t *testing.T) {
+func TestRoleAudienceEntryInfo(t *testing.T) {
 	tests := map[string]struct {
-		enc  *dwncrypto.Encryption
-		want string
+		enc      *dwncrypto.Encryption
+		wantRole bool
 	}{
 		"nil encryption": {
-			enc:  nil,
-			want: "",
+			enc:      nil,
+			wantRole: false,
 		},
-		"protocolPath scheme": {
+		"protocolPath only": {
 			enc: &dwncrypto.Encryption{
-				Recipients: []dwncrypto.Recipient{
-					{Header: dwncrypto.RecipientHeader{DerivationScheme: "protocolPath"}},
+				KeyEncryption: []dwncrypto.KeyEncryption{
+					{DerivationScheme: dwncrypto.DerivationSchemeProtocolPath},
 				},
 			},
-			want: "protocolPath",
+			wantRole: false,
 		},
-		"protocolContext scheme": {
+		"roleAudience present": {
 			enc: &dwncrypto.Encryption{
-				Recipients: []dwncrypto.Recipient{
-					{Header: dwncrypto.RecipientHeader{DerivationScheme: "protocolContext"}},
+				KeyEncryption: []dwncrypto.KeyEncryption{
+					{DerivationScheme: dwncrypto.DerivationSchemeProtocolPath},
+					{DerivationScheme: dwncrypto.DerivationSchemeRoleAudience, Role: "network/node", Epoch: 1},
 				},
 			},
-			want: "protocolContext",
-		},
-		"no scheme defaults to protocolPath": {
-			enc: &dwncrypto.Encryption{
-				Recipients: []dwncrypto.Recipient{
-					{Header: dwncrypto.RecipientHeader{}},
-				},
-			},
-			want: "protocolPath",
+			wantRole: true,
 		},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			got := detectDerivationScheme(tc.enc)
-			if got != tc.want {
-				t.Errorf("detectDerivationScheme = %q, want %q", got, tc.want)
+			info := dwncrypto.RoleAudienceEntryInfo(tc.enc)
+			if (info != nil) != tc.wantRole {
+				t.Errorf("RoleAudienceEntryInfo present = %v, want %v", info != nil, tc.wantRole)
 			}
 		})
 	}
@@ -821,7 +809,7 @@ func TestParseEntryData(t *testing.T) {
 			if err != nil {
 				return nil, err
 			}
-			return dwncrypto.DecryptData(ct, e, privKey, mgr.RootKeyID)
+			return dwncrypto.DecryptData(ct, e, privKey)
 		}
 
 		var net NetworkConfig

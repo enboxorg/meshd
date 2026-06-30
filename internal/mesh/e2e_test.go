@@ -297,7 +297,7 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		t.Fatalf("DeriveDecryptionKey: %v", err)
 	}
 
-	decrypted, err := dwncrypto.DecryptData(ciphertext, enc, decryptKey, nodeA.EncMgr.RootKeyID)
+	decrypted, err := dwncrypto.DecryptData(ciphertext, enc, decryptKey)
 	if err != nil {
 		t.Fatalf("DecryptData: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		t.Fatalf("DeriveDecryptionKey for node: %v", err)
 	}
 
-	nodeDecrypted, err := dwncrypto.DecryptData(nodeCT, nodeEnc, nodeDecryptKey, nodeA.EncMgr.RootKeyID)
+	nodeDecrypted, err := dwncrypto.DecryptData(nodeCT, nodeEnc, nodeDecryptKey)
 	if err != nil {
 		t.Fatalf("DecryptData for node: %v", err)
 	}

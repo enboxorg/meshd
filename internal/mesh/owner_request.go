@@ -10,19 +10,17 @@ import (
 
 	"github.com/enboxorg/meshd/internal/did"
 	"github.com/enboxorg/meshd/internal/dwn"
-	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 	"github.com/enboxorg/meshd/protocols"
 )
 
 // OwnerNodeRequestParams configures a root nodeRequest sent to an owner's DWN.
 type OwnerNodeRequestParams struct {
-	OwnerEndpoint   string
-	OwnerDID        string
-	NodeDID         string
-	Signer          *dwn.Signer
-	Label           string
-	SourceDWN       string
-	NodeKeyDelivery *dwncrypto.KeyDeliveryPublic
+	OwnerEndpoint string
+	OwnerDID      string
+	NodeDID       string
+	Signer        *dwn.Signer
+	Label         string
+	SourceDWN     string
 }
 
 // NodeApprovalData is the root nodeApproval payload written by the owner
@@ -93,22 +91,18 @@ func ownerNodeRequestData(params OwnerNodeRequestParams) (NodeRequestData, error
 	if params.Signer.DID != params.NodeDID {
 		return NodeRequestData{}, fmt.Errorf("node signer DID %s does not match node DID %s", params.Signer.DID, params.NodeDID)
 	}
-	if err := validateNodeKeyDelivery(params.NodeDID, params.NodeKeyDelivery); err != nil {
-		return NodeRequestData{}, err
-	}
 
 	requestedAt := time.Now().UTC().Format(time.RFC3339)
 	return NodeRequestData{
-		NodeDID:         params.NodeDID,
-		MemberDID:       params.OwnerDID,
-		OwnerDID:        params.OwnerDID,
-		RequestedBy:     params.NodeDID,
-		NodeProof:       SignOwnerNodeRequestProof(params.Signer, params.OwnerDID, params.NodeDID, params.SourceDWN, requestedAt),
-		RequestKind:     "owner-node",
-		SourceDWN:       params.SourceDWN,
-		Label:           params.Label,
-		NodeKeyDelivery: params.NodeKeyDelivery,
-		RequestedAt:     requestedAt,
+		NodeDID:     params.NodeDID,
+		MemberDID:   params.OwnerDID,
+		OwnerDID:    params.OwnerDID,
+		RequestedBy: params.NodeDID,
+		NodeProof:   SignOwnerNodeRequestProof(params.Signer, params.OwnerDID, params.NodeDID, params.SourceDWN, requestedAt),
+		RequestKind: "owner-node",
+		SourceDWN:   params.SourceDWN,
+		Label:       params.Label,
+		RequestedAt: requestedAt,
 	}, nil
 }
 

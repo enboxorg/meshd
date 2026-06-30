@@ -1,0 +1,84 @@
+{
+  "_README": "encryption-v1 protocolPath fixture. Decrypt: derive X25519 leaf private key from readerEncPrivateKeyJwk along derivationPath (HKDF-SHA256 per segment), then for the keyEncryption entry whose derivationScheme==='protocolPath': ECDH(leafPriv, entry.ephemeralPublicKey) -> HKDF-SHA256 KEK (info below) -> AES-KW unwrap entry.encryptedKey -> CEK; then AES-256-CTR decrypt ciphertext with recordMessage.encryption.initializationVector.",
+  "_encoding": "ciphertext_b64 and expectedPlaintext_b64 are STANDARD base64. All JWK members (x, d) and every field under recordMessage.encryption are base64url, exactly as emitted by the SDK.",
+  "_scheme": {
+    "contentEncryption": "A256CTR (AES-256-CTR, 16-byte IV, no authentication tag)",
+    "keyWrap": "X25519-HKDF-SHA256+A256KW (ECDH X25519 -> HKDF-SHA256 -> AES-KeyWrap)",
+    "kekHkdf": "HKDF-SHA256, salt = empty, length = 32 bytes, info (utf-8) = \"X25519-HKDF-SHA256+A256KW|protocolPath|<keyId>\"",
+    "encryptionLocation": "top-level `encryption` field on the RecordsWrite message (NOT inside `descriptor`)"
+  },
+  "protocol": "https://enbox.id/protocols/test-mesh",
+  "protocolPath": "network/config",
+  "derivationScheme": "protocolPath",
+  "derivationPath": [
+    "protocolPath",
+    "https://enbox.id/protocols/test-mesh",
+    "network",
+    "config"
+  ],
+  "rootKeyId": "did:dht:hkxryjw1gajwuw6ubz1buwrt5fq5opwxy4nyndyaxb3qq83iad6o#enc",
+  "readerDid": "did:dht:hkxryjw1gajwuw6ubz1buwrt5fq5opwxy4nyndyaxb3qq83iad6o",
+  "readerEncPrivateKeyJwk": {
+    "kty": "OKP",
+    "crv": "X25519",
+    "d": "-Io6nmkAl5MErJAhw4gNR9LEKJvsQPiTXUtCJohBT9E",
+    "x": "bOFlq67TRRnDaJdDNh4GefffY5BtzaATOKbNkxnV6HU",
+    "kid": "GWQ0SrfSGBfA_gZ55aKto0SoOP-bH4Mi8LNqRUsCOUo"
+  },
+  "contextId": "bafyreiftaxsl43vunckremkfgh7rbpvabott77mah5zlz6wdqv4qd3pd4q/bafyreih5ohmx6yfbekvatcepnh4ikgvpn6fhadppejvw5fro7u4met5qr4",
+  "recordMessage": {
+    "recordId": "bafyreih5ohmx6yfbekvatcepnh4ikgvpn6fhadppejvw5fro7u4met5qr4",
+    "descriptor": {
+      "interface": "Records",
+      "method": "Write",
+      "protocol": "https://enbox.id/protocols/test-mesh",
+      "protocolPath": "network/config",
+      "parentId": "bafyreiftaxsl43vunckremkfgh7rbpvabott77mah5zlz6wdqv4qd3pd4q",
+      "dataCid": "bafkreibmurt5lg376j2jvxvpvxfqfikdgo2l36g5wiidfaf63rj3e4rppi",
+      "dataSize": 37,
+      "dateCreated": "2026-06-30T17:47:34.236654Z",
+      "messageTimestamp": "2026-06-30T17:47:34.236654Z",
+      "dataFormat": "application/json"
+    },
+    "encryption": {
+      "algorithm": "A256CTR",
+      "initializationVector": "GFJcb3uUesPe7AuddPCJPQ",
+      "keyEncryption": [
+        {
+          "algorithm": "X25519-HKDF-SHA256+A256KW",
+          "encryptedKey": "t_9vgAYx0TQ4D4MYt4n82BQSXV2cOZ9OnLUZH0VWpcCwDRczauX15g",
+          "ephemeralPublicKey": {
+            "kty": "OKP",
+            "crv": "X25519",
+            "x": "017uZvs4PqigkXJgg-TidQtcoKrgf8YUk6qXAmhF1yA",
+            "kid": "NF2i3lMMF3Jx4XIa74jof5swEqhdvCa6ol8_06hjQ3E"
+          },
+          "keyId": "1P3SpOIoxU2CoygEUcyOAUe6I_2uQl_F6blHrvqHjwg",
+          "derivationScheme": "protocolPath"
+        }
+      ]
+    },
+    "contextId": "bafyreiftaxsl43vunckremkfgh7rbpvabott77mah5zlz6wdqv4qd3pd4q/bafyreih5ohmx6yfbekvatcepnh4ikgvpn6fhadppejvw5fro7u4met5qr4",
+    "authorization": {
+      "signature": {
+        "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWloNW9obXg2eWZiZWt2YXRjZXBuaDRpa2d2cG42ZmhhZHBwZWp2dzVmcm83dTRtZXQ1cXI0IiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWlld2V1dXBuYXhnaGR3aHBmZ2x0bzN1anhzbjV5NjU3bmJ3cDJyb3RoeGxpcHh3Y29wMzQ0IiwiY29udGV4dElkIjoiYmFmeXJlaWZ0YXhzbDQzdnVuY2tyZW1rZmdoN3JicHZhYm90dDc3bWFoNXpsejZ3ZHF2NHFkM3BkNHEvYmFmeXJlaWg1b2hteDZ5ZmJla3ZhdGNlcG5oNGlrZ3ZwbjZmaGFkcHBlanZ3NWZybzd1NG1ldDVxcjQiLCJlbmNyeXB0aW9uQ2lkIjoiYmFmeXJlaWR6NXN5c3JweGV2ZjJjNmgybjdzdDdnZ2xxMjRnZ2s3dXhueGJ5MnBreHMzaWFrZ2U0dGUifQ",
+        "signatures": [
+          {
+            "protected": "eyJraWQiOiJkaWQ6ZGh0OmhreHJ5ancxZ2Fqd3V3NnViejFidXdydDVmcTVvcHd4eTRueW5keWF4YjNxcTgzaWFkNm8jMCIsImFsZyI6IkVkRFNBIn0",
+            "signature": "7l5RZZRMiFFtU-UBRv1ptjhMTMJq5l9eFBIzkLlcbNZJIQ6FcHUPjiEm__zM15fWw7ap_L5fKdxPbDoFn5J2DA"
+          }
+        ]
+      }
+    }
+  },
+  "ciphertext_b64": "ZcnZQjL3Wbk3LOu7OoPXEC4yn4bERPCXmSYvCXIHBZajDXUMgQ==",
+  "expectedPlaintext_b64": "eyJzZWNyZXQiOiJwcm90b2NvbFBhdGgtb25seSIsIm4iOjQyfQ==",
+  "_fields": {
+    "readerEncPrivateKeyJwk": "owner identity's #enc X25519 root private key JWK; `d` is the 32-byte scalar (base64url)",
+    "rootKeyId": "fully-qualified verification-method id of the reader #enc key",
+    "derivationPath": "absolute HKDF path from root to the protocol-path leaf key",
+    "recordMessage": "full RecordsWriteMessage; recordMessage.encryption is the encryption-v1 envelope",
+    "ciphertext_b64": "the encrypted record DATA bytes (what encryption decrypts to expectedPlaintext)",
+    "expectedPlaintext_b64": "original plaintext bytes BEFORE encryption"
+  }
+}

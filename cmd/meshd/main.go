@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -460,13 +459,6 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	}
 	fmt.Printf("  Protocol installed on DWN (with encryption keys).\n")
 
-	// Install the key-delivery protocol (needed for multi-party key exchange).
-	if err := mesh.EnsureKeyDeliveryProtocol(ctx, endpoint, identity.URI, signer, identity.EncryptionPrivateKey, identity.EncryptionKeyID()); err != nil {
-		fmt.Printf("  Warning: key-delivery protocol installation failed: %v\n", err)
-	} else {
-		fmt.Printf("  Key delivery protocol installed.\n")
-	}
-
 	// Set up encryption key manager for encrypted writes.
 	encMgr := &dwncrypto.EncryptionKeyManager{
 		RootPrivateKey: identity.EncryptionPrivateKey,
@@ -498,37 +490,15 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 		return fmt.Errorf("network create failed: %d %s", writeStatus.Code, writeStatus.Detail)
 	}
 
-	// 3. Deliver context key to self (anchor always needs this for context-based decryption).
-	kdm := &mesh.KeyDeliveryManager{
-		Endpoint:             endpoint,
-		Signer:               signer,
-		EncryptionKeyManager: encMgr,
-	}
-	if err := kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
-		AnchorDID:      identity.URI,
-		RecipientDID:   nodeDID,
-		SourceProtocol: protocols.MeshProtocolURI,
-		ContextID:      record.ID,
-	}); err != nil {
-		fmt.Printf("  Warning: context key self-delivery failed: %v\n", err)
-	} else {
-		fmt.Printf("  Context key delivered to self.\n")
-	}
-
-	// 4. Allocate mesh IP.
+	// 3. Allocate mesh IP.
 	meshIP, err := mesh.AllocateMeshIP(meshCIDR, nodeDID)
 	if err != nil {
 		return fmt.Errorf("allocating mesh IP: %w", err)
 	}
 
-	// 5. Register node on DWN (encrypted with Protocol Context).
-	// Use context encryption so that peers with the shared context key can
-	// decrypt the anchor's node record. The anchor already self-delivered the
-	// context key above, and as the DWN owner it can derive the key from root.
-	nodeKeyDelivery, err := walletconnect.NewKeyDeliveryPublic(identity)
-	if err != nil {
-		return fmt.Errorf("deriving node key-delivery public key: %w", err)
-	}
+	// 4. Register node on DWN (encrypted with the protocolPath scheme).
+	// The anchor is the DWN owner and can derive every protocolPath key from
+	// its encryption root; role holders read via role-audience.
 	reg, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            identity.URI,
@@ -539,15 +509,13 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 		MeshIP:               meshIP.String(),
 		OwnerDID:             ownerDID,
 		DelegateDID:          meta.DelegateDID,
-		NodeKeyDelivery:      nodeKeyDelivery,
-		UseContextEncryption: true,
 	})
 	if err != nil {
 		fmt.Printf("  Warning: node registration failed: %v\n", err)
 	} else {
 		fmt.Printf("  Registered node (encrypted): IP=%s\n", meshIP)
 
-		// 5b. Write nodeInfo (device-operational data: hostname, OS).
+		// 4b. Write nodeInfo (device-operational data: hostname, OS).
 		if err := mesh.WriteNodeInfo(ctx, mesh.WriteNodeInfoParams{
 			AnchorEndpoint:       endpoint,
 			AnchorDID:            identity.URI,
@@ -555,7 +523,6 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 			NodeRecordID:         reg.NodeRecordID,
 			Signer:               signer,
 			EncryptionKeyManager: encMgr,
-			UseContextEncryption: true,
 		}); err != nil {
 			fmt.Printf("  Warning: nodeInfo write failed: %v\n", err)
 		} else {
@@ -1270,7 +1237,6 @@ func importNetworkCreateResponseData(ctx context.Context, flagProfile string, da
 	if err != nil {
 		return err
 	}
-	nodeContextKeys := resp.EffectiveNodeContextKeys()
 	nodeProtocols := resp.EffectiveNodeMultiPartyProtocols()
 	session := &state.WalletSession{
 		Version:                 1,
@@ -1281,7 +1247,6 @@ func importNetworkCreateResponseData(ctx context.Context, flagProfile string, da
 		WalletOrigin:            resp.WalletOrigin,
 		ExpiresAt:               resp.ExpiresAt,
 		Grants:                  resp.Grants,
-		NodeContextKeys:         nodeContextKeys,
 		NodeMultiPartyProtocols: nodeProtocols,
 	}
 	if existingSession != nil {
@@ -1299,17 +1264,11 @@ func importNetworkCreateResponseData(ctx context.Context, flagProfile string, da
 		}
 		session.Grants = append(existingSession.Grants, resp.Grants...)
 		session.DelegateDecryptionKeys = existingSession.DelegateDecryptionKeys
-		session.NodeContextKeys = append(existingSession.EffectiveNodeContextKeys(), nodeContextKeys...)
 		if len(nodeProtocols) == 0 {
 			session.NodeMultiPartyProtocols = existingSession.EffectiveNodeMultiPartyProtocols()
 		}
 	}
 	if err := state.StoreWalletSession(stateDir, password, session); err != nil {
-		return err
-	}
-
-	contextKeyCount, err := storeWalletNodeContextKeys(stateDir, password, nodeContextKeys)
-	if err != nil {
 		return err
 	}
 
@@ -1367,9 +1326,6 @@ func importNetworkCreateResponseData(ctx context.Context, flagProfile string, da
 	}
 	if resp.NodeRecordID != "" {
 		fmt.Printf("  Node Record: %s\n", resp.NodeRecordID)
-	}
-	if contextKeyCount > 0 {
-		fmt.Printf("  Context keys: %d imported\n", contextKeyCount)
 	}
 	fmt.Printf("\nRun 'meshd up' to start the mesh.\n")
 	return nil
@@ -1597,25 +1553,6 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		}
 	}
 
-	// Fetch and persist context key if available.
-	var contextKeyPriv []byte
-	useContextEnc := false
-	if nodeRecordID != "" {
-		contextKey, ckErr := fetchContextKey(ctx, identity, &state.NetworkState{
-			AnchorEndpoint:  endpoint,
-			AnchorDID:       anchorDID,
-			NetworkRecordID: networkID,
-		})
-		if ckErr == nil && contextKey != nil {
-			privBytes, pbErr := contextKey.PrivateKeyBytes()
-			if pbErr == nil {
-				encMgr.StoreContextKey(networkID, privBytes)
-				contextKeyPriv = privBytes
-				useContextEnc = true
-			}
-		}
-	}
-
 	// Write nodeInfo if we have a node record (so the network sees our hostname/OS).
 	if nodeRecordID != "" {
 		nodeInfoGrantID, grantErr := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, nodeInfoProtocolPath(&state.NetworkState{MemberRecordID: memberRecordID}), networkID, false)
@@ -1638,7 +1575,6 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 			NodeRecordID:         nodeRecordID,
 			Signer:               nodeInfoSigner,
 			EncryptionKeyManager: encMgr,
-			UseContextEncryption: useContextEnc,
 			PermissionGrantID:    nodeInfoGrantID,
 		}); err != nil {
 			fmt.Printf("  Warning: nodeInfo write failed: %v\n", err)
@@ -1647,7 +1583,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		}
 	}
 
-	// Save network state locally (including context key for offline resilience).
+	// Save network state locally.
 	ns := &state.NetworkState{
 		NetworkRecordID: networkID,
 		AnchorDID:       anchorDID,
@@ -1663,9 +1599,6 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 		NodeRecordID:    nodeRecordID,
 		NodeDateCreated: nodeDateCreated,
 		MemberRecordID:  memberRecordID,
-	}
-	if err := attachContextKeyForNetworkSave(stateDir, ns, contextKeyPriv); err != nil {
-		return fmt.Errorf("caching context key: %w", err)
 	}
 	if err := state.SaveNetworkState(stateDir, ns); err != nil {
 		return fmt.Errorf("saving network state: %w", err)
@@ -1844,7 +1777,7 @@ func cmdInviteCreate(ctx context.Context, args []string, flagProfile string) err
 		return err
 	}
 
-	encMgr, err := prepareNetworkCommandEncryption(stateDir, identity, ns, useContextEncryption)
+	encMgr, err := prepareNetworkCommandEncryption(identity)
 	if err != nil {
 		return err
 	}
@@ -1877,7 +1810,6 @@ func cmdInviteCreate(ctx context.Context, args []string, flagProfile string) err
 		Reusable:             reusable,
 		Ephemeral:            ephemeral,
 		PermissionGrantID:    writeGrantID,
-		UseContextEncryption: useContextEncryption,
 	})
 	if err != nil {
 		return err
@@ -1954,19 +1886,14 @@ func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
 		}
 		label, _ := os.Hostname()
 		signer := &dwn.Signer{DID: identity.URI, PrivateKey: identity.SigningKey}
-		nodeKeyDelivery, err := walletconnect.NewKeyDeliveryPublic(identity)
-		if err != nil {
-			return fmt.Errorf("deriving node key-delivery public key: %w", err)
-		}
 		if err := mesh.WritePreAuthNodeRequest(ctx, mesh.WritePreAuthNodeRequestParams{
-			Invite:          payload,
-			NodeDID:         nodeDID,
-			MemberDID:       ownerDID,
-			DelegateDID:     meta.DelegateDID,
-			RequestedBy:     identity.URI,
-			Signer:          signer,
-			Label:           label,
-			NodeKeyDelivery: nodeKeyDelivery,
+			Invite:      payload,
+			NodeDID:     nodeDID,
+			MemberDID:   ownerDID,
+			DelegateDID: meta.DelegateDID,
+			RequestedBy: identity.URI,
+			Signer:      signer,
+			Label:       label,
 		}); err != nil {
 			return err
 		}
@@ -2056,9 +1983,6 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 		return err
 	}
 	encMgr := newEncryptionKeyManager(identity)
-	if ns.AnchorDID != selfNodeDID {
-		_, _, _ = loadLocalContextKeyForCLI(stateDir, ns, encMgr)
-	}
 	if resp, err := loadControlStateForCLI(ctx, ns, identity, operationIdentity, encMgr, readGrantID); err == nil {
 		if refreshed, _, saveErr := refreshLocalMembershipMetadataFromMap(stateDir, ns, resp); saveErr == nil && refreshed != nil {
 			ns = refreshed
@@ -2388,15 +2312,11 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 	if err != nil {
 		return err
 	}
-	encMgr, err := prepareNetworkCommandEncryption(stateDir, identity, ns, useContextEncryption)
+	encMgr, err := prepareNetworkCommandEncryption(identity)
 	if err != nil {
 		return err
 	}
 	writeGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
-	if err != nil {
-		return err
-	}
-	keyDeliveryGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.KeyDeliveryProtocolURI, "", "", useContextEncryption)
 	if err != nil {
 		return err
 	}
@@ -2407,10 +2327,10 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 	}
 	signer := dwnSigner(operationIdentity)
 
-	// 1. Create a node record for the peer (assigns the network/node role).
-	// The peer's mesh IP is derived deterministically from their DID.
-	// Use Protocol Context encryption so all peers with the shared context
-	// key can decrypt each other's node records.
+	// Create a node record for the peer (assigns the network/node role).
+	// The peer's mesh IP is derived deterministically from their DID. The
+	// record is protocolPath-encrypted (owner-readable); the peer reads it via
+	// the role-audience scheme.
 	fmt.Printf("Adding peer %s...\n", peerDID)
 	peerMeshIP, err := mesh.AllocateMeshIP(ns.MeshCIDR, peerDID)
 	if err != nil {
@@ -2426,7 +2346,6 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 		MeshIP:               peerMeshIP.String(),
 		Label:                opts.label,
 		OwnerDID:             opts.ownerDID,
-		UseContextEncryption: true,
 		PermissionGrantID:    writeGrantID,
 	})
 	if err != nil {
@@ -2436,29 +2355,6 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 	if opts.ownerDID != "" && opts.ownerDID != peerDID {
 		fmt.Printf("  Owner: %s\n", opts.ownerDID)
 	}
-
-	// 2. Deliver the context encryption key so the peer can decrypt records.
-	kdm := &mesh.KeyDeliveryManager{
-		Endpoint:             ns.AnchorEndpoint,
-		Signer:               signer,
-		EncryptionKeyManager: encMgr,
-	}
-	err = kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
-		AnchorDID:         ns.AnchorDID,
-		RecipientDID:      peerDID,
-		SourceProtocol:    protocols.MeshProtocolURI,
-		ContextID:         ns.NetworkRecordID,
-		PermissionGrantID: keyDeliveryGrantID,
-	})
-	if err != nil {
-		// Non-fatal: the node was created, key delivery can be retried
-		// with `peer approve`.
-		fmt.Printf("  Warning: context key delivery failed: %v\n", err)
-		fmt.Printf("  The node was added but cannot decrypt records yet.\n")
-		fmt.Printf("  Retry with: meshd peer approve %s\n", peerDID)
-		return nil
-	}
-	fmt.Printf("  Context key delivered.\n")
 
 	fmt.Printf("\nPeer added to network %q.\n", ns.NetworkName)
 	joinURL, err := invite.Encode(invite.New(ns.AnchorEndpoint, ns.AnchorDID, ns.NetworkRecordID, ns.NetworkName, "", "", ""))
@@ -2557,14 +2453,6 @@ func cmdPeerRemove(ctx context.Context, args []string, flagProfile string) error
 	if err != nil {
 		return err
 	}
-	keyDeliveryReadGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.KeyDeliveryProtocolURI, "", "", false)
-	if err != nil {
-		return err
-	}
-	keyDeliveryDeleteGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsDelete, protocols.KeyDeliveryProtocolURI, "", "", false)
-	if err != nil {
-		return err
-	}
 
 	operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, identity)
 	if err != nil {
@@ -2596,13 +2484,7 @@ func cmdPeerRemove(ctx context.Context, args []string, flagProfile string) error
 		}
 		fmt.Printf("  Removed %s record %s\n", candidate.Path, candidate.RecordID)
 	}
-	removedContextKeys, err := removeDeliveredContextKeysForPeer(ctx, api, ns, peerDID, keyDeliveryReadGrantID, keyDeliveryDeleteGrantID)
-	if err != nil {
-		fmt.Printf("  Warning: delivered context key cleanup failed: %v\n", err)
-	} else if removedContextKeys > 0 {
-		fmt.Printf("  Removed delivered context keys: %d\n", removedContextKeys)
-	}
-	fmt.Printf("Peer removed. For cryptographic revocation, rotate network context keys before re-adding this node.\n")
+	fmt.Printf("Peer removed. For cryptographic revocation, rotate the network role-audience epoch before re-adding this node.\n")
 	return nil
 }
 
@@ -2726,74 +2608,13 @@ func peerRemoveCandidateFromRecord(record *dwn.Record, memberRecordID string) (p
 	}, true
 }
 
-func removeDeliveredContextKeysForPeer(ctx context.Context, api *dwn.DwnAPI, ns *state.NetworkState, peerDID, readGrantID, deleteGrantID string) (int, error) {
-	if api == nil || ns == nil || peerDID == "" {
-		return 0, nil
-	}
-	records, status, err := api.Query(ctx, ns.AnchorDID, dwn.QueryParams{
-		Filter: dwn.RecordsFilter{
-			Protocol:     protocols.KeyDeliveryProtocolURI,
-			ProtocolPath: "contextKey",
-			Recipient:    peerDID,
-		},
-		DateSort:          "createdAscending",
-		PermissionGrantID: readGrantID,
-	}, "")
-	if err != nil {
-		return 0, fmt.Errorf("querying delivered context keys: %w", err)
-	}
-	if status.Code != 200 {
-		return 0, fmt.Errorf("context key query failed: %d %s", status.Code, status.Detail)
-	}
-
-	removed := 0
-	for _, record := range records {
-		if !deliveredContextKeyMatchesNetwork(record, ns.NetworkRecordID) {
-			continue
-		}
-		status, err := api.Delete(ctx, ns.AnchorDID, record.ID, false, "", deleteGrantID)
-		if err != nil {
-			return removed, fmt.Errorf("deleting contextKey record %s: %w", record.ID, err)
-		}
-		if status.Code >= 300 {
-			return removed, fmt.Errorf("delete contextKey record %s failed: %d %s", record.ID, status.Code, status.Detail)
-		}
-		removed++
-	}
-	return removed, nil
-}
-
-func deliveredContextKeyMatchesNetwork(record *dwn.Record, networkRecordID string) bool {
-	if record == nil || record.ID == "" || networkRecordID == "" {
-		return false
-	}
-	return tagString(record.Tags, "protocol") == protocols.MeshProtocolURI &&
-		tagString(record.Tags, "contextId") == networkRecordID
-}
-
-func tagString(tags map[string]any, key string) string {
-	if tags == nil {
-		return ""
-	}
-	value, ok := tags[key]
-	if !ok {
-		return ""
-	}
-	switch v := value.(type) {
-	case string:
-		return v
-	case fmt.Stringer:
-		return v.String()
-	default:
-		return fmt.Sprint(v)
-	}
-}
-
-// cmdPeerApprove delivers encryption keys to a peer so they can decrypt
-// mesh records. This must be run by the network anchor (owner).
+// cmdPeerApprove validates ownership and reports that no key delivery is
+// required. With encryption-v1 role-audience, a peer added via 'meshd peer add'
+// reads mesh records by deriving its role key and fetching the audienceKey
+// record automatically — there is no separate context-key delivery step.
 //
 // Usage: meshd peer approve <did>
-func cmdPeerApprove(ctx context.Context, args []string, flagProfile string) error {
+func cmdPeerApprove(_ context.Context, args []string, flagProfile string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("usage: meshd peer approve <did>")
 	}
@@ -2817,90 +2638,12 @@ func cmdPeerApprove(ctx context.Context, args []string, flagProfile string) erro
 		return fmt.Errorf("not in a network. Use 'meshd network create' first.")
 	}
 
-	meta, useContextEncryption, err := requireNetworkOwnerProfile(flagProfile, identity, ns)
-	if err != nil {
-		return err
-	}
-	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
-	if err != nil {
-		return err
-	}
-	keyDeliveryGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.KeyDeliveryProtocolURI, "", "", useContextEncryption)
-	if err != nil {
+	if _, _, err := requireNetworkOwnerProfile(flagProfile, identity, ns); err != nil {
 		return err
 	}
 
-	operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, identity)
-	if err != nil {
-		return err
-	}
-	signer := dwnSigner(operationIdentity)
-	encMgr, err := prepareNetworkCommandEncryption(stateDir, identity, ns, useContextEncryption)
-	if err != nil {
-		return err
-	}
-	recipientKeyDelivery, lookupErr := lookupPeerKeyDelivery(ctx, stateDir, ns, identity, operationIdentity, encMgr, readGrantID, peerDID)
-	if lookupErr != nil {
-		fmt.Printf("  Warning: node key-delivery lookup failed: %v\n", lookupErr)
-	}
-
-	kdm := &mesh.KeyDeliveryManager{
-		Endpoint:             ns.AnchorEndpoint,
-		Signer:               signer,
-		EncryptionKeyManager: encMgr,
-	}
-
-	err = kdm.DeliverContextKey(ctx, mesh.DeliverContextKeyParams{
-		AnchorDID:            ns.AnchorDID,
-		RecipientDID:         peerDID,
-		SourceProtocol:       protocols.MeshProtocolURI,
-		ContextID:            ns.NetworkRecordID,
-		PermissionGrantID:    keyDeliveryGrantID,
-		RecipientKeyDelivery: recipientKeyDelivery,
-	})
-	if err != nil {
-		return fmt.Errorf("delivering context key: %w", err)
-	}
-
-	fmt.Printf("Context key delivered to %s.\n", peerDID)
-	if recipientKeyDelivery != nil {
-		fmt.Printf("  Encrypted to node key-delivery key: %s\n", recipientKeyDelivery.RootKeyID)
-	}
-	fmt.Printf("The peer can now decrypt mesh records in this network.\n")
-	return nil
-}
-
-func lookupPeerKeyDelivery(ctx context.Context, stateDir string, ns *state.NetworkState, identity *did.DID, signerIdentity *did.DID, encMgr *dwncrypto.EncryptionKeyManager, readGrantID string, peerDID string) (*dwncrypto.KeyDeliveryPublic, error) {
-	if ns == nil || identity == nil || peerDID == "" {
-		return nil, nil
-	}
-	if encMgr == nil {
-		encMgr = newEncryptionKeyManager(identity)
-	}
-	if ns.AnchorDID != networkNodeDID(ns, identity.URI) && !encMgr.HasContextKey(ns.NetworkRecordID) {
-		if _, _, err := loadLocalContextKeyForCLI(stateDir, ns, encMgr); err != nil {
-			return nil, err
-		}
-	}
-	resp, err := loadControlStateForCLI(ctx, ns, identity, signerIdentity, encMgr, readGrantID)
-	if err != nil {
-		return nil, err
-	}
-	return keyDeliveryForNode(resp, peerDID), nil
-}
-
-func keyDeliveryForNode(resp *control.MapResponse, nodeDID string) *dwncrypto.KeyDeliveryPublic {
-	if resp == nil || nodeDID == "" {
-		return nil
-	}
-	if resp.Node != nil && resp.Node.DID == nodeDID {
-		return resp.Node.KeyDelivery
-	}
-	for _, peer := range resp.Peers {
-		if peer != nil && peer.DID == nodeDID {
-			return peer.KeyDelivery
-		}
-	}
+	fmt.Printf("No key delivery is required for %s.\n", peerDID)
+	fmt.Printf("Peers read mesh records via the role-audience scheme. Run 'meshd peer add %s' to provision the node.\n", peerDID)
 	return nil
 }
 
@@ -3266,16 +3009,6 @@ func walletDoctorChecks(stateDir string, meta identityMetadata) []doctorCheck {
 			Next:   "Run 'meshd auth connect' and approve node runtime access in the wallet.",
 		})
 	}
-	if status.NodeContextKeyCount > 0 {
-		checks = append(checks, doctorCheck{Level: doctorOK, Title: "Context keys cached", Detail: strconv.Itoa(status.NodeContextKeyCount)})
-	} else {
-		checks = append(checks, doctorCheck{
-			Level:  doctorWarn,
-			Title:  "No cached context key",
-			Detail: "Non-anchor nodes need a delivered context key to decrypt mesh records.",
-			Next:   "Approve the node in the wallet admin panel or run 'meshd peer approve <node-did>' on the anchor.",
-		})
-	}
 	return checks
 }
 
@@ -3422,9 +3155,6 @@ func doctorPeerRouteTarget(ctx context.Context, stateDir string, ns *state.Netwo
 		return "", 0, err
 	}
 	encMgr := newEncryptionKeyManager(identity)
-	if ns.AnchorDID != selfNodeDID {
-		_, _, _ = loadLocalContextKeyForCLI(stateDir, ns, encMgr)
-	}
 	resp, err := loadControlStateForCLI(ctx, ns, identity, operationIdentity, encMgr, readGrantID)
 	if err != nil {
 		return "", 0, err
@@ -3991,55 +3721,10 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	}
 	signer := dwnSigner(operationIdentity)
 
+	// The node uses its own #enc root key manager. As the network author it
+	// derives every protocolPath key; as a role holder it reads role-readable
+	// records via the role-audience scheme (handled by the control client).
 	encMgr := newEncryptionKeyManager(nodeIdentity)
-
-	// Enable Protocol Context encryption so all nodes (including the anchor)
-	// write records that any peer with the shared context key can decrypt.
-	// The anchor derives the context key from its root key (HKDF).
-	// Non-anchor nodes fetch it from the anchor's key-delivery protocol.
-	useContextEncryption := false
-	if ns.AnchorDID == identity.URI {
-		// Anchor: always use context encryption. The EncryptionKeyManager
-		// derives the context key from the root key automatically.
-		useContextEncryption = true
-	} else {
-		// Try cached context key first (survives DWN outages at startup).
-		source, ok, err := loadLocalContextKeyForCLI(stateDir, ns, encMgr)
-		if err != nil {
-			slog.Warn("cached context key load failed, will fetch from DWN",
-				slog.Any("error", err),
-			)
-		} else if ok {
-			useContextEncryption = true
-			fmt.Printf("  Context key: loaded from %s\n", source)
-		}
-
-		// Fall back to DWN fetch if not cached.
-		if !useContextEncryption {
-			contextKey, err := fetchContextKey(ctx, nodeIdentity, ns)
-			if err != nil {
-				slog.Warn("context key fetch failed (will retry on next up)",
-					slog.Any("error", err),
-				)
-			} else if contextKey != nil {
-				privBytes, err := contextKey.PrivateKeyBytes()
-				if err != nil {
-					return fmt.Errorf("extracting context key bytes: %w", err)
-				}
-				encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
-				useContextEncryption = true
-
-				// Persist for next startup.
-				if saveErr := saveContextKeyForCommand(stateDir, ns, privBytes); saveErr != nil {
-					slog.Warn("failed to persist context key", slog.Any("error", saveErr))
-				}
-				fmt.Printf("  Context key: received (Protocol Context encryption enabled)\n")
-			} else {
-				fmt.Printf("  Context key: not yet delivered (run 'peer approve' on anchor)\n")
-				fmt.Printf("  Records will be written with Protocol Path encryption.\n")
-			}
-		}
-	}
 
 	// Derive WireGuard key pair from identity (no separate WG key generation).
 	wgKeys, err := mesh.WireGuardKeyFromIdentity(nodeIdentity.EncryptionPrivateKey)
@@ -4074,11 +3759,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	if err != nil {
 		return err
 	}
-	keyDeliveryGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.KeyDeliveryProtocolURI, "", "", false)
-	if err != nil {
-		return err
-	}
-	ownerAutomation := ownerAutomationEnabled(ns, nodeIdentity.URI, networkOwner, readGrantID, ownerWriteGrantID, deleteGrantID, keyDeliveryGrantID)
+	ownerAutomation := ownerAutomationEnabled(ns, nodeIdentity.URI, networkOwner, readGrantID, ownerWriteGrantID, deleteGrantID)
 
 	fmt.Printf("Starting meshd...\n")
 	fmt.Printf("  Network: %s\n", ns.NetworkName)
@@ -4105,7 +3786,6 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 			EncryptionKeyManager: encMgr,
 			LocalEndpoints:       localEndpoints,
 			NATType:              "unknown",
-			UseContextEncryption: useContextEncryption,
 			PermissionGrantID:    endpointWriteGrantID,
 		}
 		err = mesh.WriteEndpoint(ctx, wpParams)
@@ -4116,28 +3796,11 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		}
 	}
 
-	// If this profile has owner authority, enable automatic context key
-	// delivery so new members get decryption keys without manual approval.
-	var autoKeyDelivery *engine.AutoKeyDelivery
-	if ownerAutomation && useContextEncryption {
-		autoKeyDelivery = engine.NewAutoKeyDelivery(engine.AutoKeyDeliveryConfig{
-			Endpoint:             ns.AnchorEndpoint,
-			AnchorDID:            ns.AnchorDID,
-			NetworkRecordID:      ns.NetworkRecordID,
-			Signer:               signer,
-			EncryptionKeyManager: encMgr,
-			Logger:               logger,
-			PermissionGrantID:    keyDeliveryGrantID,
-		})
-		if autoKeyDelivery != nil {
-			fmt.Printf("  Auto key delivery: enabled (owner node)\n")
-		}
-	}
 	if networkOwner && !ownerAutomation && ns.AnchorDID != nodeIdentity.URI {
 		fmt.Printf("  Owner automation: disabled (use the wallet admin panel for approvals)\n")
 	}
 	if ownerAutomation {
-		approvePreAuthRequests(ctx, ns, signer, encMgr, logger, readGrantID, ownerWriteGrantID, deleteGrantID, keyDeliveryGrantID, useContextEncryption)
+		approvePreAuthRequests(ctx, ns, signer, encMgr, logger, readGrantID, ownerWriteGrantID, deleteGrantID)
 	}
 
 	// Determine the protocol role for DWN queries. The anchor reads as
@@ -4161,8 +3824,6 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		ProtocolRole:           protocolRole,
 		PermissionGrantID:      readGrantID,
 		WritePermissionGrantID: endpointWriteGrantID,
-		AutoKeyDelivery:        autoKeyDelivery,
-		UseContextEncryption:   useContextEncryption,
 		WireGuardPrivateKey:    wgKeys.PrivateKey,
 		DiscoKeyRegistry:       discoRegistry,
 		TUNName:                f.tunName,
@@ -4204,7 +3865,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		if interval == 0 {
 			interval = 30 * time.Second
 		}
-		go runPreAuthApprovalLoop(ctx, stopPreAuthApproval, interval, ns, signer, encMgr, logger, readGrantID, ownerWriteGrantID, deleteGrantID, keyDeliveryGrantID, useContextEncryption)
+		go runPreAuthApprovalLoop(ctx, stopPreAuthApproval, interval, ns, signer, encMgr, logger, readGrantID, ownerWriteGrantID, deleteGrantID)
 		defer close(stopPreAuthApproval)
 	}
 
@@ -4448,18 +4109,13 @@ func setupOwnerNodeRequest(ctx context.Context, f upFlags, stateDir string, iden
 	}
 
 	label, _ := os.Hostname()
-	nodeKeyDelivery, err := walletconnect.NewKeyDeliveryPublic(identity)
-	if err != nil {
-		return nil, fmt.Errorf("deriving node key-delivery public key: %w", err)
-	}
 	requestID, err := mesh.WriteOwnerNodeRequest(ctx, mesh.OwnerNodeRequestParams{
-		OwnerEndpoint:   endpoint,
-		OwnerDID:        ownerDID,
-		NodeDID:         identity.URI,
-		Signer:          dwnSigner(identity),
-		Label:           label,
-		SourceDWN:       endpoint,
-		NodeKeyDelivery: nodeKeyDelivery,
+		OwnerEndpoint: endpoint,
+		OwnerDID:      ownerDID,
+		NodeDID:       identity.URI,
+		Signer:        dwnSigner(identity),
+		Label:         label,
+		SourceDWN:     endpoint,
 	})
 	if err != nil {
 		ctx := adminContext{OwnerDID: ownerDID}
@@ -4980,14 +4636,14 @@ func isNetworkOwnerProfile(meta identityMetadata, identityDID string, ns *state.
 		meta.OwnerDID == ns.AnchorDID
 }
 
-func ownerAutomationEnabled(ns *state.NetworkState, nodeDID string, networkOwner bool, readGrantID, writeGrantID, deleteGrantID, keyDeliveryWriteGrantID string) bool {
+func ownerAutomationEnabled(ns *state.NetworkState, nodeDID string, networkOwner bool, readGrantID, writeGrantID, deleteGrantID string) bool {
 	if !networkOwner || ns == nil {
 		return false
 	}
 	if ns.AnchorDID == nodeDID {
 		return true
 	}
-	return readGrantID != "" && writeGrantID != "" && deleteGrantID != "" && keyDeliveryWriteGrantID != ""
+	return readGrantID != "" && writeGrantID != "" && deleteGrantID != ""
 }
 
 func nodeInfoProtocolPath(ns *state.NetworkState) string {
@@ -5015,19 +4671,12 @@ func requireNetworkOwnerProfile(flagProfile string, identity *did.DID, ns *state
 	return meta, ns.AnchorDID != identity.URI, nil
 }
 
-func prepareNetworkCommandEncryption(stateDir string, identity *did.DID, ns *state.NetworkState, useContextEncryption bool) (*dwncrypto.EncryptionKeyManager, error) {
-	encMgr := newEncryptionKeyManager(identity)
-	if !useContextEncryption {
-		return encMgr, nil
-	}
-	_, loaded, err := loadLocalContextKeyForCLI(stateDir, ns, encMgr)
-	if err != nil {
-		return nil, err
-	}
-	if !loaded {
-		return nil, fmt.Errorf("wallet-owned network is missing its local context key; reconnect this profile with 'meshd auth connect'")
-	}
-	return encMgr, nil
+// prepareNetworkCommandEncryption builds the encryption key manager for a
+// network admin command. With encryption-v1 the manager only needs the
+// identity's own #enc root: the network author derives every protocolPath key,
+// and role holders read role-readable records via the role-audience scheme.
+func prepareNetworkCommandEncryption(identity *did.DID) (*dwncrypto.EncryptionKeyManager, error) {
+	return newEncryptionKeyManager(identity), nil
 }
 
 func walletGrantIDForDWNOperation(stateDir string, meta identityMetadata, messageType dwn.DwnInterface, protocolURI, protocolPath, contextID string, required bool) (string, error) {
@@ -5093,20 +4742,18 @@ func walletSessionGrantGranteeDID(session *state.WalletSession, meta identityMet
 }
 
 type walletSessionStatus struct {
-	Exists                  bool
-	OwnerDID                string
-	NodeDID                 string
-	WalletOrigin            string
-	ExpiresAt               string
-	DelegateDID             string
-	GrantCount              int
-	NodeContextKeyCount     int
-	NodeProtocolCount       int
-	NodeRuntimeAccess       bool
-	AdminControlAccess      bool
-	OwnerDIDMismatch        bool
-	NodeDIDMismatch         bool
-	LegacyDelegateKeyFields bool
+	Exists             bool
+	OwnerDID           string
+	NodeDID            string
+	WalletOrigin       string
+	ExpiresAt          string
+	DelegateDID        string
+	GrantCount         int
+	NodeProtocolCount  int
+	NodeRuntimeAccess  bool
+	AdminControlAccess bool
+	OwnerDIDMismatch   bool
+	NodeDIDMismatch    bool
 }
 
 func loadWalletSessionStatus(stateDir string, meta identityMetadata) (*walletSessionStatus, error) {
@@ -5132,11 +4779,9 @@ func loadWalletSessionStatus(stateDir string, meta identityMetadata) (*walletSes
 	status.ExpiresAt = session.ExpiresAt
 	status.DelegateDID = session.DelegateDID
 	status.GrantCount = len(session.Grants)
-	status.NodeContextKeyCount = len(session.EffectiveNodeContextKeys())
 	status.NodeProtocolCount = len(session.EffectiveNodeMultiPartyProtocols())
 	status.NodeRuntimeAccess = walletSessionHasNodeRuntimeGrants(session, meta)
 	status.AdminControlAccess = walletSessionHasAdminControlGrants(session, meta)
-	status.LegacyDelegateKeyFields = len(session.NodeContextKeys) == 0 && len(session.DelegateContextKeys) > 0
 	status.OwnerDIDMismatch = meta.OwnerDID != "" && status.OwnerDID != "" && meta.OwnerDID != status.OwnerDID
 	status.NodeDIDMismatch = meta.NodeDID != "" && session.NodeDID != "" && meta.NodeDID != session.NodeDID
 	return status, nil
@@ -5150,8 +4795,7 @@ func walletSessionHasNodeRuntimeGrants(session *state.WalletSession, meta identi
 		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "network/node/nodeInfo") &&
 		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "network/node/endpoint") &&
 		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "network/member/node/nodeInfo") &&
-		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "network/member/node/endpoint") &&
-		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsQuery, protocols.KeyDeliveryProtocolURI, "")
+		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "network/member/node/endpoint")
 }
 
 func walletSessionHasAdminControlGrants(session *state.WalletSession, meta identityMetadata) bool {
@@ -5160,10 +4804,7 @@ func walletSessionHasAdminControlGrants(session *state.WalletSession, meta ident
 	}
 	return walletSessionHasGrant(session, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "") &&
 		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "") &&
-		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsDelete, protocols.MeshProtocolURI, "") &&
-		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsQuery, protocols.KeyDeliveryProtocolURI, "") &&
-		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsWrite, protocols.KeyDeliveryProtocolURI, "") &&
-		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsDelete, protocols.KeyDeliveryProtocolURI, "")
+		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsDelete, protocols.MeshProtocolURI, "")
 }
 
 func walletSessionHasGrant(session *state.WalletSession, meta identityMetadata, messageType dwn.DwnInterface, protocolURI, protocolPath string) bool {
@@ -5216,7 +4857,6 @@ func printWalletSessionStatus(stateDir string, meta identityMetadata) error {
 	} else {
 		fmt.Printf("    Admin Control Access: no (run 'meshd auth connect --admin')\n")
 	}
-	fmt.Printf("    Node Context Keys: %d\n", status.NodeContextKeyCount)
 	if status.NodeProtocolCount > 0 {
 		fmt.Printf("    Node Protocols: %d\n", status.NodeProtocolCount)
 	}
@@ -5225,9 +4865,6 @@ func printWalletSessionStatus(stateDir string, meta identityMetadata) error {
 	}
 	if status.OwnerDIDMismatch || status.NodeDIDMismatch {
 		fmt.Printf("    Warning: session identity does not match profile metadata\n")
-	}
-	if status.LegacyDelegateKeyFields {
-		fmt.Printf("    Compatibility: using legacy delegateContextKeys as node context keys\n")
 	}
 	return nil
 }
@@ -5546,80 +5183,6 @@ func loadNodeIdentity(stateDir string, nodeDID string, fallback *did.DID) (*did.
 	return nodeIdentity, nil
 }
 
-func loadLocalContextKeyForCLI(stateDir string, ns *state.NetworkState, encMgr *dwncrypto.EncryptionKeyManager) (string, bool, error) {
-	if ns == nil || ns.NetworkRecordID == "" {
-		return "", false, nil
-	}
-
-	if did.EncryptedExists(stateDir) {
-		password, err := vaultPasswordForUnlock(stateDir)
-		if err != nil {
-			return "", false, err
-		}
-		privBytes, ok, err := state.LoadContextKey(stateDir, password, ns.NetworkRecordID)
-		if err != nil {
-			return "", false, err
-		}
-		if ok {
-			encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
-			return "vault", true, nil
-		}
-	}
-
-	if ns.ContextKey == "" {
-		return "", false, nil
-	}
-	privBytes, err := base64.StdEncoding.DecodeString(ns.ContextKey)
-	if err != nil {
-		return "", false, fmt.Errorf("decode cached context key: %w", err)
-	}
-	encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
-
-	if did.EncryptedExists(stateDir) {
-		password, err := vaultPasswordForUnlock(stateDir)
-		if err != nil {
-			return "", false, err
-		}
-		if err := state.StoreContextKey(stateDir, password, ns.NetworkRecordID, privBytes); err != nil {
-			return "", false, err
-		}
-		ns.ContextKey = ""
-		if err := state.SaveNetworkState(stateDir, ns); err != nil {
-			return "", false, err
-		}
-		return "legacy cache (migrated)", true, nil
-	}
-
-	return "legacy cache", true, nil
-}
-
-func attachContextKeyForNetworkSave(stateDir string, ns *state.NetworkState, privateKey []byte) error {
-	if len(privateKey) == 0 {
-		return nil
-	}
-	if did.EncryptedExists(stateDir) {
-		password, err := vaultPasswordForUnlock(stateDir)
-		if err != nil {
-			return err
-		}
-		if err := state.StoreContextKey(stateDir, password, ns.NetworkRecordID, privateKey); err != nil {
-			return err
-		}
-		ns.ContextKey = ""
-		return nil
-	}
-
-	ns.ContextKey = base64.StdEncoding.EncodeToString(privateKey)
-	return nil
-}
-
-func saveContextKeyForCommand(stateDir string, ns *state.NetworkState, privateKey []byte) error {
-	if err := attachContextKeyForNetworkSave(stateDir, ns, privateKey); err != nil {
-		return err
-	}
-	return state.SaveNetworkState(stateDir, ns)
-}
-
 // newEncryptionKeyManager creates an EncryptionKeyManager from a DID identity.
 func newEncryptionKeyManager(identity *did.DID) *dwncrypto.EncryptionKeyManager {
 	return &dwncrypto.EncryptionKeyManager{
@@ -5627,27 +5190,6 @@ func newEncryptionKeyManager(identity *did.DID) *dwncrypto.EncryptionKeyManager 
 		RootKeyID:      identity.EncryptionKeyID(),
 		ProtocolURI:    protocols.MeshProtocolURI,
 	}
-}
-
-// fetchContextKey fetches the Protocol Context key from the anchor's DWN
-// for the current network. This allows a non-anchor node to encrypt records
-// using the Protocol Context scheme, which the anchor can decrypt.
-//
-// Returns nil (no error) if no context key has been delivered yet.
-func fetchContextKey(ctx context.Context, identity *did.DID, ns *state.NetworkState) (*dwncrypto.DerivedPrivateJwk, error) {
-	signer := &dwn.Signer{
-		DID:        identity.URI,
-		PrivateKey: identity.SigningKey,
-	}
-
-	return mesh.FetchContextKey(ctx, mesh.FetchContextKeyParams{
-		AnchorEndpoint:       ns.AnchorEndpoint,
-		AnchorDID:            ns.AnchorDID,
-		SelfDID:              identity.URI,
-		ContextID:            ns.NetworkRecordID,
-		Signer:               signer,
-		EncryptionKeyManager: newEncryptionKeyManager(identity),
-	})
 }
 
 func ensureWalletDelegateIdentity(stateDir string) (*did.DID, error) {
@@ -5735,7 +5277,7 @@ func dwnSigner(identity *did.DID) *dwn.Signer {
 	}
 }
 
-func approvePreAuthRequests(ctx context.Context, ns *state.NetworkState, signer *dwn.Signer, encMgr *dwncrypto.EncryptionKeyManager, logger *slog.Logger, readGrantID, writeGrantID, deleteGrantID, keyDeliveryGrantID string, useContextEncryption bool) {
+func approvePreAuthRequests(ctx context.Context, ns *state.NetworkState, signer *dwn.Signer, encMgr *dwncrypto.EncryptionKeyManager, logger *slog.Logger, readGrantID, writeGrantID, deleteGrantID string) {
 	result, err := mesh.ApprovePreAuthRequests(ctx, mesh.ApprovePreAuthRequestsParams{
 		AnchorEndpoint:          ns.AnchorEndpoint,
 		AnchorDID:               ns.AnchorDID,
@@ -5746,8 +5288,6 @@ func approvePreAuthRequests(ctx context.Context, ns *state.NetworkState, signer 
 		ReadPermissionGrantID:   readGrantID,
 		WritePermissionGrantID:  writeGrantID,
 		DeletePermissionGrantID: deleteGrantID,
-		KeyDeliveryGrantID:      keyDeliveryGrantID,
-		UseContextEncryption:    useContextEncryption,
 	})
 	if err != nil {
 		logger.Warn("preauth approval failed", slog.Any("error", err))
@@ -5765,7 +5305,7 @@ func approvePreAuthRequests(ctx context.Context, ns *state.NetworkState, signer 
 	}
 }
 
-func runPreAuthApprovalLoop(ctx context.Context, stop <-chan struct{}, interval time.Duration, ns *state.NetworkState, signer *dwn.Signer, encMgr *dwncrypto.EncryptionKeyManager, logger *slog.Logger, readGrantID, writeGrantID, deleteGrantID, keyDeliveryGrantID string, useContextEncryption bool) {
+func runPreAuthApprovalLoop(ctx context.Context, stop <-chan struct{}, interval time.Duration, ns *state.NetworkState, signer *dwn.Signer, encMgr *dwncrypto.EncryptionKeyManager, logger *slog.Logger, readGrantID, writeGrantID, deleteGrantID string) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -5776,7 +5316,7 @@ func runPreAuthApprovalLoop(ctx context.Context, stop <-chan struct{}, interval 
 		case <-stop:
 			return
 		case <-ticker.C:
-			approvePreAuthRequests(ctx, ns, signer, encMgr, logger, readGrantID, writeGrantID, deleteGrantID, keyDeliveryGrantID, useContextEncryption)
+			approvePreAuthRequests(ctx, ns, signer, encMgr, logger, readGrantID, writeGrantID, deleteGrantID)
 		}
 	}
 }
@@ -6064,7 +5604,6 @@ func importAuthConnectResponseData(ctx context.Context, profileFlag string, data
 	if _, err := requireWalletResponseDelegateIdentity(stateDir, resp.DelegateDID, resp.NodeDID, "wallet response"); err != nil {
 		return err
 	}
-	nodeContextKeys := resp.EffectiveNodeContextKeys()
 	nodeProtocols := resp.EffectiveNodeMultiPartyProtocols()
 	session := &state.WalletSession{
 		Version:                 1,
@@ -6075,15 +5614,10 @@ func importAuthConnectResponseData(ctx context.Context, profileFlag string, data
 		WalletOrigin:            resp.WalletOrigin,
 		ExpiresAt:               resp.ExpiresAt,
 		Grants:                  resp.Grants,
-		NodeContextKeys:         nodeContextKeys,
 		NodeMultiPartyProtocols: nodeProtocols,
 		DelegateDecryptionKeys:  resp.DelegateDecryptionKeys,
 	}
 	if err := state.StoreWalletSession(stateDir, password, session); err != nil {
-		return err
-	}
-	importedContextKeys, err := storeWalletNodeContextKeys(stateDir, password, nodeContextKeys)
-	if err != nil {
 		return err
 	}
 
@@ -6111,40 +5645,7 @@ func importAuthConnectResponseData(ctx context.Context, profileFlag string, data
 	}
 	fmt.Printf("  Node DID: %s\n", resp.NodeDID)
 	fmt.Printf("  Session: encrypted\n")
-	if importedContextKeys > 0 {
-		fmt.Printf("  Context keys: %d imported\n", importedContextKeys)
-	}
 	return nil
-}
-
-func storeWalletNodeContextKeys(stateDir string, password string, rawKeys []json.RawMessage) (int, error) {
-	imported := 0
-	for _, raw := range rawKeys {
-		var entry struct {
-			Protocol          string          `json:"protocol"`
-			ContextID         string          `json:"contextId"`
-			DerivedPrivateKey json.RawMessage `json:"derivedPrivateKey"`
-		}
-		if err := json.Unmarshal(raw, &entry); err != nil {
-			return imported, fmt.Errorf("parse node context key: %w", err)
-		}
-		if entry.Protocol != protocols.MeshProtocolURI || entry.ContextID == "" {
-			continue
-		}
-		contextKey, err := dwncrypto.ParseDerivedPrivateJwk(entry.DerivedPrivateKey)
-		if err != nil {
-			return imported, fmt.Errorf("parse mesh context key %s: %w", entry.ContextID, err)
-		}
-		privateKey, err := contextKey.PrivateKeyBytes()
-		if err != nil {
-			return imported, fmt.Errorf("decode mesh context key %s: %w", entry.ContextID, err)
-		}
-		if err := state.StoreContextKey(stateDir, password, entry.ContextID, privateKey); err != nil {
-			return imported, err
-		}
-		imported++
-	}
-	return imported, nil
 }
 
 // cmdAuthList lists all identity profiles.
@@ -6308,7 +5809,7 @@ func cmdACLSet(ctx context.Context, args []string, flagProfile string) error {
 		return err
 	}
 	signer := dwnSigner(operationIdentity)
-	encMgr, err := prepareNetworkCommandEncryption(stateDir, identity, ns, useContextEncryption)
+	encMgr, err := prepareNetworkCommandEncryption(identity)
 	if err != nil {
 		return err
 	}
@@ -6324,7 +5825,6 @@ func cmdACLSet(ctx context.Context, args []string, flagProfile string) error {
 		Signer:               signer,
 		EncryptionKeyManager: encMgr,
 		PermissionGrantID:    writeGrantID,
-		UseContextEncryption: useContextEncryption,
 		PolicyData:           policyBytes,
 	}); err != nil {
 		return err
@@ -6362,31 +5862,6 @@ func cmdACLShow(ctx context.Context, args []string, flagProfile string) error {
 	}
 	signer := dwnSigner(operationIdentity)
 	encMgr := newEncryptionKeyManager(identity)
-
-	// Load context key for decryption. Try cached key first, then DWN fetch.
-	if ns.AnchorDID != identity.URI {
-		_, contextKeyLoaded, loadErr := loadLocalContextKeyForCLI(stateDir, ns, encMgr)
-		if loadErr != nil {
-			fmt.Printf("  Warning: cached context key load failed: %v\n", loadErr)
-		}
-		if !contextKeyLoaded {
-			contextKey, ckErr := fetchContextKey(ctx, identity, ns)
-			if ckErr != nil {
-				fmt.Printf("  Warning: context key fetch failed: %v\n", ckErr)
-			} else if contextKey != nil {
-				privBytes, pbErr := contextKey.PrivateKeyBytes()
-				if pbErr != nil {
-					return fmt.Errorf("extracting context key bytes: %w", pbErr)
-				}
-				encMgr.StoreContextKey(ns.NetworkRecordID, privBytes)
-
-				// Persist for next time.
-				if saveErr := saveContextKeyForCommand(stateDir, ns, privBytes); saveErr != nil {
-					fmt.Printf("  Warning: failed to persist context key: %v\n", saveErr)
-				}
-			}
-		}
-	}
 
 	// Determine protocol role for queries.
 	aclQueryRole := ""

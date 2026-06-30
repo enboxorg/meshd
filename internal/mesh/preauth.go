@@ -30,22 +30,21 @@ type PreAuthKeyData struct {
 // NodeRequestData is the network/nodeRequest record payload written by a
 // joining node that holds a preauth invite.
 type NodeRequestData struct {
-	NodeDID         string                       `json:"nodeDID"`
-	MemberDID       string                       `json:"memberDID,omitempty"`
-	OwnerDID        string                       `json:"ownerDID,omitempty"`
-	DelegateDID     string                       `json:"delegateDID,omitempty"`
-	RequestedBy     string                       `json:"requestedBy,omitempty"`
-	NodeProof       string                       `json:"nodeProof,omitempty"`
-	RequestKind     string                       `json:"requestKind,omitempty"`
-	NetworkRecordID string                       `json:"networkRecordId,omitempty"`
-	NetworkName     string                       `json:"networkName,omitempty"`
-	SourceDWN       string                       `json:"sourceDWN,omitempty"`
-	Label           string                       `json:"label,omitempty"`
-	NodeKeyDelivery *dwncrypto.KeyDeliveryPublic `json:"nodeKeyDelivery,omitempty"`
-	PreAuthKeyID    string                       `json:"preAuthKeyId,omitempty"`
-	PreAuthProof    string                       `json:"preAuthProof,omitempty"`
-	RequestedAt     string                       `json:"requestedAt,omitempty"`
-	ExpiresAt       string                       `json:"expiresAt,omitempty"`
+	NodeDID         string `json:"nodeDID"`
+	MemberDID       string `json:"memberDID,omitempty"`
+	OwnerDID        string `json:"ownerDID,omitempty"`
+	DelegateDID     string `json:"delegateDID,omitempty"`
+	RequestedBy     string `json:"requestedBy,omitempty"`
+	NodeProof       string `json:"nodeProof,omitempty"`
+	RequestKind     string `json:"requestKind,omitempty"`
+	NetworkRecordID string `json:"networkRecordId,omitempty"`
+	NetworkName     string `json:"networkName,omitempty"`
+	SourceDWN       string `json:"sourceDWN,omitempty"`
+	Label           string `json:"label,omitempty"`
+	PreAuthKeyID    string `json:"preAuthKeyId,omitempty"`
+	PreAuthProof    string `json:"preAuthProof,omitempty"`
+	RequestedAt     string `json:"requestedAt,omitempty"`
+	ExpiresAt       string `json:"expiresAt,omitempty"`
 }
 
 func (r NodeRequestData) EffectiveOwnerDID() string {
@@ -71,7 +70,6 @@ type CreatePreAuthKeyParams struct {
 	Reusable             bool
 	Ephemeral            bool
 	PermissionGrantID    string
-	UseContextEncryption bool
 }
 
 // PreAuthInvite is a created preauth key and its corresponding invite URL.
@@ -111,17 +109,9 @@ func CreatePreAuthKey(ctx context.Context, params CreatePreAuthKeyParams) (*PreA
 		return nil, fmt.Errorf("marshaling preauth key: %w", err)
 	}
 
-	var recipients []dwncrypto.KeyEncryptionInput
-	if params.UseContextEncryption {
-		recipients, err = params.EncryptionKeyManager.DeriveContextWriteEncryption(params.NetworkRecordID)
-		if err != nil {
-			return nil, fmt.Errorf("deriving preauth context encryption: %w", err)
-		}
-	} else {
-		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/preAuthKey")
-		if err != nil {
-			return nil, fmt.Errorf("deriving preauth encryption: %w", err)
-		}
+	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption("network/preAuthKey")
+	if err != nil {
+		return nil, fmt.Errorf("deriving preauth encryption: %w", err)
 	}
 
 	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
@@ -167,15 +157,14 @@ func CreatePreAuthKey(ctx context.Context, params CreatePreAuthKeyParams) (*PreA
 
 // WritePreAuthNodeRequestParams configures a preauth join request.
 type WritePreAuthNodeRequestParams struct {
-	Invite          invite.Payload
-	NodeDID         string
-	MemberDID       string
-	DelegateDID     string
-	RequestedBy     string
-	Signer          *dwn.Signer
-	Label           string
-	SourceDWN       string
-	NodeKeyDelivery *dwncrypto.KeyDeliveryPublic
+	Invite      invite.Payload
+	NodeDID     string
+	MemberDID   string
+	DelegateDID string
+	RequestedBy string
+	Signer      *dwn.Signer
+	Label       string
+	SourceDWN   string
 }
 
 // WritePreAuthNodeRequest writes a network/nodeRequest claim to the anchor DWN.
@@ -216,9 +205,6 @@ func preAuthNodeRequestData(params WritePreAuthNodeRequestParams) (NodeRequestDa
 	if params.NodeDID == "" {
 		return NodeRequestData{}, fmt.Errorf("node DID is required")
 	}
-	if err := validateNodeKeyDelivery(params.NodeDID, params.NodeKeyDelivery); err != nil {
-		return NodeRequestData{}, err
-	}
 
 	memberDID := params.MemberDID
 	if memberDID == "" {
@@ -246,51 +232,10 @@ func preAuthNodeRequestData(params WritePreAuthNodeRequestParams) (NodeRequestDa
 		NetworkName:     params.Invite.NetworkName,
 		SourceDWN:       params.SourceDWN,
 		Label:           params.Label,
-		NodeKeyDelivery: params.NodeKeyDelivery,
 		PreAuthKeyID:    params.Invite.TokenID,
 		PreAuthProof:    invite.Proof(params.Invite.Secret, params.Invite.NetworkID, params.NodeDID),
 		RequestedAt:     time.Now().UTC().Format(time.RFC3339),
 	}, nil
-}
-
-func validateNodeKeyDelivery(nodeDID string, key *dwncrypto.KeyDeliveryPublic) error {
-	if key == nil {
-		return nil
-	}
-	if nodeDID == "" {
-		return fmt.Errorf("node DID is required for key delivery validation")
-	}
-	rootKeyID := key.RootKeyID
-	if rootKeyID == "" {
-		rootKeyID = key.PublicKeyJWK.KID
-	}
-	if rootKeyID == "" {
-		return fmt.Errorf("node key delivery rootKeyId is required")
-	}
-	expectedRootKeyID := nodeDID + "#1"
-	if rootKeyID != expectedRootKeyID {
-		return fmt.Errorf("node key delivery rootKeyId %q does not match node DID %q", rootKeyID, nodeDID)
-	}
-	if key.PublicKeyJWK.KID != "" && key.PublicKeyJWK.KID != rootKeyID {
-		return fmt.Errorf("node key delivery publicKeyJwk.kid %q does not match rootKeyId %q", key.PublicKeyJWK.KID, rootKeyID)
-	}
-	if key.PublicKeyJWK.KTY != "OKP" {
-		return fmt.Errorf("node key delivery publicKeyJwk.kty must be OKP")
-	}
-	if key.PublicKeyJWK.CRV != "X25519" {
-		return fmt.Errorf("node key delivery publicKeyJwk.crv must be X25519")
-	}
-	if key.PublicKeyJWK.X == "" {
-		return fmt.Errorf("node key delivery publicKeyJwk.x is required")
-	}
-	publicKey, err := base64.RawURLEncoding.DecodeString(key.PublicKeyJWK.X)
-	if err != nil {
-		return fmt.Errorf("decoding node key delivery public key: %w", err)
-	}
-	if len(publicKey) != 32 {
-		return fmt.Errorf("node key delivery public key is %d bytes, want 32", len(publicKey))
-	}
-	return nil
 }
 
 // ApprovePreAuthRequestsParams configures anchor-side request approval.
@@ -304,8 +249,6 @@ type ApprovePreAuthRequestsParams struct {
 	ReadPermissionGrantID   string
 	WritePermissionGrantID  string
 	DeletePermissionGrantID string
-	KeyDeliveryGrantID      string
-	UseContextEncryption    bool
 }
 
 // ApprovePreAuthResult summarizes processed preauth requests.
@@ -344,11 +287,6 @@ func ApprovePreAuthRequests(ctx context.Context, params ApprovePreAuthRequestsPa
 	for _, request := range requests {
 		var req NodeRequestData
 		if err := request.Data().JSON(ctx, &req); err != nil {
-			result.Rejected++
-			_ = deleteRecord(ctx, api, params.AnchorDID, request.ID, params.DeletePermissionGrantID)
-			continue
-		}
-		if err := validateNodeKeyDelivery(req.NodeDID, req.NodeKeyDelivery); err != nil {
 			result.Rejected++
 			_ = deleteRecord(ctx, api, params.AnchorDID, request.ID, params.DeletePermissionGrantID)
 			continue
@@ -408,31 +346,12 @@ func ApprovePreAuthRequests(ctx context.Context, params ApprovePreAuthRequestsPa
 				Label:                firstNonEmpty(req.Label, key.Label),
 				OwnerDID:             memberDID,
 				DelegateDID:          req.DelegateDID,
-				NodeKeyDelivery:      req.NodeKeyDelivery,
-				UseContextEncryption: true,
 				PermissionGrantID:    params.WritePermissionGrantID,
 			})
 			if err != nil {
 				result.Pending++
 				continue
 			}
-		}
-
-		kdm := &KeyDeliveryManager{
-			Endpoint:             params.AnchorEndpoint,
-			Signer:               params.Signer,
-			EncryptionKeyManager: params.EncryptionKeyManager,
-		}
-		if err := kdm.DeliverContextKey(ctx, DeliverContextKeyParams{
-			AnchorDID:            params.AnchorDID,
-			RecipientDID:         req.NodeDID,
-			SourceProtocol:       protocols.MeshProtocolURI,
-			ContextID:            params.NetworkRecordID,
-			PermissionGrantID:    params.KeyDeliveryGrantID,
-			RecipientKeyDelivery: req.NodeKeyDelivery,
-		}); err != nil {
-			result.Pending++
-			continue
 		}
 
 		if err := markPreAuthKeyUsed(ctx, api, params, keyRecord, key, req.NodeDID); err != nil {
@@ -521,40 +440,29 @@ func readPreAuthKey(ctx context.Context, api *dwn.DwnAPI, params ApprovePreAuthR
 	}
 
 	var key PreAuthKeyData
-	decryptor := preAuthDecryptor(params.EncryptionKeyManager, params.NetworkRecordID)
+	decryptor := preAuthDecryptor(params.EncryptionKeyManager)
 	if err := control.ParseEntryData(record.RawEntry, &key, decryptor); err != nil {
 		return nil, nil, err
 	}
 	return record, &key, nil
 }
 
-func preAuthDecryptor(encMgr *dwncrypto.EncryptionKeyManager, contextID string) control.EntryDecryptor {
+// preAuthDecryptor decrypts network/preAuthKey records for the anchor approver.
+// preAuthKey records are encrypted with the protocolPath scheme (owner-readable);
+// the anchor derives the leaf key from its encryption root. Role-audience
+// records are not readable on this owner-side path.
+func preAuthDecryptor(encMgr *dwncrypto.EncryptionKeyManager) control.EntryDecryptor {
 	return func(ciphertext []byte, enc *dwncrypto.Encryption) ([]byte, error) {
-		if encryptedDerivationScheme(enc) == dwncrypto.DerivationSchemeProtocolContext {
-			privKey, err := encMgr.DeriveContextDecryptionKey(contextID)
-			if err != nil {
-				return nil, err
-			}
-			return dwncrypto.DecryptDataWithScheme(ciphertext, enc, privKey, dwncrypto.DerivationSchemeProtocolContext)
+		if dwncrypto.RoleAudienceEntryInfo(enc) != nil {
+			return nil, fmt.Errorf("preauth key approval requires protocolPath decryption; roleAudience records are not readable by the anchor approver")
 		}
 		privKey, err := encMgr.DeriveDecryptionKey("network/preAuthKey")
 		if err != nil {
 			return nil, err
 		}
-		return dwncrypto.DecryptData(ciphertext, enc, privKey, encMgr.RootKeyID)
+		defer clear(privKey)
+		return dwncrypto.DecryptData(ciphertext, enc, privKey)
 	}
-}
-
-func encryptedDerivationScheme(enc *dwncrypto.Encryption) string {
-	if enc == nil {
-		return dwncrypto.DerivationSchemeProtocolPath
-	}
-	for _, recipient := range enc.Recipients {
-		if recipient.Header.DerivationScheme != "" {
-			return recipient.Header.DerivationScheme
-		}
-	}
-	return dwncrypto.DerivationSchemeProtocolPath
 }
 
 func preAuthKeyAllows(key *PreAuthKeyData, nodeDID string) bool {
@@ -587,17 +495,9 @@ func markPreAuthKeyUsed(ctx context.Context, api *dwn.DwnAPI, params ApprovePreA
 	if err != nil {
 		return fmt.Errorf("marshaling used preauth key: %w", err)
 	}
-	var recipients []dwncrypto.KeyEncryptionInput
-	if params.UseContextEncryption {
-		recipients, err = params.EncryptionKeyManager.DeriveContextWriteEncryption(params.NetworkRecordID)
-		if err != nil {
-			return fmt.Errorf("deriving preauth context update encryption: %w", err)
-		}
-	} else {
-		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/preAuthKey")
-		if err != nil {
-			return fmt.Errorf("deriving preauth update encryption: %w", err)
-		}
+	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption("network/preAuthKey")
+	if err != nil {
+		return fmt.Errorf("deriving preauth update encryption: %w", err)
 	}
 
 	_, status, err := api.Write(ctx, params.AnchorDID, dwn.WriteParams{
@@ -651,7 +551,6 @@ func ensureMemberRecord(ctx context.Context, api *dwn.DwnAPI, params ApprovePreA
 		EncryptionKeyManager: params.EncryptionKeyManager,
 		Label:                label,
 		PermissionGrantID:    params.WritePermissionGrantID,
-		UseContextEncryption: params.UseContextEncryption,
 	})
 	if err != nil {
 		return "", err

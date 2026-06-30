@@ -120,17 +120,6 @@ type Config struct {
 	// runtime endpoint writes.
 	WritePermissionGrantID string
 
-	// AutoKeyDelivery enables automatic context key delivery to new nodes.
-	// Only active when this node is the anchor and has the root private key.
-	// If nil, auto delivery is disabled.
-	AutoKeyDelivery *AutoKeyDelivery
-
-	// UseContextEncryption enables Protocol Context encryption for writes.
-	// Non-anchor nodes MUST set this to true so the anchor can decrypt their
-	// records using the shared context key. The EncryptionKeyManager must
-	// have the context key stored (via StoreContextKey) for NetworkRecordID.
-	UseContextEncryption bool
-
 	// WireGuardPrivateKey is the raw 32-byte X25519 private key derived from
 	// the node's did:jwk identity. The engine uses this key for WireGuard,
 	// so peers can derive the matching public key from the node's DID.
@@ -395,9 +384,8 @@ func New(cfg Config) (*Engine, error) {
 
 	// Wire the DWN control client into the LocalBackend.
 	// MapResponseFunc closes over our DWNClient and Converter to produce
-	// NetworkMaps from DWN records. If auto key delivery is configured,
-	// it also triggers key delivery to new nodes after each poll.
-	mapFn := MapResponseFunc(dwnClient, converter, cfg.AutoKeyDelivery)
+	// NetworkMaps from DWN records.
+	mapFn := MapResponseFunc(dwnClient, converter)
 	dwnControlConfig := &DWNControlConfig{
 		MapResponseFunc: mapFn,
 		PollInterval:    pollInterval,
@@ -642,7 +630,6 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 			LocalEndpoints:       localEPs,
 			DiscoKey:             discoKeyB64,
 			NATType:              "unknown",
-			UseContextEncryption: cfg.UseContextEncryption,
 			PermissionGrantID:    cfg.WritePermissionGrantID,
 		})
 		if err != nil {

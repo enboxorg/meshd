@@ -12,8 +12,6 @@ package control
 import (
 	"net/netip"
 	"time"
-
-	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 )
 
 // Node represents a peer in the mesh network.
@@ -78,11 +76,6 @@ type Node struct {
 
 	// Capabilities advertised by this node.
 	Capabilities []string
-
-	// KeyDelivery is the node's key-delivery ProtocolPath public key, when
-	// supplied during wallet/preauth joins. Anchors use it to encrypt context
-	// keys to this device.
-	KeyDelivery *dwncrypto.KeyDeliveryPublic
 }
 
 // DERPRegion represents a DERP relay region.

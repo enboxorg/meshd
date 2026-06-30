@@ -215,7 +215,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		return nil, fmt.Errorf("parsing nodes: %w", err)
 	}
 
-	nodeDecryptor := c.makeDecryptor("network/node")
+	nodeDecryptor := c.makeDecryptor(ctx, "network/node")
 	c.mu.Lock()
 	clear(c.nodes) // Clear stale nodes before repopulating.
 	for _, entry := range nodeEntries {
@@ -241,7 +241,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		if err != nil {
 			c.logger.DebugContext(ctx, "parsing member results", slog.Any("error", err))
 		} else {
-			memberDecryptor := c.makeDecryptor("network/member")
+			memberDecryptor := c.makeDecryptor(ctx, "network/member")
 			c.mu.Lock()
 			clear(c.members) // Clear stale members before repopulating.
 			for _, entry := range memberEntries {
@@ -302,7 +302,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 			continue
 		}
 
-		memberNodeDecryptor := c.makeDecryptor("network/member/node")
+		memberNodeDecryptor := c.makeDecryptor(ctx, "network/member/node")
 		c.mu.Lock()
 		for _, entry := range memberNodeEntries {
 			c.loadNodeEntry(ctx, entry, memberNodeDecryptor, query.MemberRecordID)
@@ -327,7 +327,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		return nil, fmt.Errorf("parsing relays: %w", err)
 	}
 
-	relayDecryptor := c.makeDecryptor("network/relay")
+	relayDecryptor := c.makeDecryptor(ctx, "network/relay")
 	c.mu.Lock()
 	c.relays = nil // Clear stale relays before repopulating.
 	for _, entry := range relayEntries {
@@ -355,7 +355,7 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 			c.logger.DebugContext(ctx, "parsing ACL policy results", slog.Any("error", err))
 		} else if len(aclEntries) > 0 {
 			// ACL policies are squashed snapshots; take the newest visible entry.
-			aclDecryptor := c.makeDecryptor("network/aclPolicy")
+			aclDecryptor := c.makeDecryptor(ctx, "network/aclPolicy")
 			var policy ACLPolicyData
 			if err := ParseEntryData(aclEntries[0], &policy, aclDecryptor); err != nil {
 				c.logger.DebugContext(ctx, "parsing ACL policy entry", slog.Any("error", err))
@@ -526,7 +526,7 @@ func (c *DWNClient) loadChildRecords(ctx context.Context, protocolPath string, p
 		return 0
 	}
 
-	decryptor := c.makeDecryptor(protocolPath)
+	decryptor := c.makeDecryptor(ctx, protocolPath)
 	c.mu.Lock()
 	for _, entry := range entries {
 		handler(ctx, entry, decryptor)
@@ -772,7 +772,6 @@ func nodeRecordToNodeWithThreshold(id int64, nodeDID string, rec *NodeRecord, st
 		MemberRecordID: rec.MemberRecordID,
 		ExpiresAt:      rec.ExpiresAt,
 		Label:          rec.Label,
-		KeyDelivery:    rec.NodeKeyDelivery,
 	}
 
 	// Populate operational fields from the nodeInfo child record if available.
@@ -1240,64 +1239,132 @@ func ParseEntryData(entry json.RawMessage, dst any, decryptor EntryDecryptor) er
 // EntryDecryptor is a function that decrypts ciphertext using the JWE metadata.
 type EntryDecryptor func(ciphertext []byte, enc *dwncrypto.Encryption) ([]byte, error)
 
-// makeDecryptor creates a decryptor function from an EncryptionKeyManager
-// and a protocol path. Returns nil if no key manager is available.
+// makeDecryptor creates an encryption-v1 decryptor for records read at the
+// given protocolPath. Returns nil if no key manager is available.
 //
-// The decryptor inspects the JWE recipient entries to determine the derivation
-// scheme used and applies the correct decryption strategy:
-//   - protocolPath: derives the key from root via HKDF at the given path
-//   - protocolContext: uses a delivered context key (or derives from root if owner)
-func (c *DWNClient) makeDecryptor(protocolPath string) EntryDecryptor {
+//   - The network owner derives the protocolPath leaf key from its root (HKDF)
+//     and decrypts the record's protocolPath keyEncryption entry.
+//   - A role-holding node decrypts role-readable records via the roleAudience
+//     scheme: it fetches the EncryptionProtocol audienceKey record delivered to
+//     it, recovers the audience private key, and unwraps the record's
+//     roleAudience keyEncryption entry.
+func (c *DWNClient) makeDecryptor(ctx context.Context, protocolPath string) EntryDecryptor {
 	if c.encManager == nil {
 		return nil
 	}
 
 	return func(ciphertext []byte, enc *dwncrypto.Encryption) ([]byte, error) {
-		// Inspect the JWE to determine which derivation scheme was used.
-		scheme := detectDerivationScheme(enc)
-
-		switch scheme {
-		case dwncrypto.DerivationSchemeProtocolContext:
-			// Protocol Context: use delivered context key or derive from root.
-			// We need the contextID, which we can get from the network record ID
-			// stored on the DWNClient.
-			contextKey, err := c.encManager.DeriveContextDecryptionKey(c.networkRecordID)
-			if err != nil {
-				// Fall back to Protocol Path if context key isn't available.
-				c.logger.Debug("context key not available, falling back to protocolPath",
-					slog.String("protocolPath", protocolPath),
-					slog.Any("error", err),
-				)
-				return c.decryptWithProtocolPath(ciphertext, enc, protocolPath)
-			}
-			return dwncrypto.DecryptDataWithScheme(ciphertext, enc, contextKey, dwncrypto.DerivationSchemeProtocolContext)
-
-		default:
-			// Protocol Path (default): derive from root HKDF.
+		if c.isNetworkOwner() {
 			return c.decryptWithProtocolPath(ciphertext, enc, protocolPath)
 		}
+		if info := dwncrypto.RoleAudienceEntryInfo(enc); info != nil {
+			return c.decryptRoleAudience(ctx, ciphertext, enc, info)
+		}
+		// No roleAudience entry — attempt protocolPath (e.g. records the
+		// reader authored and can re-derive).
+		return c.decryptWithProtocolPath(ciphertext, enc, protocolPath)
 	}
 }
 
-// decryptWithProtocolPath decrypts using the Protocol Path derivation scheme.
+// isNetworkOwner reports whether this client reads as the network author, who
+// can derive every protocolPath key from its encryption root.
+func (c *DWNClient) isNetworkOwner() bool {
+	return c.selfDID == "" || c.selfDID == c.anchorTenant
+}
+
+// decryptWithProtocolPath decrypts using the protocolPath derivation scheme.
 func (c *DWNClient) decryptWithProtocolPath(ciphertext []byte, enc *dwncrypto.Encryption, protocolPath string) ([]byte, error) {
 	privKey, err := c.encManager.DeriveDecryptionKey(protocolPath)
 	if err != nil {
 		return nil, fmt.Errorf("deriving decryption key for %s: %w", protocolPath, err)
 	}
-	return dwncrypto.DecryptData(ciphertext, enc, privKey, c.encManager.RootKeyID)
+	defer clear(privKey)
+	return dwncrypto.DecryptData(ciphertext, enc, privKey)
 }
 
-// detectDerivationScheme examines the JWE recipients to determine which
-// key derivation scheme was used for encryption.
-func detectDerivationScheme(enc *dwncrypto.Encryption) string {
-	if enc == nil {
-		return ""
+// decryptRoleAudience decrypts a role-readable record via the roleAudience
+// scheme. It fetches the audienceKey record delivered to this node for the
+// record's (role, epoch, keyId), recovers the audience key, and unwraps the
+// record's roleAudience keyEncryption entry.
+func (c *DWNClient) decryptRoleAudience(ctx context.Context, ciphertext []byte, enc *dwncrypto.Encryption, info *dwncrypto.RoleAudienceInfo) ([]byte, error) {
+	akEnc, akData, err := c.fetchAudienceKeyRecord(ctx, info.KeyID)
+	if err != nil {
+		return nil, err
 	}
-	for _, r := range enc.Recipients {
-		if r.Header.DerivationScheme != "" {
-			return r.Header.DerivationScheme
+	return dwncrypto.DecryptRoleAudienceRecord(dwncrypto.RoleAudienceParams{
+		MeshEncryption:        enc,
+		MeshCiphertext:        ciphertext,
+		NodeEncRootKey:        c.encManager.RootPrivateKey,
+		AudienceKeyEncryption: akEnc,
+		AudienceKeyCiphertext: akData,
+	})
+}
+
+// fetchAudienceKeyRecord queries the anchor DWN for the EncryptionProtocol
+// audienceKey record delivered to this node and returns its encryption-v1
+// envelope and ciphertext (the encrypted AudienceKeyPayload).
+func (c *DWNClient) fetchAudienceKeyRecord(ctx context.Context, keyID string) (*dwncrypto.Encryption, []byte, error) {
+	reply, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
+		Protocol:     protocols.EncryptionProtocolURI,
+		ProtocolPath: "audienceKey",
+		Recipient:    c.selfDID,
+	}, "createdDescending", nil, "", "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("querying audienceKey records: %w", err)
+	}
+	entries, err := dwn.QueryEntries(reply)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parsing audienceKey query: %w", err)
+	}
+	for _, entry := range entries {
+		ak, ok := parseAudienceKeyEntry(entry)
+		if !ok || ak.keyID != keyID {
+			continue
 		}
+		if ak.encryption == nil {
+			return nil, nil, fmt.Errorf("audienceKey record for keyId %s missing encryption", keyID)
+		}
+		return ak.encryption, ak.data, nil
 	}
-	return dwncrypto.DerivationSchemeProtocolPath // default
+	return nil, nil, fmt.Errorf("no audienceKey record found for keyId %s", keyID)
+}
+
+// audienceKeyEntry holds the fields parsed from an audienceKey query entry.
+type audienceKeyEntry struct {
+	keyID      string
+	encryption *dwncrypto.Encryption
+	data       []byte
+}
+
+// parseAudienceKeyEntry extracts the encryption envelope, encoded data and
+// keyId tag from an audienceKey query entry (wrapped or flat form).
+func parseAudienceKeyEntry(entry json.RawMessage) (audienceKeyEntry, bool) {
+	type record struct {
+		EncodedData string                `json:"encodedData"`
+		Encryption  *dwncrypto.Encryption `json:"encryption"`
+		Descriptor  struct {
+			Tags map[string]any `json:"tags"`
+		} `json:"descriptor"`
+	}
+
+	rec := record{}
+	var wrapped struct {
+		RecordsWrite record `json:"recordsWrite"`
+	}
+	if err := json.Unmarshal(entry, &wrapped); err == nil &&
+		(wrapped.RecordsWrite.EncodedData != "" || wrapped.RecordsWrite.Encryption != nil) {
+		rec = wrapped.RecordsWrite
+	} else if err := json.Unmarshal(entry, &rec); err != nil {
+		return audienceKeyEntry{}, false
+	}
+
+	if rec.EncodedData == "" {
+		return audienceKeyEntry{}, false
+	}
+	data, err := base64.RawURLEncoding.DecodeString(rec.EncodedData)
+	if err != nil {
+		return audienceKeyEntry{}, false
+	}
+	keyID, _ := rec.Descriptor.Tags["keyId"].(string)
+	return audienceKeyEntry{keyID: keyID, encryption: rec.Encryption, data: data}, true
 }

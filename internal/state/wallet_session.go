@@ -27,10 +27,8 @@ type WalletSession struct {
 	WalletOrigin                string            `json:"walletOrigin,omitempty"`
 	ExpiresAt                   string            `json:"expiresAt,omitempty"`
 	Grants                      []json.RawMessage `json:"grants,omitempty"`
-	NodeContextKeys             []json.RawMessage `json:"nodeContextKeys,omitempty"`
 	NodeMultiPartyProtocols     []string          `json:"nodeMultiPartyProtocols,omitempty"`
 	DelegateDecryptionKeys      []json.RawMessage `json:"delegateDecryptionKeys,omitempty"`
-	DelegateContextKeys         []json.RawMessage `json:"delegateContextKeys,omitempty"`
 	DelegateMultiPartyProtocols []string          `json:"delegateMultiPartyProtocols,omitempty"`
 }
 
@@ -56,16 +54,6 @@ func (s *WalletSession) EffectiveOwnerDID() string {
 	return s.ConnectedDID
 }
 
-func (s *WalletSession) EffectiveNodeContextKeys() []json.RawMessage {
-	if s == nil {
-		return nil
-	}
-	if len(s.NodeContextKeys) > 0 {
-		return s.NodeContextKeys
-	}
-	return s.DelegateContextKeys
-}
-
 func (s *WalletSession) EffectiveNodeMultiPartyProtocols() []string {
 	if s == nil {
 		return nil
@@ -89,9 +77,6 @@ func StoreWalletSession(stateDir string, password string, session *WalletSession
 	}
 	if session.NodeDID == "" {
 		return fmt.Errorf("node DID is required")
-	}
-	if len(session.NodeContextKeys) == 0 && len(session.DelegateContextKeys) > 0 {
-		session.NodeContextKeys = append([]json.RawMessage(nil), session.DelegateContextKeys...)
 	}
 	if len(session.NodeMultiPartyProtocols) == 0 && len(session.DelegateMultiPartyProtocols) > 0 {
 		session.NodeMultiPartyProtocols = append([]string(nil), session.DelegateMultiPartyProtocols...)

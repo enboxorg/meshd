@@ -22,12 +22,10 @@ import (
 	"github.com/enboxorg/meshd/internal/control"
 	"github.com/enboxorg/meshd/internal/did"
 	"github.com/enboxorg/meshd/internal/dwn"
-	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 	"github.com/enboxorg/meshd/internal/invite"
 	"github.com/enboxorg/meshd/internal/mesh"
 	"github.com/enboxorg/meshd/internal/profile"
 	"github.com/enboxorg/meshd/internal/state"
-	"github.com/enboxorg/meshd/internal/vault"
 	"github.com/enboxorg/meshd/internal/walletconnect"
 	"github.com/enboxorg/meshd/protocols"
 )
@@ -194,33 +192,6 @@ func TestPeerListOwner(t *testing.T) {
 	}
 	if got := peerListOwner(nodeDID, nodeDID, "", ""); got != "node" {
 		t.Fatalf("peerListOwner(same as node) = %q, want node", got)
-	}
-}
-
-func TestKeyDeliveryForNode(t *testing.T) {
-	selfKey := &dwncrypto.KeyDeliveryPublic{RootKeyID: "did:jwk:self#1"}
-	peerKey := &dwncrypto.KeyDeliveryPublic{RootKeyID: "did:jwk:peer#1"}
-	resp := &control.MapResponse{
-		Node: &control.Node{
-			DID:         "did:jwk:self",
-			KeyDelivery: selfKey,
-		},
-		Peers: []*control.Node{
-			{DID: "did:jwk:peer", KeyDelivery: peerKey},
-		},
-	}
-
-	if got := keyDeliveryForNode(resp, "did:jwk:self"); got != selfKey {
-		t.Fatalf("self key = %+v, want %+v", got, selfKey)
-	}
-	if got := keyDeliveryForNode(resp, "did:jwk:peer"); got != peerKey {
-		t.Fatalf("peer key = %+v, want %+v", got, peerKey)
-	}
-	if got := keyDeliveryForNode(resp, "did:jwk:missing"); got != nil {
-		t.Fatalf("missing key = %+v, want nil", got)
-	}
-	if got := keyDeliveryForNode(nil, "did:jwk:peer"); got != nil {
-		t.Fatalf("nil response key = %+v, want nil", got)
 	}
 }
 
@@ -538,32 +509,6 @@ func TestPeerRemoveCandidateFromRecord(t *testing.T) {
 	}
 }
 
-func TestDeliveredContextKeyMatchesNetwork(t *testing.T) {
-	record := &dwn.Record{
-		ID: "context-key-record",
-		Tags: map[string]any{
-			"protocol":  protocols.MeshProtocolURI,
-			"contextId": "network-1",
-		},
-	}
-	if !deliveredContextKeyMatchesNetwork(record, "network-1") {
-		t.Fatal("expected matching context key record")
-	}
-	if deliveredContextKeyMatchesNetwork(record, "network-2") {
-		t.Fatal("matched wrong network")
-	}
-	record.Tags["protocol"] = protocols.KeyDeliveryProtocolURI
-	if deliveredContextKeyMatchesNetwork(record, "network-1") {
-		t.Fatal("matched wrong source protocol")
-	}
-	if deliveredContextKeyMatchesNetwork(&dwn.Record{ID: "missing-tags"}, "network-1") {
-		t.Fatal("matched missing tags")
-	}
-	if deliveredContextKeyMatchesNetwork(nil, "network-1") {
-		t.Fatal("matched nil record")
-	}
-}
-
 func TestAuthDisplayName(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -599,7 +544,6 @@ func TestLoadWalletSessionStatus(t *testing.T) {
 		WalletOrigin:            "https://wallet.enbox.id",
 		ExpiresAt:               "2999-01-01T00:00:00Z",
 		Grants:                  []json.RawMessage{json.RawMessage(`{"id":"grant-1"}`), json.RawMessage(`{"id":"grant-2"}`)},
-		NodeContextKeys:         []json.RawMessage{json.RawMessage(`{"contextId":"network-1"}`)},
 		NodeMultiPartyProtocols: []string{protocols.MeshProtocolURI},
 	}); err != nil {
 		t.Fatalf("StoreWalletSession: %v", err)
@@ -613,10 +557,10 @@ func TestLoadWalletSessionStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadWalletSessionStatus: %v", err)
 	}
-	if !status.Exists || status.GrantCount != 2 || status.NodeContextKeyCount != 1 || status.NodeProtocolCount != 1 {
+	if !status.Exists || status.GrantCount != 2 || status.NodeProtocolCount != 1 {
 		t.Fatalf("wallet session status = %+v", status)
 	}
-	if status.DelegateDID != "did:jwk:control" || status.LegacyDelegateKeyFields {
+	if status.DelegateDID != "did:jwk:control" {
 		t.Fatalf("wallet session metadata = %+v", status)
 	}
 	if status.OwnerDIDMismatch || status.NodeDIDMismatch {
@@ -664,11 +608,6 @@ func TestLoadWalletSessionStatusReportsRuntimeAndAdminAccess(t *testing.T) {
 			"protocol":     protocols.MeshProtocolURI,
 			"protocolPath": "network/member/node/endpoint",
 		}),
-		testWalletPermissionGrant(t, "key-delivery-read", meta.OwnerDID, meta.NodeDID, map[string]any{
-			"interface": "Records",
-			"method":    "Read",
-			"protocol":  protocols.KeyDeliveryProtocolURI,
-		}),
 	}
 
 	if err := state.StoreWalletSession(stateDir, "test-password", &state.WalletSession{
@@ -702,16 +641,6 @@ func TestLoadWalletSessionStatusReportsRuntimeAndAdminAccess(t *testing.T) {
 			"method":    "Delete",
 			"protocol":  protocols.MeshProtocolURI,
 		}),
-		testWalletPermissionGrant(t, "key-delivery-write", meta.OwnerDID, meta.NodeDID, map[string]any{
-			"interface": "Records",
-			"method":    "Write",
-			"protocol":  protocols.KeyDeliveryProtocolURI,
-		}),
-		testWalletPermissionGrant(t, "key-delivery-delete", meta.OwnerDID, meta.NodeDID, map[string]any{
-			"interface": "Records",
-			"method":    "Delete",
-			"protocol":  protocols.KeyDeliveryProtocolURI,
-		}),
 	)
 	if err := state.StoreWalletSession(stateDir, "test-password", &state.WalletSession{
 		Version:  1,
@@ -727,45 +656,6 @@ func TestLoadWalletSessionStatusReportsRuntimeAndAdminAccess(t *testing.T) {
 	}
 	if !status.NodeRuntimeAccess || !status.AdminControlAccess {
 		t.Fatalf("admin status = %+v, want runtime and admin access", status)
-	}
-}
-
-func TestLoadWalletSessionStatusLegacyDelegateContextKeys(t *testing.T) {
-	resetVaultPasswordCache(t)
-
-	stateDir := t.TempDir()
-	t.Setenv(vaultPasswordEnv, "test-password")
-	legacySession, err := json.Marshal(map[string]any{
-		"version":                     1,
-		"connectedDid":                "did:dht:wallet-a",
-		"nodeDid":                     "did:jwk:node-a",
-		"delegateContextKeys":         []json.RawMessage{json.RawMessage(`{"contextId":"network-1"}`)},
-		"delegateMultiPartyProtocols": []string{protocols.MeshProtocolURI},
-	})
-	if err != nil {
-		t.Fatalf("Marshal legacy session: %v", err)
-	}
-	sealed, err := vault.Seal(legacySession, "test-password")
-	if err != nil {
-		t.Fatalf("Seal legacy session: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(stateDir, "session.vault.json"), sealed, 0600); err != nil {
-		t.Fatalf("write legacy session: %v", err)
-	}
-
-	status, err := loadWalletSessionStatus(stateDir, identityMetadata{
-		AuthType: profile.AuthTypeWalletAuthorizedNode,
-		OwnerDID: "did:dht:wallet-b",
-		NodeDID:  "did:jwk:node-b",
-	})
-	if err != nil {
-		t.Fatalf("loadWalletSessionStatus: %v", err)
-	}
-	if !status.Exists || status.NodeContextKeyCount != 1 || status.NodeProtocolCount != 1 {
-		t.Fatalf("legacy wallet session status = %+v", status)
-	}
-	if !status.LegacyDelegateKeyFields || !status.OwnerDIDMismatch || !status.NodeDIDMismatch {
-		t.Fatalf("legacy/mismatch flags = %+v", status)
 	}
 }
 
@@ -1877,25 +1767,6 @@ func TestNetworkCreateImportsWalletResponse(t *testing.T) {
 		t.Fatalf("ensureWalletDelegateIdentity: %v", err)
 	}
 
-	contextKeyBytes := bytes.Repeat([]byte{0x7a}, 32)
-	derived, err := dwncrypto.NewDerivedPrivateJwk(
-		"did:dht:wallet#enc",
-		dwncrypto.DerivationSchemeProtocolContext,
-		dwncrypto.BuildProtocolContextDerivation("network-1"),
-		contextKeyBytes,
-	)
-	if err != nil {
-		t.Fatalf("NewDerivedPrivateJwk: %v", err)
-	}
-	keyPayload, err := json.Marshal(map[string]any{
-		"protocol":          protocols.MeshProtocolURI,
-		"contextId":         "network-1",
-		"derivedPrivateKey": derived,
-	})
-	if err != nil {
-		t.Fatalf("marshal key payload: %v", err)
-	}
-
 	resp := walletconnect.NetworkCreateResponse{
 		Version:                 1,
 		Type:                    walletconnect.NetworkCreateResponseType,
@@ -1915,7 +1786,6 @@ func TestNetworkCreateImportsWalletResponse(t *testing.T) {
 		NodeRecordID:            "node-1",
 		NodeDateCreated:         "2026-06-23T00:00:00Z",
 		Grants:                  []json.RawMessage{json.RawMessage(`{"id":"grant-1"}`)},
-		NodeContextKeys:         []json.RawMessage{keyPayload},
 		NodeMultiPartyProtocols: []string{protocols.MeshProtocolURI},
 	}
 	data, err := json.Marshal(resp)
@@ -1955,16 +1825,8 @@ func TestNetworkCreateImportsWalletResponse(t *testing.T) {
 	if session == nil || session.EffectiveOwnerDID() != "did:dht:wallet" || session.ConnectedDID != "did:dht:wallet" || session.NodeDID != identity.URI || session.DelegateDID != delegateIdentity.URI {
 		t.Fatalf("wallet session = %+v", session)
 	}
-	if len(session.Grants) != 1 || len(session.NodeContextKeys) != 1 {
-		t.Fatalf("wallet session grants/context keys = %d/%d", len(session.Grants), len(session.NodeContextKeys))
-	}
-
-	gotKey, ok, err := state.LoadContextKey(stateDir, "test-password", "network-1")
-	if err != nil {
-		t.Fatalf("LoadContextKey: %v", err)
-	}
-	if !ok || !bytes.Equal(gotKey, contextKeyBytes) {
-		t.Fatalf("stored context key mismatch: ok=%v got=%x", ok, gotKey)
+	if len(session.Grants) != 1 {
+		t.Fatalf("wallet session grants = %d", len(session.Grants))
 	}
 
 	cfg, err := profile.ReadConfig()
@@ -2101,114 +1963,22 @@ func TestNetworkCreateImportRejectsMismatchedExistingWalletSession(t *testing.T)
 	}
 }
 
-func TestLoadLocalContextKeyMigratesLegacyContextKey(t *testing.T) {
-	resetVaultPasswordCache(t)
-
-	dir := t.TempDir()
-	t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
-
-	identity, err := did.Generate()
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if err := identity.StoreEncrypted(dir, "test-password"); err != nil {
-		t.Fatalf("StoreEncrypted: %v", err)
-	}
-
-	key := bytes.Repeat([]byte{0x42}, 32)
-	ns := &state.NetworkState{
-		NetworkRecordID: "network-1",
-		ContextKey:      base64.StdEncoding.EncodeToString(key),
-	}
-	if err := state.SaveNetworkState(dir, ns); err != nil {
-		t.Fatalf("SaveNetworkState: %v", err)
-	}
-
-	source, ok, err := loadLocalContextKeyForCLI(dir, ns, newEncryptionKeyManager(identity))
-	if err != nil {
-		t.Fatalf("loadLocalContextKeyForCLI: %v", err)
-	}
-	if !ok {
-		t.Fatal("context key was not loaded")
-	}
-	if source != "legacy cache (migrated)" {
-		t.Fatalf("source = %q, want migrated legacy cache", source)
-	}
-
-	stored, ok, err := state.LoadContextKey(dir, "test-password", "network-1")
-	if err != nil {
-		t.Fatalf("LoadContextKey: %v", err)
-	}
-	if !ok || !bytes.Equal(stored, key) {
-		t.Fatalf("encrypted context key mismatch")
-	}
-	reloaded, err := state.LoadNetworkState(dir)
-	if err != nil {
-		t.Fatalf("LoadNetworkState: %v", err)
-	}
-	if reloaded.ContextKey != "" {
-		t.Fatalf("legacy ContextKey = %q, want empty", reloaded.ContextKey)
-	}
-}
-
-func TestStoreWalletNodeContextKeys(t *testing.T) {
-	resetVaultPasswordCache(t)
-
-	dir := t.TempDir()
-	t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
-
-	contextKeyBytes := bytes.Repeat([]byte{0x24}, 32)
-	derived, err := dwncrypto.NewDerivedPrivateJwk(
-		"did:dht:wallet#enc",
-		dwncrypto.DerivationSchemeProtocolContext,
-		dwncrypto.BuildProtocolContextDerivation("network-1"),
-		contextKeyBytes,
-	)
-	if err != nil {
-		t.Fatalf("NewDerivedPrivateJwk: %v", err)
-	}
-	keyPayload, err := json.Marshal(map[string]any{
-		"protocol":          protocols.MeshProtocolURI,
-		"contextId":         "network-1",
-		"derivedPrivateKey": derived,
-	})
-	if err != nil {
-		t.Fatalf("marshal key payload: %v", err)
-	}
-
-	count, err := storeWalletNodeContextKeys(dir, "test-password", []json.RawMessage{keyPayload})
-	if err != nil {
-		t.Fatalf("storeWalletNodeContextKeys: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("count = %d, want 1", count)
-	}
-
-	got, ok, err := state.LoadContextKey(dir, "test-password", "network-1")
-	if err != nil {
-		t.Fatalf("LoadContextKey: %v", err)
-	}
-	if !ok || !bytes.Equal(got, contextKeyBytes) {
-		t.Fatalf("stored context key mismatch: ok=%v got=%x", ok, got)
-	}
-}
-
 func TestOwnerAutomationRequiresExplicitAdminGrantsForWalletOwnedNode(t *testing.T) {
 	ns := &state.NetworkState{
 		AnchorDID: "did:jwk:wallet",
 		NodeDID:   "did:jwk:node",
 	}
 
-	if !ownerAutomationEnabled(ns, "did:jwk:wallet", true, "", "", "", "") {
+	if !ownerAutomationEnabled(ns, "did:jwk:wallet", true, "", "", "") {
 		t.Fatal("local anchor should run owner automation without wallet grants")
 	}
-	if ownerAutomationEnabled(ns, "did:jwk:node", true, "read", "write", "", "") {
-		t.Fatal("wallet-owned node with runtime grants should not run owner automation")
+	if ownerAutomationEnabled(ns, "did:jwk:node", true, "read", "write", "") {
+		t.Fatal("wallet-owned node with partial admin grants should not run owner automation")
 	}
-	if !ownerAutomationEnabled(ns, "did:jwk:node", true, "read", "write", "delete", "key-delivery-write") {
+	if !ownerAutomationEnabled(ns, "did:jwk:node", true, "read", "write", "delete") {
 		t.Fatal("wallet-owned node with explicit admin grants should run owner automation")
 	}
-	if ownerAutomationEnabled(ns, "did:jwk:node", false, "read", "write", "delete", "key-delivery-write") {
+	if ownerAutomationEnabled(ns, "did:jwk:node", false, "read", "write", "delete") {
 		t.Fatal("non-owner profile should not run owner automation")
 	}
 }

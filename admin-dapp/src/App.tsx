@@ -389,10 +389,7 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
   async function handleRemoveNode(node: MeshdNodeSummary) {
     if (!session || !selectedNetwork) return;
     await runAction(`remove-${node.recordId}`, async () => {
-      const result = await removeMeshdNode(session, selectedNetwork, node);
-      if (result.contextKeyCleanupError) {
-        toast.warning(result.contextKeyCleanupError);
-      }
+      await removeMeshdNode(session, selectedNetwork, node);
       toast.success("Node removed");
       await refreshTopology();
     });
