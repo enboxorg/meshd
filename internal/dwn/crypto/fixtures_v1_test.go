@@ -93,9 +93,11 @@ func TestEncryptionV1RoleAudienceFixture(t *testing.T) {
 		} `json:"audienceKeyRecordMessage"`
 		AudienceKeyCiphertextB64    string `json:"audienceKeyCiphertext_b64"`
 		AudienceKeyPayloadDecrypted struct {
-			PrivateKeyJwk struct {
-				D string `json:"d"`
-			} `json:"privateKeyJwk"`
+			KeyMaterial struct {
+				PrivateKeyJwk struct {
+					D string `json:"d"`
+				} `json:"privateKeyJwk"`
+			} `json:"keyMaterial"`
 		} `json:"audienceKeyPayload_decrypted"`
 	}
 	if err := json.Unmarshal(raw, &fx); err != nil {
@@ -132,8 +134,8 @@ func TestEncryptionV1RoleAudienceFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecryptAudienceKeyRecord: %v", err)
 	}
-	if payload.PrivateKeyJwk.D != fx.AudienceKeyPayloadDecrypted.PrivateKeyJwk.D {
+	if payload.KeyMaterial.PrivateKeyJwk.D != fx.AudienceKeyPayloadDecrypted.KeyMaterial.PrivateKeyJwk.D {
 		t.Fatalf("audience private key mismatch:\n got=%s\nwant=%s",
-			payload.PrivateKeyJwk.D, fx.AudienceKeyPayloadDecrypted.PrivateKeyJwk.D)
+			payload.KeyMaterial.PrivateKeyJwk.D, fx.AudienceKeyPayloadDecrypted.KeyMaterial.PrivateKeyJwk.D)
 	}
 }

@@ -49,6 +49,7 @@ function createFakeSession(options: {
 } = {}) {
   const requests: CapturedRequest[] = [];
   const pushes: CapturedRequest[] = [];
+  const provisions: CapturedRequest[] = [];
   const recordIds = [...(options.recordIds ?? ["record-1", "record-2", "record-3"])];
   let cid = 0;
 
@@ -61,7 +62,11 @@ function createFakeSession(options: {
       }))
     },
     dwn: {
-      getDwnEndpointUrlsForTarget: vi.fn(async () => options.endpoints ?? ["https://dev.aws.dwn.enbox.id"])
+      getDwnEndpointUrlsForTarget: vi.fn(async () => options.endpoints ?? ["https://dev.aws.dwn.enbox.id"]),
+      provisionRoleAudienceEpoch: vi.fn(async (params: CapturedRequest) => {
+        provisions.push(params);
+        return { epoch: 1, keyId: `key-${params.role}`, created: true };
+      })
     },
     processDwnRequest: vi.fn(async (request: CapturedRequest) => {
       requests.push(request);
@@ -98,13 +103,14 @@ function createFakeSession(options: {
     } satisfies MeshdAdminSession,
     agent,
     requests,
-    pushes
+    pushes,
+    provisions
   };
 }
 
 describe("meshd admin DWN operations", () => {
   it("creates owner-scoped networks with delegated grants and remote push", async () => {
-    const { session, agent, requests, pushes } = createFakeSession({
+    const { session, agent, requests, pushes, provisions } = createFakeSession({
       delegate: true,
       endpoints: ["", "https://dev.aws.dwn.enbox.id"],
       recordIds: ["network-record"]
@@ -121,6 +127,13 @@ describe("meshd admin DWN operations", () => {
       meshCIDR: "10.201.0.0/16",
       anchorEndpoint: "https://dev.aws.dwn.enbox.id"
     });
+
+    // Role-audience epochs are eagerly provisioned for both reader roles against
+    // the new network root so nodes can immediately publish role-readable records.
+    expect(provisions).toEqual([
+      { ownerDid: "did:example:owner", protocol: MESHD_PROTOCOL_URI, role: "network/member", contextId: "network-record" },
+      { ownerDid: "did:example:owner", protocol: MESHD_PROTOCOL_URI, role: "network/node", contextId: "network-record" }
+    ]);
 
     expect(agent.permissions?.getPermissionForRequest).toHaveBeenCalledWith(expect.objectContaining({
       connectedDid: "did:example:owner",
@@ -189,6 +202,7 @@ describe("meshd admin DWN operations", () => {
     await expect(blobJson(valid.requests[0].dataStream)).resolves.toMatchObject({
       meshCIDR: "10.201.0.0/16"
     });
+    expect(valid.provisions.map((entry) => entry.role)).toEqual(["network/member", "network/node"]);
 
     const invalid = createFakeSession();
     await expect(createMeshdNetwork(invalid.session, {
@@ -202,6 +216,8 @@ describe("meshd admin DWN operations", () => {
       meshCIDR: "10.200.0.0/31"
     })).rejects.toThrow("must be an IPv4 CIDR with at least 2 host bits");
     expect(invalid.requests).toHaveLength(0);
+    // Provisioning is never attempted when the network root is not created.
+    expect(invalid.provisions).toHaveLength(0);
   });
 
   it("creates invite records and returns CLI-compatible meshd invite URLs", async () => {

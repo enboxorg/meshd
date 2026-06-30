@@ -116,6 +116,7 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		t.Fatalf("allocating anchor IP: %v", err)
 	}
 
+	epochSrc := newFakeEpochSource(t)
 	regAnchor, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            anchor.DID.URI,
@@ -123,6 +124,8 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		NodeDID:              anchor.DID.URI,
 		Signer:               anchor.Signer,
 		EncryptionKeyManager: anchor.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		MeshIP:               anchorIP.String(),
 		Label:                "anchor-device",
 	})
@@ -142,6 +145,8 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		NodeRecordID:         regAnchor.NodeRecordID,
 		Signer:               anchor.Signer,
 		EncryptionKeyManager: anchor.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		Hostname:             "anchor-host",
 	})
 	if err != nil {
@@ -160,6 +165,8 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		NodeRecordID:         regAnchor.NodeRecordID,
 		Signer:               anchor.Signer,
 		EncryptionKeyManager: anchor.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		PublicEndpoints: []control.PublicEndpoint{
 			{Address: "198.51.100.1", Port: 51820, Source: "test"},
 		},
@@ -182,6 +189,8 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		MemberDID:            member.DID.URI,
 		Signer:               anchor.Signer,
 		EncryptionKeyManager: anchor.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		Label:                "alice",
 	})
 	if err != nil {
@@ -206,6 +215,8 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		NodeDID:              member.DID.URI,
 		Signer:               anchor.Signer, // anchor creates member nodes
 		EncryptionKeyManager: anchor.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		MeshIP:               memberIP.String(),
 		Label:                "alice-laptop",
 	})
@@ -226,6 +237,8 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		NodeRecordID:         regMember.NodeRecordID,
 		Signer:               member.Signer, // member signs its own record
 		EncryptionKeyManager: member.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		Hostname:             "alice-laptop",
 	})
 	if err != nil {
@@ -245,6 +258,8 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 		NodeRecordID:         regMember.NodeRecordID,
 		Signer:               member.Signer,
 		EncryptionKeyManager: member.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		PublicEndpoints: []control.PublicEndpoint{
 			{Address: "203.0.113.50", Port: 51820, Source: "test"},
 		},
@@ -454,6 +469,7 @@ func TestE2ERecipientBasedOwnerNodeWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("allocating IP for B: %v", err)
 	}
+	epochSrc := newFakeEpochSource(t)
 	regB, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            anchor.DID.URI,
@@ -461,6 +477,8 @@ func TestE2ERecipientBasedOwnerNodeWrite(t *testing.T) {
 		NodeDID:              nodeB.DID.URI,
 		Signer:               anchor.Signer,
 		EncryptionKeyManager: anchor.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		MeshIP:               ipB.String(),
 		Label:                "node-b",
 	})
@@ -478,6 +496,8 @@ func TestE2ERecipientBasedOwnerNodeWrite(t *testing.T) {
 		NodeRecordID:         regB.NodeRecordID,
 		Signer:               nodeB.Signer, // B signs its own record
 		EncryptionKeyManager: nodeB.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		Hostname:             "node-b-host",
 	})
 	if err != nil {
@@ -494,6 +514,8 @@ func TestE2ERecipientBasedOwnerNodeWrite(t *testing.T) {
 		NodeRecordID:         regB.NodeRecordID,
 		Signer:               nodeB.Signer, // B signs its own record
 		EncryptionKeyManager: nodeB.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		PublicEndpoints: []control.PublicEndpoint{
 			{Address: "192.0.2.42", Port: 51820, Source: "test"},
 		},
@@ -515,6 +537,8 @@ func TestE2ERecipientBasedOwnerNodeWrite(t *testing.T) {
 		NodeDID:              anchor.DID.URI,
 		Signer:               anchor.Signer,
 		EncryptionKeyManager: anchor.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		MeshIP:               anchorIP.String(),
 		Label:                "anchor",
 	})
@@ -613,6 +637,7 @@ func TestE2EACLPolicyRoundTrip(t *testing.T) {
 	}
 
 	// Register two nodes.
+	epochSrc := newFakeEpochSource(t)
 	anchorIP, _ := mesh.AllocateMeshIP("10.200.0.0/16", anchor.DID.URI)
 	_, err = mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
@@ -621,6 +646,8 @@ func TestE2EACLPolicyRoundTrip(t *testing.T) {
 		NodeDID:              anchor.DID.URI,
 		Signer:               anchor.Signer,
 		EncryptionKeyManager: anchor.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		MeshIP:               anchorIP.String(),
 		Label:                "anchor",
 	})
@@ -636,6 +663,8 @@ func TestE2EACLPolicyRoundTrip(t *testing.T) {
 		NodeDID:              nodeB.DID.URI,
 		Signer:               anchor.Signer,
 		EncryptionKeyManager: anchor.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		MeshIP:               ipB.String(),
 		Label:                "node-b",
 	})
@@ -669,6 +698,8 @@ func TestE2EACLPolicyRoundTrip(t *testing.T) {
 		NetworkRecordID:      networkRecordID,
 		Signer:               anchor.Signer,
 		EncryptionKeyManager: anchor.EncMgr,
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 		PolicyData:           policyJSON,
 	})
 	if err != nil {
@@ -797,11 +828,13 @@ func TestE2ELoadStateNonAnchor(t *testing.T) {
 	}
 
 	// Register both nodes.
+	epochSrc := newFakeEpochSource(t)
 	anchorIP, _ := mesh.AllocateMeshIP("10.200.0.0/16", anchor.DID.URI)
 	_, err = mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint: endpoint, AnchorDID: anchor.DID.URI,
 		NetworkRecordID: networkRecordID, NodeDID: anchor.DID.URI,
 		Signer: anchor.Signer, EncryptionKeyManager: anchor.EncMgr,
+		ProtocolDefinition: protocolDef, AudienceEpochSource: epochSrc,
 		MeshIP: anchorIP.String(), Label: "anchor",
 	})
 	if err != nil {
@@ -813,6 +846,7 @@ func TestE2ELoadStateNonAnchor(t *testing.T) {
 		AnchorEndpoint: endpoint, AnchorDID: anchor.DID.URI,
 		NetworkRecordID: networkRecordID, NodeDID: nodeB.DID.URI,
 		Signer: anchor.Signer, EncryptionKeyManager: anchor.EncMgr,
+		ProtocolDefinition: protocolDef, AudienceEpochSource: epochSrc,
 		MeshIP: ipB.String(), Label: "node-b",
 	})
 	if err != nil {

@@ -9,11 +9,22 @@ import (
 // AudienceKeyPayload is the decrypted contents of an EncryptionProtocol
 // `audienceKey` record. It delivers a per-epoch role audience keypair to a
 // role holder so they can unwrap roleAudience keyEncryption entries.
+//
+// As of @enbox 0.8.8 (SDK #1095) the key material is nested under
+// `keyMaterial`; earlier builds carried keyId/publicKeyJwk/privateKeyJwk at the
+// top level.
 type AudienceKeyPayload struct {
-	Protocol      string        `json:"protocol"`
-	ContextID     string        `json:"contextId"`
-	Role          string        `json:"role"`
-	Epoch         int           `json:"epoch"`
+	Protocol    string                  `json:"protocol"`
+	ContextID   string                  `json:"contextId"`
+	Role        string                  `json:"role"`
+	Epoch       int                     `json:"epoch"`
+	KeyMaterial RoleAudienceKeyMaterial `json:"keyMaterial"`
+}
+
+// RoleAudienceKeyMaterial is the nested key material of an audienceKey payload
+// (X25519RoleAudienceKeyMaterial in the SDK). The wire form also carries
+// `algorithm` and `derivationScheme`, which the unwrap path does not need.
+type RoleAudienceKeyMaterial struct {
 	KeyID         string        `json:"keyId"`
 	PublicKeyJwk  PublicKeyJWK  `json:"publicKeyJwk"`
 	PrivateKeyJwk PrivateKeyJWK `json:"privateKeyJwk"`
@@ -72,8 +83,8 @@ func DecryptAudienceKeyRecord(nodeEncRootKey []byte, protocol, role string, enc 
 	if err := json.Unmarshal(plaintext, &payload); err != nil {
 		return nil, fmt.Errorf("parsing AudienceKeyPayload: %w", err)
 	}
-	if payload.PrivateKeyJwk.D == "" {
-		return nil, fmt.Errorf("AudienceKeyPayload missing privateKeyJwk.d")
+	if payload.KeyMaterial.PrivateKeyJwk.D == "" {
+		return nil, fmt.Errorf("AudienceKeyPayload missing keyMaterial.privateKeyJwk.d")
 	}
 	return &payload, nil
 }
@@ -102,7 +113,7 @@ func DecryptRoleAudienceRecord(params RoleAudienceParams) ([]byte, error) {
 		return nil, err
 	}
 
-	audiencePriv, err := base64URLDecode(payload.PrivateKeyJwk.D)
+	audiencePriv, err := base64URLDecode(payload.KeyMaterial.PrivateKeyJwk.D)
 	if err != nil {
 		return nil, fmt.Errorf("decoding audience private key: %w", err)
 	}

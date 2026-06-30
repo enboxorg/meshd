@@ -1,5 +1,5 @@
 {
-  "_README": "encryption-v1 roleAudience fixture. EVERY record is genuine SDK auto-provisioned output. Node-side decrypt: (1) derive the node role key from nodeEncPrivateKeyJwk along audienceKeyDelivery.derivationPath; unwrap audienceKeyRecordMessage.encryption.keyEncryption[0] (ECDH -> HKDF-SHA256 protocolPath KEK -> AES-KW) and AES-256-CTR decrypt audienceKeyCiphertext_b64 with audienceKeyRecordMessage.encryption.initializationVector -> AudienceKeyPayload. (2) In meshRecordMessage.encryption.keyEncryption take the entry whose derivationScheme==='roleAudience'; unwrap it with AudienceKeyPayload.privateKeyJwk (ECDH -> HKDF-SHA256 roleAudience KEK -> AES-KW) -> CEK; AES-256-CTR decrypt meshCiphertext_b64 with meshRecordMessage.encryption.initializationVector.",
+  "_README": "encryption-v1 roleAudience fixture. EVERY record is genuine SDK auto-provisioned output. Node-side decrypt: (1) derive the node role key from nodeEncPrivateKeyJwk along audienceKeyDelivery.derivationPath; unwrap audienceKeyRecordMessage.encryption.keyEncryption[0] (ECDH -> HKDF-SHA256 protocolPath KEK -> AES-KW) and AES-256-CTR decrypt audienceKeyCiphertext_b64 with audienceKeyRecordMessage.encryption.initializationVector -> AudienceKeyPayload. (2) In meshRecordMessage.encryption.keyEncryption take the entry whose derivationScheme==='roleAudience'; unwrap it with AudienceKeyPayload.keyMaterial.privateKeyJwk (ECDH -> HKDF-SHA256 roleAudience KEK -> AES-KW) -> CEK; AES-256-CTR decrypt meshCiphertext_b64 with meshRecordMessage.encryption.initializationVector.",
   "_encoding": "meshCiphertext_b64, audienceKeyCiphertext_b64, expectedPlaintext_b64 are STANDARD base64. JWK members and all encryption.* fields are base64url.",
   "_provenance": {
     "meshRecordMessage": "GENUINE SDK output — written through agent processRequest({ encryption: true }); the roleAudience keyEncryption entry was auto-appended by getRoleAudienceKeyEncryptionInputs.",
@@ -21,58 +21,58 @@
   "encryptionProtocol": "https://identity.foundation/dwn/protocols/encryption",
   "role": "network/node",
   "epoch": 1,
-  "audienceKeyId": "zitL01WvDOWZ1Gt7ehfFnFk08sEGB2tqrruYlxPk37U",
-  "contextId": "bafyreicibktnz5p5cvbgrog6x5qxnyfvgdfh5jh5gra6pqyyi2diqnqsla/bafyreieuta3ohsu5u6kttra6byadtd2wfg57xfu5f6lmqq6cxwd3n7gzjq",
-  "ownerDid": "did:dht:hkxryjw1gajwuw6ubz1buwrt5fq5opwxy4nyndyaxb3qq83iad6o",
-  "nodeDid": "did:dht:7sczp19mwg764gns443knsaqxufo55ksnpzzpdbcsq5igssxxo6y",
-  "nodeEncRootKeyId": "did:dht:7sczp19mwg764gns443knsaqxufo55ksnpzzpdbcsq5igssxxo6y#enc",
+  "audienceKeyId": "J-P42xrkVLkSZY5q8OtyGsHf2q9Lrbv4e9czSaW33-o",
+  "contextId": "bafyreibf6joput3mihwqw7s2fwm6arm2ej7fkf7bq4apgtmu3uzsz7t75u/bafyreiacfnrsjla3o4v2tvvqybxl7bqtvnxewapiefgbyzfwcyjshvony4",
+  "ownerDid": "did:dht:4qnrcghp78e7be15k44ck3kbcwsrin4nsyifp8tsbb1xcs8gpz4y",
+  "nodeDid": "did:dht:j4919o5kwonymtte3nmc5htyydooxq17s6asoaye31r7146fhueo",
+  "nodeEncRootKeyId": "did:dht:j4919o5kwonymtte3nmc5htyydooxq17s6asoaye31r7146fhueo#enc",
   "nodeEncPrivateKeyJwk": {
     "kty": "OKP",
     "crv": "X25519",
-    "d": "Qvqb6sV5v9ZmBVIKZ6o3LbvBdiYrgfF4XhjNt-x8kco",
-    "x": "AYYwzc3zM_x0I6_d7Oh5ILPSN6cTI2Qw-uLaBUmhg18",
-    "kid": "SfQh8-bHooNyHQ-Ly_2Ty6u1w_Zw5q8b3AHS_Rim9Kk"
+    "d": "82iai_laFNuUAYF3tXUdeRlQ7tsnLVGgmhparhWv8MI",
+    "x": "L7HOvAhYjiG3IyCL7zjyNPt_UWWtP77RTnQATTySkAo",
+    "kid": "M5hT4rNGhaIyPYKfQw-XOA2F0uj7H68B77rmQTkAUbg"
   },
   "meshRecordMessage": {
-    "recordId": "bafyreieuta3ohsu5u6kttra6byadtd2wfg57xfu5f6lmqq6cxwd3n7gzjq",
+    "recordId": "bafyreiacfnrsjla3o4v2tvvqybxl7bqtvnxewapiefgbyzfwcyjshvony4",
     "descriptor": {
       "interface": "Records",
       "method": "Write",
       "protocol": "https://enbox.id/protocols/test-mesh",
       "protocolPath": "network/endpoint",
-      "parentId": "bafyreicibktnz5p5cvbgrog6x5qxnyfvgdfh5jh5gra6pqyyi2diqnqsla",
-      "dataCid": "bafkreibk65mox4obswnxiqbqcpdbishywj7jbltvtj5tecofth7ktu26c4",
+      "parentId": "bafyreibf6joput3mihwqw7s2fwm6arm2ej7fkf7bq4apgtmu3uzsz7t75u",
+      "dataCid": "bafkreidqy2mnei62utmh4myjq2fyly5wpw4curjwvglz4nglgj2x3ow4n4",
       "dataSize": 57,
-      "dateCreated": "2026-06-30T17:47:34.337654Z",
-      "messageTimestamp": "2026-06-30T17:47:34.337654Z",
+      "dateCreated": "2026-06-30T21:26:19.325779Z",
+      "messageTimestamp": "2026-06-30T21:26:19.325779Z",
       "dataFormat": "application/json"
     },
     "encryption": {
       "algorithm": "A256CTR",
-      "initializationVector": "VyJ_J8Jxbkztaclc0rNeYQ",
+      "initializationVector": "RU8DvOyyJG_ObGctdPFtJQ",
       "keyEncryption": [
         {
           "algorithm": "X25519-HKDF-SHA256+A256KW",
-          "encryptedKey": "lq2AelWChH0Is9g0uRZDLe8bRBMkwYIXhuIvulvO06Uziyf-lkdCRQ",
+          "encryptedKey": "LRekkItCRO4kujWkJMgHi36qcNPE81GEn7ejsUn3ZvXUHTlXhlylyA",
           "ephemeralPublicKey": {
             "kty": "OKP",
             "crv": "X25519",
-            "x": "NKqvAou-kHgnhftpz-NPxQUFojEU_S0otERj3ZT5CmE",
-            "kid": "2rIcdZa03FrS8I0E6wVtyG-9mXZiLKBMWqi4vwVzuOM"
+            "x": "vwevXXrDE8aY-S8rEYm07ZB2XPHFpy9lCUuyYnRCez8",
+            "kid": "BByUNeTchrvpLbvUzzxbo0Oib3gvPvvOGZStCYe8BEs"
           },
-          "keyId": "0BN6uIiEhif_bd-7GKyUkzOo72fComquT4Xj7DAhHZs",
+          "keyId": "lluyrVttqrrRlMnFjS0HKGvWVbv-O7tkz7AWFeJc_ZQ",
           "derivationScheme": "protocolPath"
         },
         {
           "algorithm": "X25519-HKDF-SHA256+A256KW",
-          "encryptedKey": "6_sbXEoG8iXqdZFk83qXE4oKYBc2q4p5wuV4ln2dQPOlSn3AplQPBA",
+          "encryptedKey": "T1GtYMYShVLkEo58OFVH-7RimoX1sYIbRzT45DgQcwpXp_1zKsE4kA",
           "ephemeralPublicKey": {
             "kty": "OKP",
             "crv": "X25519",
-            "x": "iKeuvvKRAdD9xonA8RsnepcOVO9k2heKP1c9jBVcjjk",
-            "kid": "BclA83HhiSZxXATbYn6YqE_yAH9w-MZ-aiht5Qt1MhQ"
+            "x": "5rdw3SRGKdGChjLBjWZH1baDr-IirxCU79A7eTU-4ho",
+            "kid": "dKhgjj36EdX9ON6ghHHd36GTAM5CZ9jGARyw5YTZaac"
           },
-          "keyId": "zitL01WvDOWZ1Gt7ehfFnFk08sEGB2tqrruYlxPk37U",
+          "keyId": "J-P42xrkVLkSZY5q8OtyGsHf2q9Lrbv4e9czSaW33-o",
           "derivationScheme": "roleAudience",
           "epoch": 1,
           "protocol": "https://enbox.id/protocols/test-mesh",
@@ -80,123 +80,123 @@
         }
       ]
     },
-    "contextId": "bafyreicibktnz5p5cvbgrog6x5qxnyfvgdfh5jh5gra6pqyyi2diqnqsla/bafyreieuta3ohsu5u6kttra6byadtd2wfg57xfu5f6lmqq6cxwd3n7gzjq",
+    "contextId": "bafyreibf6joput3mihwqw7s2fwm6arm2ej7fkf7bq4apgtmu3uzsz7t75u/bafyreiacfnrsjla3o4v2tvvqybxl7bqtvnxewapiefgbyzfwcyjshvony4",
     "authorization": {
       "signature": {
-        "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWlldXRhM29oc3U1dTZrdHRyYTZieWFkdGQyd2ZnNTd4ZnU1ZjZsbXFxNmN4d2QzbjdnempxIiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWliYTI3amlwcHJmcjRiN3JpZXU0YzVwdWdwMmhqcmRraG5xNmN1cXl3Ym93NGF6N3d3dmVhIiwiY29udGV4dElkIjoiYmFmeXJlaWNpYmt0bno1cDVjdmJncm9nNng1cXhueWZ2Z2RmaDVqaDVncmE2cHF5eWkyZGlxbnFzbGEvYmFmeXJlaWV1dGEzb2hzdTV1Nmt0dHJhNmJ5YWR0ZDJ3Zmc1N3hmdTVmNmxtcXE2Y3h3ZDNuN2d6anEiLCJlbmNyeXB0aW9uQ2lkIjoiYmFmeXJlaWZsZ3JxbGltc280dzYzd25zeHRtYmdsYm9oa3doNWh4c3Rva2hiZHJuam03aHl3aDZqNWkifQ",
+        "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWlhY2ZucnNqbGEzbzR2MnR2dnF5YnhsN2JxdHZueGV3YXBpZWZnYnl6ZndjeWpzaHZvbnk0IiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWljdHZxbGxpb2VvM3Z0dzY3Mnl6bnhsZnViM3Y1ZXkyNmhxcXJ2dXB3Y2Z3b3hianhsbWFhIiwiY29udGV4dElkIjoiYmFmeXJlaWJmNmpvcHV0M21paHdxdzdzMmZ3bTZhcm0yZWo3ZmtmN2JxNGFwZ3RtdTN1enN6N3Q3NXUvYmFmeXJlaWFjZm5yc2psYTNvNHYydHZ2cXlieGw3YnF0dm54ZXdhcGllZmdieXpmd2N5anNodm9ueTQiLCJlbmNyeXB0aW9uQ2lkIjoiYmFmeXJlaWJ2bnh5aW5kZjU2dDJ5NWR0cmo1c2pjZ29odmV4ZGN6am8yNHF3dDJqcGVpbGhmZzVybXEifQ",
         "signatures": [
           {
-            "protected": "eyJraWQiOiJkaWQ6ZGh0OmhreHJ5ancxZ2Fqd3V3NnViejFidXdydDVmcTVvcHd4eTRueW5keWF4YjNxcTgzaWFkNm8jMCIsImFsZyI6IkVkRFNBIn0",
-            "signature": "zRwwbVsIPpryN12og-kYMuN2qaq75vPnU8cYSUW0Bi6ibj6LplMFbRoLFtWe5pS_DjiWyN06p-imhaAe5BvcBQ"
+            "protected": "eyJraWQiOiJkaWQ6ZGh0OjRxbnJjZ2hwNzhlN2JlMTVrNDRjazNrYmN3c3JpbjRuc3lpZnA4dHNiYjF4Y3M4Z3B6NHkjMCIsImFsZyI6IkVkRFNBIn0",
+            "signature": "fIc03OE9XDoRwoQ6Hq9UmJ-4D3_lWRNRHoUqzrAwg7-RxU1NRocMla_P8hAGhre_oMwDDpJn1cO-e1vDtnihCw"
           }
         ]
       }
     }
   },
-  "meshCiphertext_b64": "7Py9b64BUnTqBuPNSiNZ1xEEdLZnymh0tZ6WCenh/mUrlsJECjmurfVsI3dc8JoNd9tafkSwulsC",
+  "meshCiphertext_b64": "6GoptWjverlX7Kif9o5qsXDsV5XTpJ2MwDgw/2wNXYdalWv9IrJRH7ke5qjGdvIqoecogjCsF6VJ",
   "expectedPlaintext_b64": "eyJlbmRwb2ludCI6Imh0dHBzOi8vbm9kZS5leGFtcGxlL21lc2giLCJ0b2tlbiI6ImFiYzEyMyJ9",
   "roleAudienceEntry": {
     "algorithm": "X25519-HKDF-SHA256+A256KW",
-    "encryptedKey": "6_sbXEoG8iXqdZFk83qXE4oKYBc2q4p5wuV4ln2dQPOlSn3AplQPBA",
+    "encryptedKey": "T1GtYMYShVLkEo58OFVH-7RimoX1sYIbRzT45DgQcwpXp_1zKsE4kA",
     "ephemeralPublicKey": {
       "kty": "OKP",
       "crv": "X25519",
-      "x": "iKeuvvKRAdD9xonA8RsnepcOVO9k2heKP1c9jBVcjjk",
-      "kid": "BclA83HhiSZxXATbYn6YqE_yAH9w-MZ-aiht5Qt1MhQ"
+      "x": "5rdw3SRGKdGChjLBjWZH1baDr-IirxCU79A7eTU-4ho",
+      "kid": "dKhgjj36EdX9ON6ghHHd36GTAM5CZ9jGARyw5YTZaac"
     },
-    "keyId": "zitL01WvDOWZ1Gt7ehfFnFk08sEGB2tqrruYlxPk37U",
+    "keyId": "J-P42xrkVLkSZY5q8OtyGsHf2q9Lrbv4e9czSaW33-o",
     "derivationScheme": "roleAudience",
     "epoch": 1,
     "protocol": "https://enbox.id/protocols/test-mesh",
     "role": "network/node"
   },
   "audienceKeyRecordMessage": {
-    "recordId": "bafyreihkgol5yip57yttbabashj3kcw5imqcixbwis6sp66up7yenxo7ti",
-    "contextId": "bafyreihkgol5yip57yttbabashj3kcw5imqcixbwis6sp66up7yenxo7ti",
+    "recordId": "bafyreico3v2ju7sm3wv2rvank5buaze3vz5bcikfyl4duo7wkqzq4spur4",
+    "contextId": "bafyreico3v2ju7sm3wv2rvank5buaze3vz5bcikfyl4duo7wkqzq4spur4",
     "descriptor": {
       "tags": {
         "role": "network/node",
         "epoch": 1,
-        "keyId": "zitL01WvDOWZ1Gt7ehfFnFk08sEGB2tqrruYlxPk37U",
+        "keyId": "J-P42xrkVLkSZY5q8OtyGsHf2q9Lrbv4e9czSaW33-o",
         "protocol": "https://enbox.id/protocols/test-mesh",
-        "contextId": "bafyreicibktnz5p5cvbgrog6x5qxnyfvgdfh5jh5gra6pqyyi2diqnqsla"
+        "contextId": "bafyreibf6joput3mihwqw7s2fwm6arm2ej7fkf7bq4apgtmu3uzsz7t75u"
       },
       "method": "Write",
       "schema": "https://identity.foundation/dwn/json-schemas/encryption/audience-key.json",
-      "dataCid": "bafkreiebxisgc26542mrn7mdo4n5lxopm5zrrgbjvluitnr3xcteakbjna",
-      "dataSize": 554,
+      "dataCid": "bafkreigexnbazgv3ijl6ttu2i33y7rslezd26sffcn7atuyh63bywnb4de",
+      "dataSize": 644,
       "protocol": "https://identity.foundation/dwn/protocols/encryption",
       "interface": "Records",
-      "recipient": "did:dht:7sczp19mwg764gns443knsaqxufo55ksnpzzpdbcsq5igssxxo6y",
+      "recipient": "did:dht:j4919o5kwonymtte3nmc5htyydooxq17s6asoaye31r7146fhueo",
       "dataFormat": "application/json",
-      "dateCreated": "2026-06-30T17:47:34.314654Z",
+      "dateCreated": "2026-06-30T21:26:19.300779Z",
       "protocolPath": "audienceKey",
-      "messageTimestamp": "2026-06-30T17:47:34.314654Z"
+      "messageTimestamp": "2026-06-30T21:26:19.300779Z"
     },
     "encryption": {
       "algorithm": "A256CTR",
       "keyEncryption": [
         {
-          "keyId": "dWx4RKDr3y6LnZyzgWXk_wUDBJ5mfBu27OFaDGBrJbw",
+          "keyId": "eCrxLpWUQMUgH95Rn06vclteAhTcBL3ZsA-5OXTFuoI",
           "algorithm": "X25519-HKDF-SHA256+A256KW",
-          "encryptedKey": "3YOP5ZXDPrN7nriSjUexvHGgeqvKYeae_tJKzYGcnQ3vQoEjGPQnJg",
+          "encryptedKey": "YXHb1BaiJX0CMshsseDMmVrc7nShqTqZWtGE-mhIaUth8DYLeqBuHw",
           "derivationScheme": "protocolPath",
           "ephemeralPublicKey": {
-            "x": "GjIQSGnPRGwlTawfHJjzfINqBrEsnBQbxv4u4SL9jS4",
+            "x": "0reHjURjx0w4zoD2ZhZ-PnMdK0xivH80Cbb3oZoA8R0",
             "crv": "X25519",
-            "kid": "I1GyT1xcF69mEuC7N6RxZEPazRLoWFaJxZHF20rgTIc",
+            "kid": "U_9tXLGSs8nIwyXRR7hc3mr9uiM67-tb-7zzhuPsPtc",
             "kty": "OKP"
           }
         }
       ],
-      "initializationVector": "pMJqYRj6aW42chX1oZl8EQ"
+      "initializationVector": "RZQL2pAYzgda8A6vCtRbZA"
     },
-    "encodedData": "yetZz5DtLUtaBTH8XjFEhgGPZk-VlRfmd_B5NoY_bDjfJWR746wzSQjtIXLLgltFN-SxKj0REQh-tenynL3xbZS8uUYTyaPrTR1nlz6kbe4D59iF8VkICN0HXwwumTpYSfvxJUUBuonx6yuu9t1i4x31WkXIgnDDAU9dMPN-BNSxKzvWDjOjFaqIy_TX3MK1mFo9a_BBPCV8yr_cvb4mC94T9R9TtRD9P8QWNiNa3tp5agwJ1OjpsArX3aAdlLW-x9mYvIHFcfGLSSqUcq6DHV2Dzr_gclNke0lOfiAwX9EzX52Z7kdQ8xsJ8QpTlXjJThR2tNV1tQzD8cSkBCSSzzGDMtBJml4X5X0ZlEb2OEtc6fTZMRijbaq7ILeAUA-C8MOunVLX8d9TE-cfwesL_Axzw1ru-zJ-5ckI5OMCgUb0UUnwpiwVrYvknvtje1Lu8wKrQrUw8gEgi65bUrIJ_43kTJcS6LLlvJEBS0uim77Dk8NO_4Z6MN93JUaDwlVDMGeJ1caWEVjqCyiTjHY0UoNcDFx3nWB9aSxByKFT63zIUZMFQazGn930ZB2rzTWiPH5jHF8Ih-diiLMsveMEVaAbWj6nl-diCTStVKEDiA6Rfa03d8kcoAgobl1eI32vNn22APKZf79MJ5hEwEVYr5QrMoLVzSenqrCGUBVGiTrPP8yusPbOSQJs5cRDYzc2xaiknrJ3_H_W0W6ECCpqLJ8lbr2u7xzyy_A",
+    "encodedData": "arDBwfRz2YKNoiSCT7ZA5tdLEZf_TRiy9-YIaHG5UFF_c_FaR36t439wwnvJ4h5NtgzZo0iWGVt--c4Cl4Pf9nU21oPjUDg9j3OkaR0q5Jkeq6vHJtfgs5wDSfYTq3mCRhvIYTtrtL340tUG0wEms1t71__s1EVymhTVpkYqgjCRaQFeTeR4-qINaiMDtpPeu2fzIh7NUDUMxTKkT4BVxPt-O-lb2T0UTgtRJThfRow2LpL3HN2eFqMwRZzFo-jBbKjkC-jMXCqj_Ezx-OYKJKIM6-Vc1atty0myv1-EaCbyt9VjP8F7vxKOo0_WvyhXnpuEl9DpFkw2wn7lGTWVEMhQ1sMseoTSEmXh9rgMj0gDIJwU8iF_P7JCxl_NtXsdStmvLT9GXJRA1Seqe7rv-4mnKwsXHFaneDJm6lxOYXuXBYrk6seHzd-DA_8epDun2Apaznyzo8iFbsqxna_nbnSiyCaex1uTeqk33M_ybCCj71k5uJz1EaYmhxGKM9lRnFUaGs_-1HcJH64ucQufRqrH6YLxaPHyNker4dTRqzHobQuceMYIPao7rKDwYNd42gRmNF6G3wkGia4tkg9lDf6b55Zf9kCuPp4z1Uu8-hSLGwgdLL898IOQFGP6zp7aukaqrT-gv5j8SczwHLr6oROOsDw9KtExufRc8qEAQItGAMud8c2LXzSutVbOlDaYvmD6iLxkAf7utft8bIP6BZ32Ex41tajSzkElRzF9y4RI95sMObCW-oJYIoRF8vaNav1GK_ACpxAMQ5j-8v_irA1VnbAl8QS6sCiful68RFbSdIR44zbpqdGAn6tl7lGd-P1TWkdZZp2Z7Mw-FB-otE-4spE",
     "authorization": {
       "signature": {
-        "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWloa2dvbDV5aXA1N3l0dGJhYmFzaGoza2N3NWltcWNpeGJ3aXM2c3A2NnVwN3llbnhvN3RpIiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWlneHNhejJoZDI0c2dma3VvbXpiYjVzZ3V4Y2RnaWJxM2M3cGhhbWc2bDY0MnVucnJ3bXppIiwiY29udGV4dElkIjoiYmFmeXJlaWhrZ29sNXlpcDU3eXR0YmFiYXNoajNrY3c1aW1xY2l4YndpczZzcDY2dXA3eWVueG83dGkiLCJlbmNyeXB0aW9uQ2lkIjoiYmFmeXJlaWdqcWRhY2dpejZtaHV2aTV5N2x5dHg3enc1dXo0dzNqZW9wcDNjbmhtdnd6bjJtcnZsZTQifQ",
+        "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWljbzN2Mmp1N3NtM3d2MnJ2YW5rNWJ1YXplM3Z6NWJjaWtmeWw0ZHVvN3drcXpxNHNwdXI0IiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWliNzVhemRsanAyZTd6aGkybWVnMmtjcWI0aXBhZXFjbnFmNzVkaGN5eDdkc3ZyM3pscWJhIiwiY29udGV4dElkIjoiYmFmeXJlaWNvM3YyanU3c20zd3YycnZhbms1YnVhemUzdno1YmNpa2Z5bDRkdW83d2txenE0c3B1cjQiLCJlbmNyeXB0aW9uQ2lkIjoiYmFmeXJlaWdzZjV6ZGoycDdkemRmNmlvbzZkczJkZHhlNDNlYXNnaGQ0eGU0Y2IybmJnN3hpMzZ4M3EifQ",
         "signatures": [
           {
-            "protected": "eyJraWQiOiJkaWQ6ZGh0OmhreHJ5ancxZ2Fqd3V3NnViejFidXdydDVmcTVvcHd4eTRueW5keWF4YjNxcTgzaWFkNm8jMCIsImFsZyI6IkVkRFNBIn0",
-            "signature": "qiQM0AC7MTZZ0Gw-3sFli9XmgyTjhUEZ00kkFcei7EJZJ_bI3JuyaMdFRMRJvik3ryEK3CrdOX_na6o0YEEKAA"
+            "protected": "eyJraWQiOiJkaWQ6ZGh0OjRxbnJjZ2hwNzhlN2JlMTVrNDRjazNrYmN3c3JpbjRuc3lpZnA4dHNiYjF4Y3M4Z3B6NHkjMCIsImFsZyI6IkVkRFNBIn0",
+            "signature": "1YSB4VcW1TwIWhtHBirtivBBZfxORojtFAbunIRQS6I-TT6w8Bqjg8UZeDkC_kKCUljx-LrhcPCAUW0tdr6_CA"
           }
         ]
       }
     }
   },
-  "audienceKeyCiphertext_b64": "yetZz5DtLUtaBTH8XjFEhgGPZk+VlRfmd/B5NoY/bDjfJWR746wzSQjtIXLLgltFN+SxKj0REQh+tenynL3xbZS8uUYTyaPrTR1nlz6kbe4D59iF8VkICN0HXwwumTpYSfvxJUUBuonx6yuu9t1i4x31WkXIgnDDAU9dMPN+BNSxKzvWDjOjFaqIy/TX3MK1mFo9a/BBPCV8yr/cvb4mC94T9R9TtRD9P8QWNiNa3tp5agwJ1OjpsArX3aAdlLW+x9mYvIHFcfGLSSqUcq6DHV2Dzr/gclNke0lOfiAwX9EzX52Z7kdQ8xsJ8QpTlXjJThR2tNV1tQzD8cSkBCSSzzGDMtBJml4X5X0ZlEb2OEtc6fTZMRijbaq7ILeAUA+C8MOunVLX8d9TE+cfwesL/Axzw1ru+zJ+5ckI5OMCgUb0UUnwpiwVrYvknvtje1Lu8wKrQrUw8gEgi65bUrIJ/43kTJcS6LLlvJEBS0uim77Dk8NO/4Z6MN93JUaDwlVDMGeJ1caWEVjqCyiTjHY0UoNcDFx3nWB9aSxByKFT63zIUZMFQazGn930ZB2rzTWiPH5jHF8Ih+diiLMsveMEVaAbWj6nl+diCTStVKEDiA6Rfa03d8kcoAgobl1eI32vNn22APKZf79MJ5hEwEVYr5QrMoLVzSenqrCGUBVGiTrPP8yusPbOSQJs5cRDYzc2xaiknrJ3/H/W0W6ECCpqLJ8lbr2u7xzyy/A=",
+  "audienceKeyCiphertext_b64": "arDBwfRz2YKNoiSCT7ZA5tdLEZf/TRiy9+YIaHG5UFF/c/FaR36t439wwnvJ4h5NtgzZo0iWGVt++c4Cl4Pf9nU21oPjUDg9j3OkaR0q5Jkeq6vHJtfgs5wDSfYTq3mCRhvIYTtrtL340tUG0wEms1t71//s1EVymhTVpkYqgjCRaQFeTeR4+qINaiMDtpPeu2fzIh7NUDUMxTKkT4BVxPt+O+lb2T0UTgtRJThfRow2LpL3HN2eFqMwRZzFo+jBbKjkC+jMXCqj/Ezx+OYKJKIM6+Vc1atty0myv1+EaCbyt9VjP8F7vxKOo0/WvyhXnpuEl9DpFkw2wn7lGTWVEMhQ1sMseoTSEmXh9rgMj0gDIJwU8iF/P7JCxl/NtXsdStmvLT9GXJRA1Seqe7rv+4mnKwsXHFaneDJm6lxOYXuXBYrk6seHzd+DA/8epDun2Apaznyzo8iFbsqxna/nbnSiyCaex1uTeqk33M/ybCCj71k5uJz1EaYmhxGKM9lRnFUaGs/+1HcJH64ucQufRqrH6YLxaPHyNker4dTRqzHobQuceMYIPao7rKDwYNd42gRmNF6G3wkGia4tkg9lDf6b55Zf9kCuPp4z1Uu8+hSLGwgdLL898IOQFGP6zp7aukaqrT+gv5j8SczwHLr6oROOsDw9KtExufRc8qEAQItGAMud8c2LXzSutVbOlDaYvmD6iLxkAf7utft8bIP6BZ32Ex41tajSzkElRzF9y4RI95sMObCW+oJYIoRF8vaNav1GK/ACpxAMQ5j+8v/irA1VnbAl8QS6sCiful68RFbSdIR44zbpqdGAn6tl7lGd+P1TWkdZZp2Z7Mw+FB+otE+4spE=",
   "audienceEpochRecordMessage": {
-    "recordId": "bafyreiht65ivh5ghjxekndu6x6zizx23ucfidigodz52dcsqn6j25uc2sy",
-    "contextId": "bafyreiht65ivh5ghjxekndu6x6zizx23ucfidigodz52dcsqn6j25uc2sy",
+    "recordId": "bafyreicsz632onjyhjfqcjiiwg2tyfm2zeklp3clkux6ecivm4nr2r7ipe",
+    "contextId": "bafyreicsz632onjyhjfqcjiiwg2tyfm2zeklp3clkux6ecivm4nr2r7ipe",
     "descriptor": {
       "tags": {
         "role": "network/node",
         "epoch": 1,
-        "keyId": "zitL01WvDOWZ1Gt7ehfFnFk08sEGB2tqrruYlxPk37U",
+        "keyId": "J-P42xrkVLkSZY5q8OtyGsHf2q9Lrbv4e9czSaW33-o",
         "protocol": "https://enbox.id/protocols/test-mesh",
-        "contextId": "bafyreicibktnz5p5cvbgrog6x5qxnyfvgdfh5jh5gra6pqyyi2diqnqsla"
+        "contextId": "bafyreibf6joput3mihwqw7s2fwm6arm2ej7fkf7bq4apgtmu3uzsz7t75u"
       },
       "method": "Write",
       "schema": "https://identity.foundation/dwn/json-schemas/encryption/audience-epoch.json",
-      "dataCid": "bafkreia3hm3d4zcfggfh5cfkaywornazkcd6ixt3ir7rfeewqqrr7glu2q",
+      "dataCid": "bafkreif7azvrymko7x3cdxkemrr5nfj7eoem263q5dk32es6j4vc25mswq",
       "dataSize": 357,
       "protocol": "https://identity.foundation/dwn/protocols/encryption",
       "interface": "Records",
       "published": true,
       "dataFormat": "application/json",
-      "dateCreated": "2026-06-30T17:47:34.301654Z",
+      "dateCreated": "2026-06-30T21:26:19.291779Z",
       "protocolPath": "audienceEpoch",
-      "datePublished": "2026-06-30T17:47:34.301654Z",
-      "messageTimestamp": "2026-06-30T17:47:34.301654Z"
+      "datePublished": "2026-06-30T21:26:19.291779Z",
+      "messageTimestamp": "2026-06-30T21:26:19.291779Z"
     },
-    "encodedData": "eyJwcm90b2NvbCI6Imh0dHBzOi8vZW5ib3guaWQvcHJvdG9jb2xzL3Rlc3QtbWVzaCIsImNvbnRleHRJZCI6ImJhZnlyZWljaWJrdG56NXA1Y3ZiZ3JvZzZ4NXF4bnlmdmdkZmg1amg1Z3JhNnBxeXlpMmRpcW5xc2xhIiwicm9sZSI6Im5ldHdvcmsvbm9kZSIsImVwb2NoIjoxLCJrZXlJZCI6InppdEwwMVd2RE9XWjFHdDdlaGZGbkZrMDhzRUdCMnRxcnJ1WWx4UGszN1UiLCJwdWJsaWNLZXlKd2siOnsia3R5IjoiT0tQIiwiY3J2IjoiWDI1NTE5IiwieCI6Im1wNDZkSV96Z3ZqdEVqRjA3c2FoZmN4WjBqd0JzQXRjUDVBRkRMOGxPeHMiLCJraWQiOiJ6aXRMMDFXdkRPV1oxR3Q3ZWhmRm5GazA4c0VHQjJ0cXJydVlseFBrMzdVIn19",
+    "encodedData": "eyJwcm90b2NvbCI6Imh0dHBzOi8vZW5ib3guaWQvcHJvdG9jb2xzL3Rlc3QtbWVzaCIsImNvbnRleHRJZCI6ImJhZnlyZWliZjZqb3B1dDNtaWh3cXc3czJmd202YXJtMmVqN2ZrZjdicTRhcGd0bXUzdXpzejd0NzV1Iiwicm9sZSI6Im5ldHdvcmsvbm9kZSIsImVwb2NoIjoxLCJrZXlJZCI6IkotUDQyeHJrVkxrU1pZNXE4T3R5R3NIZjJxOUxyYnY0ZTljelNhVzMzLW8iLCJwdWJsaWNLZXlKd2siOnsia3R5IjoiT0tQIiwiY3J2IjoiWDI1NTE5IiwieCI6IjBCdGhPcGFCVWtJZ3dKZ21qRHAtZjBocHdiUy1NQnZIcF9xamNUZXJ0VXMiLCJraWQiOiJKLVA0Mnhya1ZMa1NaWTVxOE90eUdzSGYycTlMcmJ2NGU5Y3pTYVczMy1vIn19",
     "authorization": {
       "signature": {
-        "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWlodDY1aXZoNWdoanhla25kdTZ4NnppengyM3VjZmlkaWdvZHo1MmRjc3FuNmoyNXVjMnN5IiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWlicW01cHVocXBsbjJybnNoc3F1ZmxxNHRkYTJobHVoamd5bGIya3BxNGUzbTdkbm9oanBtIiwiY29udGV4dElkIjoiYmFmeXJlaWh0NjVpdmg1Z2hqeGVrbmR1Nng2eml6eDIzdWNmaWRpZ29kejUyZGNzcW42ajI1dWMyc3kifQ",
+        "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWljc3o2MzJvbmp5aGpmcWNqaWl3ZzJ0eWZtMnpla2xwM2Nsa3V4NmVjaXZtNG5yMnI3aXBlIiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWlld2dwc21tdmh0ZWVvenB0cXFvYWRma2p6YnBkd2F4Znp1emZ6ZGRldzJwdnRjNWtia3FlIiwiY29udGV4dElkIjoiYmFmeXJlaWNzejYzMm9uanloamZxY2ppaXdnMnR5Zm0yemVrbHAzY2xrdXg2ZWNpdm00bnIycjdpcGUifQ",
         "signatures": [
           {
-            "protected": "eyJraWQiOiJkaWQ6ZGh0OmhreHJ5ancxZ2Fqd3V3NnViejFidXdydDVmcTVvcHd4eTRueW5keWF4YjNxcTgzaWFkNm8jMCIsImFsZyI6IkVkRFNBIn0",
-            "signature": "elxKGPhpqIt_HOv6RW6jkYFAZiBnwHkyDRTs1ur29bEmvxB_ItYIOTahp-u_LBGBEGqPmgoKPSxKuypzK_SDBw"
+            "protected": "eyJraWQiOiJkaWQ6ZGh0OjRxbnJjZ2hwNzhlN2JlMTVrNDRjazNrYmN3c3JpbjRuc3lpZnA4dHNiYjF4Y3M4Z3B6NHkjMCIsImFsZyI6IkVkRFNBIn0",
+            "signature": "EkUiFX9VRH-9wHVdwlQfGFLobyzUUb9GgP5GVigjvpGuVm3YVslxU5VUYlcVbyeB0FvA16ctzNeVUuljWJWKCQ"
           }
         ]
       }
@@ -204,15 +204,15 @@
   },
   "audienceEpochPayload": {
     "protocol": "https://enbox.id/protocols/test-mesh",
-    "contextId": "bafyreicibktnz5p5cvbgrog6x5qxnyfvgdfh5jh5gra6pqyyi2diqnqsla",
+    "contextId": "bafyreibf6joput3mihwqw7s2fwm6arm2ej7fkf7bq4apgtmu3uzsz7t75u",
     "role": "network/node",
     "epoch": 1,
-    "keyId": "zitL01WvDOWZ1Gt7ehfFnFk08sEGB2tqrruYlxPk37U",
+    "keyId": "J-P42xrkVLkSZY5q8OtyGsHf2q9Lrbv4e9czSaW33-o",
     "publicKeyJwk": {
       "kty": "OKP",
       "crv": "X25519",
-      "x": "mp46dI_zgvjtEjF07sahfcxZ0jwBsAtcP5AFDL8lOxs",
-      "kid": "zitL01WvDOWZ1Gt7ehfFnFk08sEGB2tqrruYlxPk37U"
+      "x": "0BthOpaBUkIgwJgmjDp-f0hpwbS-MBvHp_qjcTertUs",
+      "kid": "J-P42xrkVLkSZY5q8OtyGsHf2q9Lrbv4e9czSaW33-o"
     }
   },
   "audienceKeyDelivery": {
@@ -223,38 +223,47 @@
       "network",
       "node"
     ],
-    "recipientKeyId": "dWx4RKDr3y6LnZyzgWXk_wUDBJ5mfBu27OFaDGBrJbw",
+    "recipientKeyId": "eCrxLpWUQMUgH95Rn06vclteAhTcBL3ZsA-5OXTFuoI",
     "note": "audienceKey DATA is encrypted (protocolPath scheme) to the RECIPIENT ROLE key — the node's protocol $keyAgreement at the role path, derived from the node #enc root along this path. NOTE: this is the mesh protocol role path, NOT the EncryptionProtocol audienceKey path."
   },
   "audienceKeyPayload_decrypted": {
     "protocol": "https://enbox.id/protocols/test-mesh",
-    "contextId": "bafyreicibktnz5p5cvbgrog6x5qxnyfvgdfh5jh5gra6pqyyi2diqnqsla",
+    "contextId": "bafyreibf6joput3mihwqw7s2fwm6arm2ej7fkf7bq4apgtmu3uzsz7t75u",
     "role": "network/node",
     "epoch": 1,
-    "keyId": "zitL01WvDOWZ1Gt7ehfFnFk08sEGB2tqrruYlxPk37U",
-    "publicKeyJwk": {
-      "kty": "OKP",
-      "crv": "X25519",
-      "x": "mp46dI_zgvjtEjF07sahfcxZ0jwBsAtcP5AFDL8lOxs",
-      "kid": "zitL01WvDOWZ1Gt7ehfFnFk08sEGB2tqrruYlxPk37U"
-    },
-    "privateKeyJwk": {
-      "kty": "OKP",
-      "crv": "X25519",
-      "d": "vDjs1zYnpzUFuUxZCYKDyseH96tes1pA-gvuDPYue-k",
-      "x": "mp46dI_zgvjtEjF07sahfcxZ0jwBsAtcP5AFDL8lOxs",
-      "kid": "zitL01WvDOWZ1Gt7ehfFnFk08sEGB2tqrruYlxPk37U"
+    "keyMaterial": {
+      "algorithm": "X25519-HKDF-SHA256+A256KW",
+      "derivationScheme": "roleAudience",
+      "keyId": "J-P42xrkVLkSZY5q8OtyGsHf2q9Lrbv4e9czSaW33-o",
+      "privateKeyJwk": {
+        "kty": "OKP",
+        "crv": "X25519",
+        "d": "LVzPbLLfEtxCdBZrZKN9KmtsZhjFlHizWJvxBDv87jU",
+        "x": "0BthOpaBUkIgwJgmjDp-f0hpwbS-MBvHp_qjcTertUs",
+        "kid": "J-P42xrkVLkSZY5q8OtyGsHf2q9Lrbv4e9czSaW33-o"
+      },
+      "publicKeyJwk": {
+        "kty": "OKP",
+        "crv": "X25519",
+        "x": "0BthOpaBUkIgwJgmjDp-f0hpwbS-MBvHp_qjcTertUs",
+        "kid": "J-P42xrkVLkSZY5q8OtyGsHf2q9Lrbv4e9czSaW33-o"
+      }
     }
   },
   "audienceKeyPayloadShape": {
-    "_note": "GENUINE shape the SDK emits (packages/agent/src/dwn-encryption.ts AudienceKeyPayload)",
+    "_note": "0.8.8 (#1095) GENUINE shape the SDK emits (packages/agent/src/dwn-encryption.ts AudienceKeyPayload). The key material is now NESTED under `keyMaterial` (was flat in earlier builds).",
     "protocol": "string — the mesh protocol the role belongs to",
     "contextId": "string — the role-audience context (network root contextId for a depth-1 role)",
     "role": "string — role protocolPath (e.g. \"network/node\")",
     "epoch": "integer — audience epoch (starts at 1)",
-    "keyId": "string — JWK thumbprint of the audience public key (== roleAudience entry keyId)",
-    "publicKeyJwk": "OKP/X25519 audience public key (also published in the audienceEpoch record)",
-    "privateKeyJwk": "OKP/X25519 audience private key — used to unwrap the roleAudience entry"
+    "keyMaterial": {
+      "_note": "X25519RoleAudienceKeyMaterial",
+      "algorithm": "string — \"X25519-HKDF-SHA256+A256KW\"",
+      "derivationScheme": "string — \"roleAudience\"",
+      "keyId": "string — JWK thumbprint of the audience public key (== roleAudience entry keyId)",
+      "publicKeyJwk": "OKP/X25519 audience public key (also published in the audienceEpoch record)",
+      "privateKeyJwk": "OKP/X25519 audience private key — used to unwrap the roleAudience entry"
+    }
   },
   "_fields": {
     "nodeEncPrivateKeyJwk": "node identity's #enc X25519 root private key JWK (d = 32-byte scalar, base64url)",

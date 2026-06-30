@@ -47,14 +47,24 @@ type KeyEncryption struct {
 }
 
 // KeyEncryptionInput describes how to wrap the CEK for a single recipient on
-// the write path. meshd writes protocolPath entries; roleAudience entries are
-// appended by the SDK when records are authored through the agent.
+// the write path. A write carries one protocolPath entry (the owner's published
+// $keyAgreement key) plus one roleAudience entry per reading role.
 type KeyEncryptionInput struct {
-	// PublicKey is the recipient's derived X25519 public key (raw 32 bytes).
+	// PublicKey is the recipient's X25519 public key (raw 32 bytes):
+	//   - protocolPath: the owner's published $keyAgreement public key.
+	//   - roleAudience: the role's per-epoch audience public key.
 	PublicKey []byte
 
-	// DerivationScheme is the key derivation scheme (protocolPath).
+	// DerivationScheme is the key derivation scheme: "protocolPath" or
+	// "roleAudience". Empty defaults to "protocolPath".
 	DerivationScheme string
+
+	// Protocol, Role and Epoch are required for roleAudience inputs and feed
+	// the role-audience KEK info string. They are ignored for protocolPath
+	// inputs.
+	Protocol string
+	Role     string
+	Epoch    int
 }
 
 // protocolPathKEKInfo returns the HKDF info string for a protocolPath entry.
@@ -106,34 +116,11 @@ func EncryptData(plaintext []byte, recipients []KeyEncryptionInput) (ciphertext 
 
 	keyEncryption := make([]KeyEncryption, 0, len(recipients))
 	for _, in := range recipients {
-		scheme := in.DerivationScheme
-		if scheme == "" {
-			scheme = DerivationSchemeProtocolPath
-		}
-		if scheme != DerivationSchemeProtocolPath {
-			return nil, nil, fmt.Errorf("unsupported write derivation scheme %q", scheme)
-		}
-		if len(in.PublicKey) != X25519KeySize {
-			return nil, nil, fmt.Errorf("recipient public key must be %d bytes, got %d", X25519KeySize, len(in.PublicKey))
-		}
-
-		keyID := thumbprintForPublicKey(in.PublicKey)
-		ephPub, wrapped, err := WrapCEK(in.PublicKey, cek, protocolPathKEKInfo(keyID))
+		entry, err := wrapRecipient(cek, in)
 		if err != nil {
-			return nil, nil, fmt.Errorf("wrapping CEK: %w", err)
+			return nil, nil, err
 		}
-
-		keyEncryption = append(keyEncryption, KeyEncryption{
-			Algorithm:    AlgX25519HKDFA256KW,
-			EncryptedKey: base64URLEncode(wrapped),
-			EphemeralPublicKey: &PublicKeyJWK{
-				KTY: "OKP",
-				CRV: "X25519",
-				X:   base64URLEncode(ephPub),
-			},
-			KeyID:            keyID,
-			DerivationScheme: DerivationSchemeProtocolPath,
-		})
+		keyEncryption = append(keyEncryption, entry)
 	}
 
 	return ct, &Encryption{
@@ -141,6 +128,55 @@ func EncryptData(plaintext []byte, recipients []KeyEncryptionInput) (ciphertext 
 		InitializationVector: base64URLEncode(iv),
 		KeyEncryption:        keyEncryption,
 	}, nil
+}
+
+// wrapRecipient wraps the CEK for a single recipient and builds the matching
+// keyEncryption entry. The keyId is always the JWK thumbprint of the
+// recipient's public key, which feeds the KEK info string for both schemes.
+func wrapRecipient(cek []byte, in KeyEncryptionInput) (KeyEncryption, error) {
+	scheme := in.DerivationScheme
+	if scheme == "" {
+		scheme = DerivationSchemeProtocolPath
+	}
+	if len(in.PublicKey) != X25519KeySize {
+		return KeyEncryption{}, fmt.Errorf("recipient public key must be %d bytes, got %d", X25519KeySize, len(in.PublicKey))
+	}
+
+	keyID := thumbprintForPublicKey(in.PublicKey)
+
+	entry := KeyEncryption{
+		Algorithm:        AlgX25519HKDFA256KW,
+		KeyID:            keyID,
+		DerivationScheme: scheme,
+	}
+
+	var info string
+	switch scheme {
+	case DerivationSchemeProtocolPath:
+		info = protocolPathKEKInfo(keyID)
+	case DerivationSchemeRoleAudience:
+		if in.Protocol == "" || in.Role == "" {
+			return KeyEncryption{}, fmt.Errorf("roleAudience recipient requires protocol and role")
+		}
+		info = roleAudienceKEKInfo(in.Protocol, in.Role, in.Epoch, keyID)
+		entry.Protocol = in.Protocol
+		entry.Role = in.Role
+		entry.Epoch = in.Epoch
+	default:
+		return KeyEncryption{}, fmt.Errorf("unsupported write derivation scheme %q", scheme)
+	}
+
+	ephPub, wrapped, err := WrapCEK(in.PublicKey, cek, info)
+	if err != nil {
+		return KeyEncryption{}, fmt.Errorf("wrapping CEK: %w", err)
+	}
+	entry.EncryptedKey = base64URLEncode(wrapped)
+	entry.EphemeralPublicKey = &PublicKeyJWK{
+		KTY: "OKP",
+		CRV: "X25519",
+		X:   base64URLEncode(ephPub),
+	}
+	return entry, nil
 }
 
 // DecryptData decrypts a protocolPath-encrypted record. recipientPrivateKey is
