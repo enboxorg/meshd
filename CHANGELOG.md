@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/enboxorg/meshd/compare/v0.13.0...v0.14.0) (2026-06-30)
+
+
+### Features
+
+* **crypto:** migrate DWN encryption to v1 with role-audience key delivery ([#163](https://github.com/enboxorg/meshd/issues/163)) ([63f59c2](https://github.com/enboxorg/meshd/commit/63f59c2f6ff0dd7709157749c43d006e821079d3)), closes [#161](https://github.com/enboxorg/meshd/issues/161)
+
 ## [0.13.0](https://github.com/enboxorg/meshd/compare/v0.12.0...v0.13.0) (2026-06-24)
 
 
