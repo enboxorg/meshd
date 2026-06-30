@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/enboxorg/meshd/internal/control"
@@ -15,6 +16,110 @@ import (
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 	"github.com/enboxorg/meshd/protocols"
 )
+
+// writeEncryptionParams carries the inputs needed to build the encryption-v1
+// keyEncryption inputs for a single encrypted write.
+type writeEncryptionParams struct {
+	anchorEndpoint  string
+	anchorDID       string
+	signer          *dwn.Signer
+	encMgr          *dwncrypto.EncryptionKeyManager
+	protocolPath    string
+	parentContextID string
+
+	// protocolDef optionally overrides the installed protocol definition. When
+	// empty it is resolved automatically (rebuilt locally for the owner, fetched
+	// from the anchor DWN for a node writer).
+	protocolDef json.RawMessage
+
+	// epochSource optionally overrides the role-audience epoch source. When nil a
+	// DWN-backed source querying the anchor DWN is used.
+	epochSource dwncrypto.AudienceEpochSource
+}
+
+// buildEncryptionRecipients produces the keyEncryption inputs for an encrypted
+// write: the CEK is wrapped to the owner's published $keyAgreement key at
+// protocolPath, plus one roleAudience entry per reading role. It fails closed
+// when a reading role has no published audienceEpoch.
+func buildEncryptionRecipients(ctx context.Context, p writeEncryptionParams) ([]dwncrypto.KeyEncryptionInput, error) {
+	def, err := resolveInstalledDefinition(ctx, p)
+	if err != nil {
+		return nil, fmt.Errorf("resolving installed protocol definition: %w", err)
+	}
+
+	src := p.epochSource
+	if src == nil {
+		src = control.NewDWNAudienceEpochSource(ctx, dwn.NewClient(p.anchorEndpoint, p.signer), p.anchorDID, nil)
+	}
+
+	return dwncrypto.BuildWriteEncryption(def, p.protocolPath, p.parentContextID, src)
+}
+
+// resolveInstalledDefinition returns the installed mesh protocol definition
+// (with the owner's published $keyAgreement keys).
+//
+//   - An explicit override wins.
+//   - The network owner rebuilds it locally: its encryption root is the anchor
+//     DID's #enc key, so InjectEncryptionDirectives reproduces the published
+//     keys deterministically.
+//   - A node writer (which does not hold the owner's root) fetches it from the
+//     anchor DWN via ProtocolsQuery.
+func resolveInstalledDefinition(ctx context.Context, p writeEncryptionParams) (json.RawMessage, error) {
+	if len(p.protocolDef) > 0 {
+		return p.protocolDef, nil
+	}
+	if p.encMgr != nil && p.anchorDID != "" && strings.HasPrefix(p.encMgr.RootKeyID, p.anchorDID+"#") {
+		return dwncrypto.InjectEncryptionDirectives(protocols.MeshProtocolJSON, p.encMgr.RootPrivateKey, p.encMgr.RootKeyID)
+	}
+	return fetchInstalledProtocolDefinition(ctx, dwn.NewClient(p.anchorEndpoint, p.signer), p.anchorDID, protocols.MeshProtocolURI)
+}
+
+// fetchInstalledProtocolDefinition queries the target DWN for the installed
+// definition of protocolURI. A ProtocolsConfigure message carries the
+// definition in descriptor.definition.
+func fetchInstalledProtocolDefinition(ctx context.Context, client *dwn.Client, target, protocolURI string) (json.RawMessage, error) {
+	reply, err := client.ProtocolsQuery(ctx, target, protocolURI)
+	if err != nil {
+		return nil, fmt.Errorf("querying installed protocol: %w", err)
+	}
+	entries, err := dwn.QueryEntries(reply)
+	if err != nil {
+		return nil, fmt.Errorf("parsing protocol query: %w", err)
+	}
+	for _, entry := range entries {
+		if def := extractProtocolDefinition(entry); def != nil {
+			return def, nil
+		}
+	}
+	return nil, fmt.Errorf("installed protocol definition for %q not found on %s", protocolURI, target)
+}
+
+// extractProtocolDefinition pulls descriptor.definition out of a
+// ProtocolsConfigure query entry (flat or wrapped form).
+func extractProtocolDefinition(entry json.RawMessage) json.RawMessage {
+	type configure struct {
+		Descriptor struct {
+			Definition json.RawMessage `json:"definition"`
+		} `json:"descriptor"`
+	}
+	var probe struct {
+		configure
+		ProtocolsConfigure configure `json:"protocolsConfigure"`
+		Message            configure `json:"message"`
+	}
+	if err := json.Unmarshal(entry, &probe); err != nil {
+		return nil
+	}
+	switch {
+	case len(probe.Descriptor.Definition) > 0:
+		return probe.Descriptor.Definition
+	case len(probe.ProtocolsConfigure.Descriptor.Definition) > 0:
+		return probe.ProtocolsConfigure.Descriptor.Definition
+	case len(probe.Message.Descriptor.Definition) > 0:
+		return probe.Message.Descriptor.Definition
+	}
+	return nil
+}
 
 const (
 	schemaMember       = "https://enbox.id/schemas/wireguard-mesh/member"
@@ -43,6 +148,15 @@ type CreateMemberParams struct {
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 	Label                string
 	PermissionGrantID    string
+
+	// ProtocolDefinition is the installed mesh protocol definition (with injected
+	// $keyAgreement keys). Empty resolves it automatically (owner rebuilds it,
+	// node fetches it from the anchor DWN).
+	ProtocolDefinition json.RawMessage
+
+	// AudienceEpochSource resolves role-audience epochs for roleAudience
+	// keyEncryption entries. Nil uses a DWN-backed source on the anchor DWN.
+	AudienceEpochSource dwncrypto.AudienceEpochSource
 }
 
 // CreateMember creates a member record on the anchor DWN.
@@ -60,16 +174,19 @@ func CreateMember(ctx context.Context, params CreateMemberParams) (*MemberRegist
 		return nil, fmt.Errorf("marshaling member data: %w", err)
 	}
 
-	// TODO(#162): migrate to dwncrypto.BuildWriteEncryption with the installed
-	// protocol definition + a DWN-backed AudienceEpochSource
-	// (control.NewDWNAudienceEpochSource) so member records carry roleAudience
-	// entries and node-authored writes wrap to the owner's published key.
-	// Blocked on audienceEpoch provisioning (no audienceEpoch records are
-	// written by meshd yet; BuildWriteEncryption fails closed when none exist).
-	// DeriveWriteEncryption produces only the owner protocolPath entry today.
+	// Encrypt to the owner's published key + each reading role's audience key.
 	var recipients []dwncrypto.KeyEncryptionInput
 	if params.EncryptionKeyManager != nil {
-		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/member")
+		recipients, err = buildEncryptionRecipients(ctx, writeEncryptionParams{
+			anchorEndpoint:  params.AnchorEndpoint,
+			anchorDID:       params.AnchorDID,
+			signer:          params.Signer,
+			encMgr:          params.EncryptionKeyManager,
+			protocolPath:    "network/member",
+			parentContextID: params.NetworkRecordID,
+			protocolDef:     params.ProtocolDefinition,
+			epochSource:     params.AudienceEpochSource,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("deriving member encryption: %w", err)
 		}
@@ -176,6 +293,15 @@ type RegisterNodeParams struct {
 	// PermissionGrantID invokes a wallet/member grant when the signer is a
 	// local node DID acting for the network owner.
 	PermissionGrantID string
+
+	// ProtocolDefinition is the installed mesh protocol definition (with injected
+	// $keyAgreement keys). Empty resolves it automatically (owner rebuilds it,
+	// node fetches it from the anchor DWN).
+	ProtocolDefinition json.RawMessage
+
+	// AudienceEpochSource resolves role-audience epochs for roleAudience
+	// keyEncryption entries. Nil uses a DWN-backed source on the anchor DWN.
+	AudienceEpochSource dwncrypto.AudienceEpochSource
 }
 
 // RegisterNode writes or updates the node record (encrypted) on the anchor DWN.
@@ -232,11 +358,17 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 		encryptionPath = "network/node"
 	}
 
-	// Derive encryption recipients.
-	// TODO(#162): switch to dwncrypto.BuildWriteEncryption (installed protocol
-	// def + control.NewDWNAudienceEpochSource) so node records become
-	// role-readable; blocked on audienceEpoch provisioning.
-	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
+	// Encrypt to the owner's published key + each reading role's audience key.
+	recipients, err := buildEncryptionRecipients(ctx, writeEncryptionParams{
+		anchorEndpoint:  params.AnchorEndpoint,
+		anchorDID:       params.AnchorDID,
+		signer:          params.Signer,
+		encMgr:          params.EncryptionKeyManager,
+		protocolPath:    encryptionPath,
+		parentContextID: parentContextID,
+		protocolDef:     params.ProtocolDefinition,
+		epochSource:     params.AudienceEpochSource,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("deriving node encryption: %w", err)
 	}
@@ -293,6 +425,15 @@ type WriteNodeInfoParams struct {
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 	Hostname             string
 	PermissionGrantID    string
+
+	// ProtocolDefinition is the installed mesh protocol definition (with injected
+	// $keyAgreement keys). Empty resolves it automatically (owner rebuilds it,
+	// node fetches it from the anchor DWN).
+	ProtocolDefinition json.RawMessage
+
+	// AudienceEpochSource resolves role-audience epochs for roleAudience
+	// keyEncryption entries. Nil uses a DWN-backed source on the anchor DWN.
+	AudienceEpochSource dwncrypto.AudienceEpochSource
 }
 
 // WriteNodeInfo writes or updates the node's operational info record (encrypted).
@@ -334,10 +475,17 @@ func WriteNodeInfo(ctx context.Context, params WriteNodeInfoParams) error {
 		encryptionPath = "network/node/nodeInfo"
 	}
 
-	// TODO(#162): switch to dwncrypto.BuildWriteEncryption (installed protocol
-	// def + control.NewDWNAudienceEpochSource) so nodeInfo records become
-	// role-readable; blocked on audienceEpoch provisioning.
-	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
+	// Encrypt to the owner's published key + each reading role's audience key.
+	recipients, err := buildEncryptionRecipients(ctx, writeEncryptionParams{
+		anchorEndpoint:  params.AnchorEndpoint,
+		anchorDID:       params.AnchorDID,
+		signer:          params.Signer,
+		encMgr:          params.EncryptionKeyManager,
+		protocolPath:    encryptionPath,
+		parentContextID: nodeContextID,
+		protocolDef:     params.ProtocolDefinition,
+		epochSource:     params.AudienceEpochSource,
+	})
 	if err != nil {
 		return fmt.Errorf("deriving nodeInfo encryption: %w", err)
 	}
@@ -405,10 +553,17 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 		encryptionPath = "network/node/endpoint"
 	}
 
-	// TODO(#162): switch to dwncrypto.BuildWriteEncryption (installed protocol
-	// def + control.NewDWNAudienceEpochSource) so endpoint records become
-	// role-readable; blocked on audienceEpoch provisioning.
-	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
+	// Encrypt to the owner's published key + each reading role's audience key.
+	recipients, err := buildEncryptionRecipients(ctx, writeEncryptionParams{
+		anchorEndpoint:  params.AnchorEndpoint,
+		anchorDID:       params.AnchorDID,
+		signer:          params.Signer,
+		encMgr:          params.EncryptionKeyManager,
+		protocolPath:    encryptionPath,
+		parentContextID: nodeContextID,
+		protocolDef:     params.ProtocolDefinition,
+		epochSource:     params.AudienceEpochSource,
+	})
 	if err != nil {
 		return fmt.Errorf("deriving endpoint encryption: %w", err)
 	}
@@ -454,6 +609,15 @@ type WriteEndpointParams struct {
 
 	// DiscoKey is this node's current disco public key (base64).
 	DiscoKey string
+
+	// ProtocolDefinition is the installed mesh protocol definition (with injected
+	// $keyAgreement keys). Empty resolves it automatically (owner rebuilds it,
+	// node fetches it from the anchor DWN).
+	ProtocolDefinition json.RawMessage
+
+	// AudienceEpochSource resolves role-audience epochs for roleAudience
+	// keyEncryption entries. Nil uses a DWN-backed source on the anchor DWN.
+	AudienceEpochSource dwncrypto.AudienceEpochSource
 }
 
 // WriteACLPolicyParams configures an ACL policy write.
@@ -467,6 +631,15 @@ type WriteACLPolicyParams struct {
 
 	// PolicyData is the JSON-encoded ACL policy payload.
 	PolicyData []byte
+
+	// ProtocolDefinition is the installed mesh protocol definition (with injected
+	// $keyAgreement keys). Empty resolves it automatically (owner rebuilds it,
+	// node fetches it from the anchor DWN).
+	ProtocolDefinition json.RawMessage
+
+	// AudienceEpochSource resolves role-audience epochs for roleAudience
+	// keyEncryption entries. Nil uses a DWN-backed source on the anchor DWN.
+	AudienceEpochSource dwncrypto.AudienceEpochSource
 }
 
 // WriteACLPolicy writes a squashed ACL policy snapshot (encrypted) on the anchor
@@ -476,10 +649,17 @@ func WriteACLPolicy(ctx context.Context, params WriteACLPolicyParams) error {
 		return fmt.Errorf("EncryptionKeyManager is required for encrypted writes")
 	}
 
-	// TODO(#162): switch to dwncrypto.BuildWriteEncryption (installed protocol
-	// def + control.NewDWNAudienceEpochSource) so aclPolicy records become
-	// role-readable; blocked on audienceEpoch provisioning.
-	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption("network/aclPolicy")
+	// Encrypt to the owner's published key + each reading role's audience key.
+	recipients, err := buildEncryptionRecipients(ctx, writeEncryptionParams{
+		anchorEndpoint:  params.AnchorEndpoint,
+		anchorDID:       params.AnchorDID,
+		signer:          params.Signer,
+		encMgr:          params.EncryptionKeyManager,
+		protocolPath:    "network/aclPolicy",
+		parentContextID: params.NetworkRecordID,
+		protocolDef:     params.ProtocolDefinition,
+		epochSource:     params.AudienceEpochSource,
+	})
 	if err != nil {
 		return fmt.Errorf("deriving ACL policy encryption: %w", err)
 	}

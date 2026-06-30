@@ -55,6 +55,13 @@ func TestApprovePreAuthRequestsRegistersWalletOwnedNodeUnderMember(t *testing.T)
 		deleteRecordID      string
 	)
 
+	// The owner provisions a role-audience epoch per reading role at the network
+	// root context. The flipped writes wrap each record's CEK to these audience
+	// keys (in production the admin-dapp provisions them; here the mock DWN
+	// serves them so the encrypted writes succeed).
+	memberEpoch := audienceEpochEntry(t, networkID, "network/member")
+	nodeEpoch := audienceEpochEntry(t, networkID, "network/node")
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var rpcReq dwn.JsonRpcRequest
 		if err := json.Unmarshal([]byte(r.Header.Get("dwn-request")), &rpcReq); err != nil {
@@ -84,6 +91,8 @@ func TestApprovePreAuthRequestsRegistersWalletOwnedNodeUnderMember(t *testing.T)
 				entries = []json.RawMessage{
 					recordsWriteEntry(t, preAuthRecordID, networkID+"/"+preAuthRecordID, "network/preAuthKey", "", preAuthKey),
 				}
+			case "audienceEpoch":
+				entries = []json.RawMessage{memberEpoch, nodeEpoch}
 			default:
 				entries = nil
 			}
@@ -171,6 +180,36 @@ func preAuthTestDID(t *testing.T) *did.DID {
 		t.Fatalf("Generate DID: %v", err)
 	}
 	return id
+}
+
+// audienceEpochEntry builds a published audienceEpoch query entry delivering a
+// freshly generated role-audience public key for (MeshProtocolURI, contextID,
+// role) at epoch 1. The keyId is the JWK thumbprint of the public key, as the
+// write path requires.
+func audienceEpochEntry(t *testing.T, contextID, role string) json.RawMessage {
+	t.Helper()
+
+	_, pub, err := dwncrypto.GenerateX25519KeyPair()
+	if err != nil {
+		t.Fatalf("generating audience key: %v", err)
+	}
+	x := base64.RawURLEncoding.EncodeToString(pub)
+	keyID := dwncrypto.JWKThumbprintX25519(x)
+
+	payload := map[string]any{
+		"protocol":  protocols.MeshProtocolURI,
+		"contextId": contextID,
+		"role":      role,
+		"epoch":     1,
+		"keyId":     keyID,
+		"publicKeyJwk": map[string]any{
+			"kty": "OKP",
+			"crv": "X25519",
+			"x":   x,
+			"kid": keyID,
+		},
+	}
+	return recordsWriteEntry(t, "epoch-"+role, contextID, "audienceEpoch", "", payload)
 }
 
 func recordsWriteEntry(t *testing.T, recordID, contextID, protocolPath, recipient string, data any) json.RawMessage {

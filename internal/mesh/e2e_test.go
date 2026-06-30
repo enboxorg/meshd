@@ -2,6 +2,7 @@ package mesh_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"testing"
@@ -14,6 +15,30 @@ import (
 	"github.com/enboxorg/meshd/internal/mesh"
 	"github.com/enboxorg/meshd/protocols"
 )
+
+// fakeEpochSource is a test AudienceEpochSource returning a fixed audience
+// keypair for every (protocol, context, role), so the flipped encrypted writes
+// succeed without a live admin-dapp provisioning audienceEpoch records. These
+// tests decrypt as the owner (protocolPath), so the audience private key is
+// never needed.
+type fakeEpochSource struct {
+	pub   []byte
+	keyID string
+}
+
+func newFakeEpochSource(t *testing.T) *fakeEpochSource {
+	t.Helper()
+	_, pub, err := dwncrypto.GenerateX25519KeyPair()
+	if err != nil {
+		t.Fatalf("generating audience key: %v", err)
+	}
+	x := base64.RawURLEncoding.EncodeToString(pub)
+	return &fakeEpochSource{pub: pub, keyID: dwncrypto.JWKThumbprintX25519(x)}
+}
+
+func (f *fakeEpochSource) Latest(_, _, _ string) ([]byte, int, string, error) {
+	return f.pub, 1, f.keyID, nil
+}
 
 // End-to-end integration test for meshd: creates a network with two
 // nodes, writes encrypted records, and verifies that records are
@@ -166,6 +191,7 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		t.Fatalf("allocating mesh IP for node A: %v", err)
 	}
 
+	epochSrc := newFakeEpochSource(t)
 	regA, err := mesh.RegisterNode(ctx, mesh.RegisterNodeParams{
 		AnchorEndpoint:       endpoint,
 		AnchorDID:            nodeA.DID.URI,
@@ -175,6 +201,8 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		EncryptionKeyManager: nodeA.EncMgr,
 		MeshIP:               meshIPA.String(),
 		Label:                "node-a",
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 	})
 	if err != nil {
 		t.Fatalf("registering node A: %v", err)
@@ -199,6 +227,8 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 		EncryptionKeyManager: nodeA.EncMgr,
 		MeshIP:               meshIPB.String(),
 		Label:                "node-b",
+		ProtocolDefinition:   protocolDef,
+		AudienceEpochSource:  epochSrc,
 	})
 	if err != nil {
 		t.Fatalf("Node B node creation (by Node A) failed: %v", err)
@@ -261,6 +291,8 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 			NodeRecordID:         regA.NodeRecordID,
 			Signer:               nodeA.Signer,
 			EncryptionKeyManager: nodeA.EncMgr,
+			ProtocolDefinition:   protocolDef,
+			AudienceEpochSource:  epochSrc,
 			PublicEndpoints: []control.PublicEndpoint{
 				{Address: "203.0.113.1", Port: 51820, Source: "test"},
 			},

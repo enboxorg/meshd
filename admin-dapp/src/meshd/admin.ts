@@ -38,6 +38,12 @@ export type MeshdAdminAgent = {
   }>;
   dwn?: {
     getDwnEndpointUrlsForTarget?: (targetDid: string) => Promise<string[]>;
+    provisionRoleAudienceEpoch: (params: {
+      ownerDid: string;
+      protocol: string;
+      role: string;
+      contextId: string;
+    }) => Promise<{ epoch: number; keyId: string; created: boolean }>;
   };
 };
 
@@ -641,6 +647,33 @@ async function ownerDefaultDwnEndpoint(session: MeshdAdminSession): Promise<stri
   return endpoint.trim().replace(/\/+$/, "");
 }
 
+/**
+ * Roles whose audience epochs must exist before a node can publish a
+ * role-readable record. A node-authored `nodeInfo`/`endpoint` is readable by the
+ * `network/member` and `network/node` roles, so both audiences are provisioned
+ * eagerly at network creation. Both are depth-1 roles, so their audience
+ * `contextId` is the network root recordId.
+ */
+const NETWORK_AUDIENCE_ROLES = ["network/member", "network/node"] as const;
+
+async function provisionNetworkRoleAudiences(
+  session: MeshdAdminSession,
+  networkRecordId: string
+): Promise<void> {
+  const dwn = session.agent.dwn;
+  if (!dwn) {
+    throw new Error("The connected agent does not support role-audience provisioning. Update the Enbox wallet/agent.");
+  }
+  for (const role of NETWORK_AUDIENCE_ROLES) {
+    await dwn.provisionRoleAudienceEpoch({
+      ownerDid: session.ownerDid,
+      protocol: MESHD_PROTOCOL_URI,
+      role,
+      contextId: networkRecordId
+    });
+  }
+}
+
 export async function createMeshdNetwork(
   session: MeshdAdminSession,
   options: { name: string; meshCIDR?: string }
@@ -662,6 +695,12 @@ export async function createMeshdNetwork(
     },
     { name, meshCIDR, anchorEndpoint }
   );
+
+  // Eagerly provision role-audience epochs so nodes can immediately publish
+  // role-readable records (endpoint/nodeInfo) against this network. Idempotent
+  // and owner-authorized.
+  await provisionNetworkRoleAudiences(session, record.recordId);
+
   return {
     recordId: record.recordId,
     name,
