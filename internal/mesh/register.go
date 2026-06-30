@@ -60,6 +60,13 @@ func CreateMember(ctx context.Context, params CreateMemberParams) (*MemberRegist
 		return nil, fmt.Errorf("marshaling member data: %w", err)
 	}
 
+	// TODO(#162): migrate to dwncrypto.BuildWriteEncryption with the installed
+	// protocol definition + a DWN-backed AudienceEpochSource
+	// (control.NewDWNAudienceEpochSource) so member records carry roleAudience
+	// entries and node-authored writes wrap to the owner's published key.
+	// Blocked on audienceEpoch provisioning (no audienceEpoch records are
+	// written by meshd yet; BuildWriteEncryption fails closed when none exist).
+	// DeriveWriteEncryption produces only the owner protocolPath entry today.
 	var recipients []dwncrypto.KeyEncryptionInput
 	if params.EncryptionKeyManager != nil {
 		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/member")
@@ -226,6 +233,9 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 	}
 
 	// Derive encryption recipients.
+	// TODO(#162): switch to dwncrypto.BuildWriteEncryption (installed protocol
+	// def + control.NewDWNAudienceEpochSource) so node records become
+	// role-readable; blocked on audienceEpoch provisioning.
 	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
 	if err != nil {
 		return nil, fmt.Errorf("deriving node encryption: %w", err)
@@ -324,6 +334,9 @@ func WriteNodeInfo(ctx context.Context, params WriteNodeInfoParams) error {
 		encryptionPath = "network/node/nodeInfo"
 	}
 
+	// TODO(#162): switch to dwncrypto.BuildWriteEncryption (installed protocol
+	// def + control.NewDWNAudienceEpochSource) so nodeInfo records become
+	// role-readable; blocked on audienceEpoch provisioning.
 	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
 	if err != nil {
 		return fmt.Errorf("deriving nodeInfo encryption: %w", err)
@@ -392,6 +405,9 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 		encryptionPath = "network/node/endpoint"
 	}
 
+	// TODO(#162): switch to dwncrypto.BuildWriteEncryption (installed protocol
+	// def + control.NewDWNAudienceEpochSource) so endpoint records become
+	// role-readable; blocked on audienceEpoch provisioning.
 	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
 	if err != nil {
 		return fmt.Errorf("deriving endpoint encryption: %w", err)
@@ -460,6 +476,9 @@ func WriteACLPolicy(ctx context.Context, params WriteACLPolicyParams) error {
 		return fmt.Errorf("EncryptionKeyManager is required for encrypted writes")
 	}
 
+	// TODO(#162): switch to dwncrypto.BuildWriteEncryption (installed protocol
+	// def + control.NewDWNAudienceEpochSource) so aclPolicy records become
+	// role-readable; blocked on audienceEpoch provisioning.
 	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption("network/aclPolicy")
 	if err != nil {
 		return fmt.Errorf("deriving ACL policy encryption: %w", err)

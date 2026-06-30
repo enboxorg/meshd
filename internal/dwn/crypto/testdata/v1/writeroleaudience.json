@@ -1,0 +1,306 @@
+{
+  "_README": "encryption-v1 role-audience WRITE-side fixture. Drive the Go writer with installedProtocolDefinition (protocolPath $keyAgreement at writeTarget.protocolPath) + audienceEpochs (one roleAudience entry per reading role, wrapping to publicKeyJwk) + plaintext_b64. Then verify the Go-built record: decrypt its protocolPath entry with ownerEncPrivateKeyJwk (derive the path key along [protocolPath, protocol, ...protocolPath]) AND decrypt each roleAudience entry with audiencePrivateKeysByRole[role]. sdkWrittenRecord is a genuine SDK-written reference for structural comparison.",
+  "_encoding": "plaintext_b64 and sdkCiphertext_b64 are STANDARD base64. JWK members and all encryption.* fields are base64url.",
+  "_scheme": {
+    "contentEncryption": "A256CTR (AES-256-CTR, 16-byte IV, no authentication tag)",
+    "keyWrap": "X25519-HKDF-SHA256+A256KW",
+    "kekHkdfProtocolPath": "info (utf-8) = \"X25519-HKDF-SHA256+A256KW|protocolPath|<keyId>\"",
+    "kekHkdfRoleAudience": "info (utf-8) = \"X25519-HKDF-SHA256+A256KW|roleAudience|<protocol>|<role>|<epoch>|<keyId>\"",
+    "kekHkdfSaltLength": "salt = empty, output length = 32 bytes (HKDF-SHA256)"
+  },
+  "protocol": "https://enbox.id/protocols/test-mesh",
+  "encryptionProtocol": "https://identity.foundation/dwn/protocols/encryption",
+  "ownerDid": "did:dht:n14k48rwh6xcg5smbndhqzt5r95hp6s94wt4nt1y5s7ugnty6m4o",
+  "nodeDid": "did:dht:4u3tij95cfg74gm7mrfxui9qqecs4rb575wx1mtwya1fzs5zko1y",
+  "sdkAuthor": "owner",
+  "nodeAuthoredWriteSucceeds": false,
+  "nodeAuthoredWriteOutcome": "error: Failed to send DWN RPC request: [{\"url\":\"http://localhost:3000\",\"message\":\"Unable to connect. Is the computer able to access the url?\"}]",
+  "nodeAuthoredWriteNote": "A node authoring a role-readable encrypted record writes to the OWNER DWN (author != target => cross-DWN); the agent then fetches the protocol REMOTELY, so this needs a reachable DWN server. It cannot be exercised in the offline single-agent generator (outcome captured above).",
+  "writeTarget": {
+    "protocolPath": "network/endpoint",
+    "parentContextId": "bafyreie53ysu5wrgsrru2bougbjypxsnxl6hc2bssz4giz62q2enandfky",
+    "note": "for role 'network/node' (depth 1) the role-audience contextId is the FIRST segment of the record contextId, i.e. the network root contextId."
+  },
+  "plaintext_b64": "eyJlbmRwb2ludCI6Imh0dHBzOi8vbm9kZS5leGFtcGxlL2dycGMiLCJyZWdpb24iOiJldS0xIn0=",
+  "installedProtocolDefinition": {
+    "types": {
+      "node": {
+        "dataFormats": [
+          "application/json"
+        ]
+      },
+      "config": {
+        "dataFormats": [
+          "application/json"
+        ],
+        "encryptionRequired": true
+      },
+      "network": {
+        "dataFormats": [
+          "application/json"
+        ]
+      },
+      "endpoint": {
+        "dataFormats": [
+          "application/json"
+        ],
+        "encryptionRequired": true
+      },
+      "nodeInfo": {
+        "dataFormats": [
+          "application/json"
+        ],
+        "encryptionRequired": true
+      }
+    },
+    "protocol": "https://enbox.id/protocols/test-mesh",
+    "published": true,
+    "structure": {
+      "network": {
+        "node": {
+          "$role": true,
+          "$actions": [
+            {
+              "of": "network",
+              "can": [
+                "create",
+                "update"
+              ],
+              "who": "author"
+            },
+            {
+              "can": [
+                "read"
+              ],
+              "role": "network/node"
+            }
+          ],
+          "nodeInfo": {
+            "$actions": [
+              {
+                "of": "network/node",
+                "can": [
+                  "create",
+                  "update"
+                ],
+                "who": "recipient"
+              },
+              {
+                "can": [
+                  "read"
+                ],
+                "role": "network/node"
+              }
+            ],
+            "$keyAgreement": {
+              "publicKeyJwk": {
+                "x": "vPMl1dccSQbtVFnOpl8zY91ZyWJI8zts3-doEqGvLHw",
+                "crv": "X25519",
+                "kid": "x7gM_RpXhynAcLdhk1HVe8efSsghUfxNS2Me3I1dMck",
+                "kty": "OKP"
+              }
+            }
+          },
+          "$keyAgreement": {
+            "publicKeyJwk": {
+              "x": "rbfbheYRGboqmTSVuRltLhO5qeQfwnyh2qpZtANMelU",
+              "crv": "X25519",
+              "kid": "TWGZJiimfTrUTLvoMzNn_Nph4NTTmbeLfLYuzW3JGJ8",
+              "kty": "OKP"
+            }
+          }
+        },
+        "config": {
+          "$actions": [
+            {
+              "of": "network",
+              "can": [
+                "create",
+                "update"
+              ],
+              "who": "author"
+            }
+          ],
+          "$keyAgreement": {
+            "publicKeyJwk": {
+              "x": "CTJuTme57bYPI8AYpffqVDK2Jdy5V33tDVovmhXYVkM",
+              "crv": "X25519",
+              "kid": "2wvt4UtigCOQFAWgnh7GRqEiTKN0WDHvE_yztEwIfvg",
+              "kty": "OKP"
+            }
+          }
+        },
+        "$actions": [
+          {
+            "can": [
+              "read"
+            ],
+            "who": "anyone"
+          }
+        ],
+        "endpoint": {
+          "$actions": [
+            {
+              "of": "network",
+              "can": [
+                "create",
+                "update"
+              ],
+              "who": "author"
+            },
+            {
+              "can": [
+                "read"
+              ],
+              "role": "network/node"
+            }
+          ],
+          "$keyAgreement": {
+            "publicKeyJwk": {
+              "x": "pRBt5GukNWaaTtykBu0qOOkRE7pb7mcOn6pAM1Y2Vkw",
+              "crv": "X25519",
+              "kid": "DJn_Bw9H1ZcJSTQg2jT5pRvvGbHqkpny2V6piXB7qXA",
+              "kty": "OKP"
+            }
+          }
+        },
+        "$keyAgreement": {
+          "publicKeyJwk": {
+            "x": "bygRLMkxCAJDLncB0rFSsOHRKSdzpSWPWOJ3JcVm5TE",
+            "crv": "X25519",
+            "kid": "VAiLBU1rCn-KV4KM0SsSqrGa04pVZCOhUFgmWafVcBg",
+            "kty": "OKP"
+          }
+        }
+      }
+    },
+    "$keyAgreement": {
+      "publicKeyJwk": {
+        "x": "SmTvg3S4Osk_MIaTG1tPtz1tvr7NTfW9eGxKuIsQLWo",
+        "crv": "X25519",
+        "kid": "6PonSJD23OP9j2gx7r7YsH4JiWxthFX4-TEE-juIAQU",
+        "kty": "OKP"
+      }
+    }
+  },
+  "readingRoles": [
+    "network/node"
+  ],
+  "audienceEpochs": [
+    {
+      "protocol": "https://enbox.id/protocols/test-mesh",
+      "contextId": "bafyreie53ysu5wrgsrru2bougbjypxsnxl6hc2bssz4giz62q2enandfky",
+      "role": "network/node",
+      "epoch": 1,
+      "keyId": "U476G4lbRVDVsbozoLjxabOyOr9kLfSm1vaaNDA-gZo",
+      "publicKeyJwk": {
+        "kty": "OKP",
+        "crv": "X25519",
+        "x": "uWBSQ-LMmc5Krs4QF5DQhDx9Kc2o_J0LoTTHygMd1GY",
+        "kid": "U476G4lbRVDVsbozoLjxabOyOr9kLfSm1vaaNDA-gZo"
+      }
+    }
+  ],
+  "audiencePrivateKeysByRole": {
+    "network/node": {
+      "kty": "OKP",
+      "crv": "X25519",
+      "d": "BJmsnzXnOJasmewAtlrjgaPvGxNqUeF5FWU0vySd0Tw",
+      "x": "uWBSQ-LMmc5Krs4QF5DQhDx9Kc2o_J0LoTTHygMd1GY",
+      "kid": "U476G4lbRVDVsbozoLjxabOyOr9kLfSm1vaaNDA-gZo"
+    }
+  },
+  "ownerEncRootKeyId": "did:dht:n14k48rwh6xcg5smbndhqzt5r95hp6s94wt4nt1y5s7ugnty6m4o#enc",
+  "ownerEncPrivateKeyJwk": {
+    "kty": "OKP",
+    "crv": "X25519",
+    "d": "ddkrOyJRuBlIcpdtK3FKpIcmHPNPGSrVjsJy5KiS5QA",
+    "x": "J8gEDDiEthizB73mB_FuUR8G7XKC7aRWpMgKc9ZuBG4",
+    "kid": "en1sv03Y40TMTKCj_3uOiExhkQpkXzZkTjWtBpuRZ-A"
+  },
+  "sdkWrittenRecord": {
+    "recordId": "bafyreihzez4aazwluaykaqjh2cewqqq73lqfsminpje4xxc7r6ipxoeulu",
+    "descriptor": {
+      "interface": "Records",
+      "method": "Write",
+      "protocol": "https://enbox.id/protocols/test-mesh",
+      "protocolPath": "network/endpoint",
+      "parentId": "bafyreie53ysu5wrgsrru2bougbjypxsnxl6hc2bssz4giz62q2enandfky",
+      "dataCid": "bafkreigfrm2b5s7tuj3z4e76lxusl6wynnl3ruzve6bv54adqazuuyp6eq",
+      "dataSize": 56,
+      "dateCreated": "2026-06-30T19:14:27.526867Z",
+      "messageTimestamp": "2026-06-30T19:14:27.526867Z",
+      "dataFormat": "application/json"
+    },
+    "encryption": {
+      "algorithm": "A256CTR",
+      "initializationVector": "IjPlunRVEIONXKlTO6IKBw",
+      "keyEncryption": [
+        {
+          "algorithm": "X25519-HKDF-SHA256+A256KW",
+          "encryptedKey": "_xjXkvD0v3DBJfMoHHF-Tl4TLNuZIdQcl7pt9p-0tpwW1rgY3V0E4w",
+          "ephemeralPublicKey": {
+            "kty": "OKP",
+            "crv": "X25519",
+            "x": "-1FCX-Dm1fmpFJ4XgbAaZPoPdHGssyCwveCeIGbsnG4",
+            "kid": "NReJC81_JHcILyN0hK8zqdRCf6NANQeECIs1gk8rmuY"
+          },
+          "keyId": "DJn_Bw9H1ZcJSTQg2jT5pRvvGbHqkpny2V6piXB7qXA",
+          "derivationScheme": "protocolPath"
+        },
+        {
+          "algorithm": "X25519-HKDF-SHA256+A256KW",
+          "encryptedKey": "iQazibXsNdqweYS650gZh4oPt0k7jw3qdkCTWsweovchWmRUaes5jQ",
+          "ephemeralPublicKey": {
+            "kty": "OKP",
+            "crv": "X25519",
+            "x": "Gszu78d4wK8ZAwre0TkFw3ef6zMfSi-Hci6C7zYAQHs",
+            "kid": "3gIu5E25SE5WxdQUvdhAIcpc9ZseX0pS9apbcbiu_Ew"
+          },
+          "keyId": "U476G4lbRVDVsbozoLjxabOyOr9kLfSm1vaaNDA-gZo",
+          "derivationScheme": "roleAudience",
+          "epoch": 1,
+          "protocol": "https://enbox.id/protocols/test-mesh",
+          "role": "network/node"
+        }
+      ]
+    },
+    "contextId": "bafyreie53ysu5wrgsrru2bougbjypxsnxl6hc2bssz4giz62q2enandfky/bafyreihzez4aazwluaykaqjh2cewqqq73lqfsminpje4xxc7r6ipxoeulu",
+    "authorization": {
+      "signature": {
+        "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWloemV6NGFhendsdWF5a2FxamgyY2V3cXFxNzNscWZzbWlucGplNHh4YzdyNmlweG9ldWx1IiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWljcXV3YWloa3didmhoanZ2c3R6aW03bWlrN3JwbHY0N3NxeDJqbHliaTNwdmhyanh0amN1IiwiY29udGV4dElkIjoiYmFmeXJlaWU1M3lzdTV3cmdzcnJ1MmJvdWdianlweHNueGw2aGMyYnNzejRnaXo2MnEyZW5hbmRma3kvYmFmeXJlaWh6ZXo0YWF6d2x1YXlrYXFqaDJjZXdxcXE3M2xxZnNtaW5wamU0eHhjN3I2aXB4b2V1bHUiLCJlbmNyeXB0aW9uQ2lkIjoiYmFmeXJlaWJocWtubDd1anUyeGNoa2d5YTZvdnd5b3lmdWtrbm52Z3pxdTJjb3J6anA3YTczYW53a2EifQ",
+        "signatures": [
+          {
+            "protected": "eyJraWQiOiJkaWQ6ZGh0Om4xNGs0OHJ3aDZ4Y2c1c21ibmRocXp0NXI5NWhwNnM5NHd0NG50MXk1czd1Z250eTZtNG8jMCIsImFsZyI6IkVkRFNBIn0",
+            "signature": "KMpJa5OsgXO6nmvzSOZtoNVTXlOqc0hEp1ujHst80u23S7w_GAWU-lm7J_IlAxj3hmrCSF7zrf-ySIGRInXqDw"
+          }
+        ]
+      }
+    }
+  },
+  "sdkCiphertext_b64": "Pe6zlydGDa5+jGKOvEKSORjQCfcL61OJm6b+ZhJ/EqpbfW8X3zC76RZlsTPGsnBwIh14zJJu2rU=",
+  "sdkWrittenRoleAudienceEntry": {
+    "algorithm": "X25519-HKDF-SHA256+A256KW",
+    "encryptedKey": "iQazibXsNdqweYS650gZh4oPt0k7jw3qdkCTWsweovchWmRUaes5jQ",
+    "ephemeralPublicKey": {
+      "kty": "OKP",
+      "crv": "X25519",
+      "x": "Gszu78d4wK8ZAwre0TkFw3ef6zMfSi-Hci6C7zYAQHs",
+      "kid": "3gIu5E25SE5WxdQUvdhAIcpc9ZseX0pS9apbcbiu_Ew"
+    },
+    "keyId": "U476G4lbRVDVsbozoLjxabOyOr9kLfSm1vaaNDA-gZo",
+    "derivationScheme": "roleAudience",
+    "epoch": 1,
+    "protocol": "https://enbox.id/protocols/test-mesh",
+    "role": "network/node"
+  },
+  "_fields": {
+    "installedProtocolDefinition": "INSTALLED test-mesh definition (owner) after SDK $keyAgreement injection; read the protocolPath key from structure.<writeTarget.protocolPath>.$keyAgreement.publicKeyJwk",
+    "writeTarget": "the protocolPath + parentContextId the writer targets",
+    "audienceEpochs": "one per reading role; { protocol, contextId, role, epoch, keyId, publicKeyJwk } — the public key each roleAudience entry wraps to (epoch + keyId go into the entry and KEK info)",
+    "ownerEncPrivateKeyJwk": "owner #enc X25519 root private JWK; verifies the protocolPath entry (the path key derives from this root along [protocolPath, protocol, ...protocolPath])",
+    "audiencePrivateKeysByRole": "role -> audience X25519 private JWK (from the decrypted audienceKey payload); verifies/decrypts the matching roleAudience entry",
+    "sdkWrittenRecord": "genuine SDK-authored reference record (author = sdkAuthor); compare entry set / keyIds / schemes against the Go-built record",
+    "sdkCiphertext_b64": "ciphertext of sdkWrittenRecord"
+  }
+}
