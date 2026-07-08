@@ -55,6 +55,24 @@ func TestDiscoverConnectServerURLErrors(t *testing.T) {
 func TestBuildWalletURI(t *testing.T) {
 	key := []byte{1, 2, 3, 4}
 
+	// fragmentParams parses the wallet URI fragment (request_uri +
+	// encryption_key), mirroring how the wallet reads the deep-link.
+	fragmentParams := func(t *testing.T, walletURI string) url.Values {
+		t.Helper()
+		before, frag, ok := strings.Cut(walletURI, "#")
+		if !ok {
+			t.Fatalf("wallet URI has no fragment: %q", walletURI)
+		}
+		if strings.Contains(before, "request_uri=") || strings.Contains(before, "encryption_key=") {
+			t.Errorf("connect params leaked into the query/path: %q", walletURI)
+		}
+		values, err := url.ParseQuery(frag)
+		if err != nil {
+			t.Fatalf("parsing fragment %q: %v", frag, err)
+		}
+		return values
+	}
+
 	t.Run("bare origin gets the default connect path", func(t *testing.T) {
 		got, err := buildWalletURI("https://wallet.example", "https://relay.example/authorize/abc.jwt", key)
 		if err != nil {
@@ -67,10 +85,11 @@ func TestBuildWalletURI(t *testing.T) {
 		if u.Path != defaultWalletConnectPath {
 			t.Errorf("path = %q, want %q", u.Path, defaultWalletConnectPath)
 		}
-		if q := u.Query().Get("request_uri"); q != "https://relay.example/authorize/abc.jwt" {
+		frag := fragmentParams(t, got)
+		if q := frag.Get("request_uri"); q != "https://relay.example/authorize/abc.jwt" {
 			t.Errorf("request_uri = %q", q)
 		}
-		if q := u.Query().Get("encryption_key"); q != base64.RawURLEncoding.EncodeToString(key) {
+		if q := frag.Get("encryption_key"); q != base64.RawURLEncoding.EncodeToString(key) {
 			t.Errorf("encryption_key = %q", q)
 		}
 	})
@@ -90,7 +109,7 @@ func TestBuildWalletURI(t *testing.T) {
 		if q := u.Query().Get("theme"); q != "dark" {
 			t.Errorf("theme = %q, want dark", q)
 		}
-		if q := u.Query().Get("request_uri"); q != "req-uri" {
+		if q := fragmentParams(t, got).Get("request_uri"); q != "req-uri" {
 			t.Errorf("request_uri = %q", q)
 		}
 	})
@@ -100,7 +119,7 @@ func TestBuildWalletURI(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildWalletURI: %v", err)
 		}
-		if !strings.HasPrefix(got, "https://wallet.example/connect/app?") {
+		if !strings.HasPrefix(got, "https://wallet.example/connect/app#") {
 			t.Errorf("got %q", got)
 		}
 	})

@@ -669,9 +669,13 @@ async function generateConnectFixtures(): Promise<void> {
     requestJwe,
     expectedRequestJwt         : requestJwt,
     expectedRequestPayload     : request,
-    walletUriExample           : `https://wallet.example.com/connect/app?request_uri=${encodeURIComponent(`${connectServerUrl}/authorize/REQUEST_ID.jwt`)}&encryption_key=${h.b64u(encryptionKey)}`,
+    walletUriExample           : P.buildWalletConnectUri({
+      walletUri     : 'https://wallet.example.com/connect/app',
+      requestUri    : `${connectServerUrl}/authorize/REQUEST_ID.jwt`,
+      encryptionKey,
+    }),
     _fields: {
-      encryptionKey_b64u     : 'fresh random 32-byte symmetric key; travels to the wallet in the wallet URI query (encryption_key)',
+      encryptionKey_b64u     : 'fresh random 32-byte symmetric key; travels to the wallet in the wallet URI fragment (encryption_key)',
       protectedHeaderJson    : 'EXACT UTF-8 bytes of the JWE protected header; also the AAD',
       expectedRequestPayload : 'the EnboxConnectRequest JWT payload (nonce/state are random base64url(16 bytes))',
     },

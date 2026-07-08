@@ -125,29 +125,6 @@ function parseCli(argv: string[]): Cli {
   };
 }
 
-// ─── wallet URI parsing ─────────────────────────────────────────────
-
-/**
- * Extract `request_uri` and `encryption_key` from a wallet URI. Parses the
- * query string manually so custom schemes (`enbox://connect?...`) work the
- * same as https wallet URLs.
- */
-function parseWalletUri(uri: string): { requestUri: string; encryptionKey: string } {
-  const queryIndex = uri.indexOf('?');
-  if (queryIndex === -1) {
-    throw new Error(`wallet URI has no query string: ${uri}`);
-  }
-
-  const params = new URLSearchParams(uri.slice(queryIndex + 1));
-  const requestUri = params.get('request_uri');
-  const encryptionKey = params.get('encryption_key');
-
-  if (!requestUri || !encryptionKey) {
-    throw new Error('wallet URI is missing request_uri and/or encryption_key');
-  }
-
-  return { requestUri, encryptionKey };
-}
 
 // ─── wallet-side protocol install ───────────────────────────────────
 
@@ -333,10 +310,16 @@ async function main(): Promise<void> {
       await dwnClients.DwnRegistrar.registerTenant(cli.endpoint, ownerDid);
     }
 
-    // 5. Fetch, decrypt, and verify the connect request.
-    const { requestUri, encryptionKey } = parseWalletUri(cli.uri);
+    // 5. Fetch, decrypt, and verify the connect request. The relay pointer and
+    // the single-use encryption key ride in the wallet URI fragment; parse them
+    // with the monorepo's canonical helper.
+    const connectParams = EnboxConnectProtocol.parseWalletConnectUri(cli.uri);
+    if (connectParams === undefined) {
+      throw new Error(`wallet URI is missing request_uri and/or encryption_key: ${cli.uri}`);
+    }
+    const { requestUri, encryptionKeyBase64Url } = connectParams;
     console.error(`approver: fetching connect request from ${requestUri}`);
-    const request = await EnboxConnectProtocol.getConnectRequest(requestUri, encryptionKey);
+    const request = await EnboxConnectProtocol.getConnectRequest(requestUri, encryptionKeyBase64Url);
     console.error(
       `approver: request from app '${request.appName}' (client ${request.clientDid}), ` +
       `${request.permissionRequests.length} protocol(s), delegate ${request.delegateDid ?? '<wallet-minted>'}`,

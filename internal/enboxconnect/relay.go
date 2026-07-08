@@ -201,7 +201,15 @@ func DiscoverConnectServerURL(ctx context.Context, walletOrigin string) (string,
 // buildWalletURI builds the URI handed to the user's wallet: the wallet URL
 // (with /connect/app appended when it has no path, per cli-connect-handler.ts
 // buildWalletUri) carrying the relay request_uri and the base64url-encoded
-// request encryption key as query parameters.
+// request encryption key.
+//
+// Both values ride in the URI *fragment*, never the query string. A fragment
+// is not sent to the wallet's web server on the deep-link path, so the
+// single-use symmetric encryption key cannot surface in server or CDN access
+// logs. This conforms to the monorepo wire format defined by
+// EnboxConnectProtocol.buildWalletConnectUri (request_uri first, then
+// encryption_key, form-encoded). Any existing query on the wallet URL is left
+// untouched.
 func buildWalletURI(walletURL, requestURI string, encryptionKey []byte) (string, error) {
 	u, err := normalizeURL(walletURL)
 	if err != nil {
@@ -211,11 +219,9 @@ func buildWalletURI(walletURL, requestURI string, encryptionKey []byte) (string,
 		u.Path = defaultWalletConnectPath
 	}
 
-	q := u.Query()
-	q.Set("request_uri", requestURI)
-	q.Set("encryption_key", base64.RawURLEncoding.EncodeToString(encryptionKey))
-	u.RawQuery = q.Encode()
-	return u.String(), nil
+	fragment := "request_uri=" + url.QueryEscape(requestURI) +
+		"&encryption_key=" + url.QueryEscape(base64.RawURLEncoding.EncodeToString(encryptionKey))
+	return u.String() + "#" + fragment, nil
 }
 
 // normalizeURL validates a URL, defaulting the scheme to https when absent

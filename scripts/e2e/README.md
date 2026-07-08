@@ -45,7 +45,7 @@ bun scripts/e2e/approver.ts --uri '<wallet URI>' \
 
 | Flag           | Default              | Meaning                                                        |
 | -------------- | -------------------- | -------------------------------------------------------------- |
-| `--uri`        | (required)           | Wallet URI with `request_uri` + `encryption_key` query params. Any scheme works (`https://…`, `enbox://connect?…`). |
+| `--uri`        | (required)           | Wallet URI with `request_uri` + `encryption_key` in the URI fragment. Any scheme works (`https://…`, `enbox://connect#…`). |
 | `--data`       | `.e2e-approver`      | Agent data directory. Persistent: reusing it approves as the **same owner** (two devices, one owner). |
 | `--password`   | `meshd-e2e-approver` | Vault password protecting the data directory.                  |
 | `--endpoint`   | `http://localhost:3000` | DWN server / relay endpoint the owner tenant lives on.      |
