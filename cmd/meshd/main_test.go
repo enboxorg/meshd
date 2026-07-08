@@ -2064,3 +2064,53 @@ func TestNodeRuntimeProtocolPaths(t *testing.T) {
 		t.Fatalf("member endpoint path = %q", got)
 	}
 }
+
+func TestReadProtocolRole(t *testing.T) {
+	const anchorDID = "did:dht:anchor"
+	const nodeDID = "did:jwk:node"
+
+	tests := []struct {
+		name           string
+		anchorDID      string
+		selfNodeDID    string
+		memberRecordID string
+		want           string
+	}{
+		{
+			name:        "anchor reads as author",
+			anchorDID:   anchorDID,
+			selfNodeDID: anchorDID,
+			want:        "",
+		},
+		{
+			name:           "member-associated node reads as network/member",
+			anchorDID:      anchorDID,
+			selfNodeDID:    nodeDID,
+			memberRecordID: "member-1",
+			want:           "network/member",
+		},
+		{
+			name:        "owner-provisioned node reads as network/node",
+			anchorDID:   anchorDID,
+			selfNodeDID: nodeDID,
+			want:        "network/node",
+		},
+		{
+			// The anchor short-circuit wins even if a member record is present.
+			name:           "anchor with member record still reads as author",
+			anchorDID:      anchorDID,
+			selfNodeDID:    anchorDID,
+			memberRecordID: "member-1",
+			want:           "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := readProtocolRole(tt.anchorDID, tt.selfNodeDID, tt.memberRecordID); got != tt.want {
+				t.Fatalf("readProtocolRole(%q, %q, %q) = %q, want %q",
+					tt.anchorDID, tt.selfNodeDID, tt.memberRecordID, got, tt.want)
+			}
+		})
+	}
+}

@@ -110,7 +110,8 @@ type Config struct {
 
 	// ProtocolRole is the DWN protocol role used for read queries.
 	// The anchor (network owner) leaves this empty (reads as author).
-	// Non-anchor nodes use "network/node".
+	// Member-associated nodes (MemberRecordID set) use "network/member";
+	// owner-provisioned nodes use "network/node".
 	ProtocolRole string
 
 	// PermissionGrantID invokes a DWN permission grant for control-plane
