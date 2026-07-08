@@ -4,36 +4,6 @@ import meshProtocolDefinitionJson from "../../../protocols/wireguard-mesh.json";
 
 export const MESHD_PROTOCOL_URI = "https://enbox.id/protocols/wireguard-mesh";
 
-/**
- * Removes every `$keyAgreement` node from a protocol definition (top level
- * and the whole structure tree) and returns a deep copy.
- *
- * `$keyAgreement` blocks are runtime key material: the installing wallet
- * derives owner-specific X25519 public keys and injects them at every
- * structure path when it configures the protocol with encryption enabled.
- * The authored definition carries none (and must not — each owner's keys
- * differ), so comparisons against an installed definition normalize the
- * installed side through this helper.
- */
-export function withoutKeyAgreement<T>(definition: T): T {
-  return stripKeyAgreementNodes(structuredClone(definition)) as T;
-}
-
-function stripKeyAgreementNodes(value: unknown): unknown {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return value;
-  }
-  const node = value as Record<string, unknown>;
-  delete node["$keyAgreement"];
-  for (const [key, child] of Object.entries(node)) {
-    if (key.startsWith("$")) {
-      continue;
-    }
-    stripKeyAgreementNodes(child);
-  }
-  return node;
-}
-
 type IdentitySyncProtocols = NonNullable<AuthManagerOptions["identitySyncProtocols"]>;
 
 const ADMIN_PERMISSIONS = ["read", "write", "delete"] satisfies Permission[];

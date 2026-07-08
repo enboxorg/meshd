@@ -2,11 +2,7 @@ import { defineProtocol } from "@enbox/browser";
 import type { Enbox } from "@enbox/browser";
 import type { ConnectPermissionRequest } from "@enbox/agent";
 
-import {
-  MESHD_PROTOCOL_URI,
-  MeshProtocolDefinition,
-  withoutKeyAgreement
-} from "./config";
+import { MESHD_PROTOCOL_URI, MeshProtocolDefinition } from "./config";
 
 type MeshProtocolSchemaMap = {
   network: Record<string, unknown>;
@@ -104,14 +100,10 @@ function assertExpectedProtocolDefinition(
   expectedDefinition: ProtocolDefinition,
   installedDefinition: unknown
 ) {
-  // The wallet installs the protocol with encryption enabled, so the
-  // installed definition carries derived `$keyAgreement: { publicKeyJwk }`
-  // blocks at the top level and at every structure path. Those are
-  // owner-specific runtime key material, not part of the authored
-  // definition — normalize the installed side before comparing.
-  const installed = protocolDefinition(
-    withoutKeyAgreement(protocolDefinition(installedDefinition))
-  );
+  // Structural checks only (protocol URI, type names, paths): `$`-prefixed
+  // keys — including the owner-derived $keyAgreement blocks the installer
+  // injects — are never part of the comparison.
+  const installed = protocolDefinition(installedDefinition);
   const expected = expectedDefinition;
   if (!installed) {
     return;
