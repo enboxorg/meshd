@@ -83,7 +83,7 @@ type Options struct {
 	RequestedTTLSeconds int
 
 	// OnWalletURI receives the wallet URI (with request_uri and
-	// encryption_key query parameters) to hand to the user. Required.
+	// encryption_key in the URI fragment) to hand to the user. Required.
 	OnWalletURI func(string)
 
 	// PINPrompt collects the PIN the wallet displays after approval.

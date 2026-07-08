@@ -161,8 +161,13 @@ func (wlt *testWallet) handle(t *testing.T, walletURI string) {
 	if err != nil {
 		t.Fatalf("parsing wallet URI: %v", err)
 	}
-	requestURI := u.Query().Get("request_uri")
-	encryptionKey, err := base64.RawURLEncoding.DecodeString(u.Query().Get("encryption_key"))
+	// The relay pointer and key ride in the fragment, not the query.
+	frag, err := url.ParseQuery(u.EscapedFragment())
+	if err != nil {
+		t.Fatalf("parsing wallet URI fragment: %v", err)
+	}
+	requestURI := frag.Get("request_uri")
+	encryptionKey, err := base64.RawURLEncoding.DecodeString(frag.Get("encryption_key"))
 	if err != nil {
 		t.Fatalf("decoding encryption_key: %v", err)
 	}

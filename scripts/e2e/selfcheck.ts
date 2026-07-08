@@ -133,7 +133,7 @@ async function runConnectRound(params: {
     clientMetadata       : { origin: 'meshd-e2e-selfcheck' },
     preSupplyDelegateDid : true,
     connectServerUrl     : `${endpoint}/connect`,
-    // Only the query params matter to the approver; the wallet page itself
+    // Only the fragment params matter to the approver; the wallet page itself
     // is never fetched.
     walletUri            : 'https://wallet.invalid/connect/app',
     permissionRequests,
