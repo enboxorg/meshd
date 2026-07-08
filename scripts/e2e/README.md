@@ -108,10 +108,34 @@ the remote dwn-server with derived `$keyAgreement` keys on every
 `encryptionRequired` path (no placeholders left), and a stable owner DID
 across rounds. `--keep` preserves the temp data dir for inspection.
 
+## `install-smoke.sh` — public installer release smoke
+
+Exercises the same public install path users run:
+
+```sh
+scripts/e2e/install-smoke.sh
+```
+
+The script curls `https://meshd.sh/install`, runs it with a temporary HOME and
+`--no-modify-path`, asserts that `~/.meshd/bin/meshd` exists, and checks that
+`meshd --help` starts. Release CI sets `MESHD_INSTALL_EXPECTED_VERSION` to the
+published tag, so the smoke also proves the installer resolved and unpacked the
+new release artifact.
+
+Useful environment variables:
+
+| Variable                         | Default                  | Meaning                                         |
+| -------------------------------- | ------------------------ | ----------------------------------------------- |
+| `MESHD_INSTALL_URL`              | `https://meshd.sh/install` | Installer URL to curl.                        |
+| `MESHD_INSTALL_REQUESTED_VERSION` | (empty)                 | Optional `--version` argument for the installer. |
+| `MESHD_INSTALL_EXPECTED_VERSION` | (empty)                  | Expected `meshd --version` value (`v` optional). |
+| `MESHD_INSTALL_TMP_DIR`          | auto-created             | Keep temp install state for debugging.          |
+
 ## Files
 
 - `approver.ts` — the headless approver CLI.
 - `selfcheck.ts` — end-to-end validation of the approver (client role).
+- `install-smoke.sh` — public curl installer smoke test.
 - `enbox-repo.ts` — resolves `ENBOX_REPO` and imports the monorepo packages.
 - `definition-utils.ts` — pure protocol-definition helpers (placeholder
   stripping, definition matching, structure walking).
