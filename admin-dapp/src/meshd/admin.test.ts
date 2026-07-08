@@ -164,6 +164,23 @@ describe("meshd admin DWN operations", () => {
     expect(pushes).toEqual(["push"]);
   });
 
+  it("requests reply decryption on record queries so encrypted payloads decode", async () => {
+    // Mesh records (preAuthKey, member/node) are written encrypted. The agent
+    // only auto-decrypts query replies when the query itself carries
+    // encryption: true; without it, encrypted payloads return as ciphertext and
+    // preAuthKey lookups (approval) and the invite list silently fail.
+    const { session, requests } = createFakeSession({ delegate: true });
+
+    await fetchMeshdNetworks(session);
+
+    const query = requests.find((request) => request.messageType === DwnInterface.RecordsQuery);
+    expect(query).toBeDefined();
+    expect(query).toMatchObject({
+      messageType: DwnInterface.RecordsQuery,
+      encryption: true
+    });
+  });
+
   it("uses the beta DWN endpoint when the owner does not publish one", async () => {
     const { session, requests } = createFakeSession({
       endpoints: ["", "   "],
