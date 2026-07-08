@@ -4,7 +4,8 @@ import type { ConnectPermissionRequest } from "@enbox/agent";
 
 import {
   MESHD_PROTOCOL_URI,
-  MeshProtocolDefinition
+  MeshProtocolDefinition,
+  stripKeyAgreementPlaceholders
 } from "./config";
 
 type MeshProtocolSchemaMap = {
@@ -103,23 +104,33 @@ function assertExpectedProtocolDefinition(
   expectedDefinition: ProtocolDefinition,
   installedDefinition: unknown
 ) {
-  const installed = protocolDefinition(installedDefinition);
+  // The wallet installs the protocol with encryption enabled, so the
+  // installed definition carries derived `$keyAgreement: { publicKeyJwk }`
+  // blocks at the top level and at every structure path. Those are runtime
+  // key material, not part of the authored definition — strip them (and any
+  // other `$keyAgreement` remnants) from both sides before comparing, the
+  // same normalization the Go daemon applies via
+  // `protocols.MeshProtocolDefinitionForConnect`.
+  const installed = protocolDefinition(
+    stripKeyAgreementPlaceholders(protocolDefinition(installedDefinition))
+  );
+  const expected = stripKeyAgreementPlaceholders(expectedDefinition);
   if (!installed) {
     return;
   }
 
-  if (installed.protocol !== expectedDefinition.protocol) {
+  if (installed.protocol !== expected.protocol) {
     throw new Error(`${label}: wallet installed an unexpected protocol definition.`);
   }
 
-  const expectedTypes = isRecord(expectedDefinition.types) ? Object.keys(expectedDefinition.types) : [];
+  const expectedTypes = isRecord(expected.types) ? Object.keys(expected.types) : [];
   const installedTypes = isRecord(installed.types) ? Object.keys(installed.types) : [];
   const missingTypes = expectedTypes.filter((type) => !installedTypes.includes(type));
   if (missingTypes.length > 0) {
     throw new Error(`${label}: wallet protocol is missing types: ${missingTypes.join(", ")}.`);
   }
 
-  const expectedPaths = collectProtocolPaths(expectedDefinition.structure);
+  const expectedPaths = collectProtocolPaths(expected.structure);
   const installedPaths = collectProtocolPaths(installed.structure);
   const missingPaths = expectedPaths.filter((path) => !installedPaths.includes(path));
   if (missingPaths.length > 0) {

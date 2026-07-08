@@ -31,11 +31,9 @@ export type MeshdAdminAgent = {
     };
     messageCid?: string;
   }>;
-  sendDwnRequest?: (request: Record<string, unknown>) => Promise<{
-    reply: {
-      status: { code: number; detail?: string };
-    };
-  }>;
+  sync?: {
+    sync?: (direction?: "push" | "pull") => Promise<void>;
+  };
   dwn?: {
     getDwnEndpointUrlsForTarget?: (targetDid: string) => Promise<string[]>;
   };
@@ -78,7 +76,6 @@ export type MeshdNodeSummary = {
   addedAt?: string;
   expiresAt?: string;
   sourceDWN?: string;
-  nodeKeyDelivery?: MeshdNodeKeyDelivery;
   createdAt?: string;
 };
 
@@ -96,7 +93,6 @@ export type MeshdNodeRequestSummary = {
   networkName?: string;
   label?: string;
   sourceDWN?: string;
-  nodeKeyDelivery?: MeshdNodeKeyDelivery;
   preAuthKeyId?: string;
   preAuthProof?: string;
   requestedAt?: string;
@@ -122,17 +118,6 @@ export type MeshdNetworkTopology = {
   legacyNodes: MeshdNodeSummary[];
   pendingRequests: MeshdNodeRequestSummary[];
   preAuthKeys: MeshdPreAuthKeySummary[];
-};
-
-export type MeshdNodeKeyDelivery = {
-  rootKeyId?: string;
-  publicKeyJwk?: {
-    kid?: string;
-    kty?: string;
-    crv?: string;
-    x?: string;
-    [key: string]: unknown;
-  };
 };
 
 export type CreateMeshdInviteResult = {
@@ -245,56 +230,87 @@ function decodeRecordPayload(entry: Record<string, unknown>, wrapper: Record<str
   return undefined;
 }
 
+export const DELEGATE_SESSION_REQUIRED_ERROR =
+  "This wallet session has no delegate identity, so the dashboard cannot sign DWN messages. "
+  + "Disconnect and reconnect your wallet to restore delegated access.";
+
+function delegateGrantMissingError(protocol: string): string {
+  return `The wallet session did not grant ${protocol} access to this dashboard. `
+    + "Disconnect and reconnect your wallet, approving the requested permissions.";
+}
+
+/**
+ * Authors a DWN request as the wallet-session delegate, invoking a delegated
+ * grant from the connected owner.
+ *
+ * This fails closed: the dapp never holds the owner's signing key, so a
+ * request authored as the owner is guaranteed to die in the agent's KMS
+ * ("Unable to get signer for author ... Key not found"). If the session has
+ * no delegate, or the wallet session holds no matching delegated grant, we
+ * throw a clear, user-facing error instead of ever falling back to
+ * author-as-owner.
+ */
 async function processDwnRequest(
   session: MeshdAdminSession,
   request: Record<string, unknown>,
-  protocol?: string
+  protocol: string
 ) {
-  const next: Record<string, any> = {
-    ...request,
-    messageParams: {
-      ...(isObject(request.messageParams) ? request.messageParams : {})
-    }
-  };
+  if (!session.delegateDid) {
+    throw new Error(DELEGATE_SESSION_REQUIRED_ERROR);
+  }
 
-  if (session.delegateDid && protocol) {
-    const permission = await session.agent.permissions?.getPermissionForRequest?.({
+  let permission: { message: unknown } | undefined;
+  try {
+    permission = await session.agent.permissions?.getPermissionForRequest?.({
       connectedDid: session.ownerDid,
       delegateDid: session.delegateDid,
       protocol,
       delegate: true,
       cached: true,
-      messageType: next.messageType
+      messageType: request.messageType
     });
-    if (!permission?.message) {
-      throw new Error(`The wallet session did not grant ${protocol} access to this dashboard.`);
-    }
-    next.messageParams = {
-      ...next.messageParams,
-      delegatedGrant: permission.message
-    };
-    next.granteeDid = session.delegateDid;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${delegateGrantMissingError(protocol)} (${detail})`);
+  }
+  if (!permission?.message) {
+    throw new Error(delegateGrantMissingError(protocol));
   }
 
-  return session.agent.processDwnRequest(next);
+  return session.agent.processDwnRequest({
+    ...request,
+    messageParams: {
+      ...(isObject(request.messageParams) ? request.messageParams : {}),
+      delegatedGrant: permission.message
+    },
+    granteeDid: session.delegateDid
+  });
 }
 
-async function sendDwnMessage(
-  session: MeshdAdminSession,
-  messageType: unknown,
-  messageCid: string
-) {
-  if (!session.agent.sendDwnRequest) {
+/**
+ * Best-effort flush of freshly written records to the owner's remote DWN.
+ *
+ * A delegate session cannot push via owner-authored `sendDwnRequest`
+ * (resolving a signer for the owner DID fails — the dapp never holds that
+ * key). Remote propagation is the sync engine's job: the auth session
+ * registers the owner tenant with the delegate's grants and live sync
+ * pushes local writes automatically. This one-shot push only shortens the
+ * latency window so the meshd daemon (which polls the owner's remote DWN)
+ * sees admin changes sooner. Failures are non-fatal — the records are
+ * already accepted locally and sync retries in the background.
+ */
+async function pushChangesToRemote(session: MeshdAdminSession): Promise<void> {
+  const sync = session.agent.sync;
+  if (!sync?.sync) {
     return;
   }
-  const pushed = await session.agent.sendDwnRequest({
-    author: session.ownerDid,
-    target: session.ownerDid,
-    messageType,
-    messageCid
-  });
-  if (pushed.reply.status.code >= 300 && pushed.reply.status.code !== 409) {
-    throw new Error(`Remote DWN send failed: ${pushed.reply.status.code} ${pushed.reply.status.detail ?? ""}`.trim());
+  try {
+    await sync.sync("push");
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (!detail.includes("already in progress")) {
+      console.warn("[meshd-admin] Remote DWN push failed (sync will retry):", detail);
+    }
   }
 }
 
@@ -314,7 +330,7 @@ async function writeRecord(
   encryption?: true
 ): Promise<AuthoredRecord> {
   const data = new TextEncoder().encode(JSON.stringify(payload));
-  const { reply, message, messageCid } = await processDwnRequest(
+  const { reply, message } = await processDwnRequest(
     session,
     {
       author: session.ownerDid,
@@ -327,11 +343,11 @@ async function writeRecord(
     protocol
   );
 
-  if (reply.status.code >= 300 || !message || !messageCid) {
+  if (reply.status.code >= 300 || !message) {
     throw new Error(`DWN write failed: ${reply.status.code} ${reply.status.detail ?? ""}`.trim());
   }
 
-  await sendDwnMessage(session, DwnInterface.RecordsWrite, messageCid);
+  await pushChangesToRemote(session);
   return {
     recordId: recordIdFromMessage(message),
     dateCreated: message.descriptor?.dateCreated
@@ -344,7 +360,7 @@ async function deleteRecord(
   recordId: string,
   prune: boolean
 ): Promise<void> {
-  const { reply, messageCid } = await processDwnRequest(
+  const { reply } = await processDwnRequest(
     session,
     {
       author: session.ownerDid,
@@ -358,9 +374,7 @@ async function deleteRecord(
   if (reply.status.code >= 300) {
     throw new Error(`Could not delete record ${recordId}: ${reply.status.detail ?? reply.status.code}`);
   }
-  if (messageCid) {
-    await sendDwnMessage(session, DwnInterface.RecordsDelete, messageCid);
-  }
+  await pushChangesToRemote(session);
 }
 
 async function queryRecords(
@@ -482,7 +496,6 @@ export function parseMeshdNodeRecord(rawEntry: unknown, memberRecordId?: string)
     addedAt: getString(data.addedAt),
     expiresAt: getString(data.expiresAt),
     sourceDWN: getString(data.sourceDWN),
-    nodeKeyDelivery: isObject(data.nodeKeyDelivery) ? data.nodeKeyDelivery as MeshdNodeKeyDelivery : undefined,
     createdAt: getString(descriptor.dateCreated) ?? getString(wrapper.dateCreated)
   };
 }
@@ -520,7 +533,6 @@ export function parseMeshdNodeRequestRecord(rawEntry: unknown): MeshdNodeRequest
     networkName: getString(payload.networkName),
     label: getString(payload.label),
     sourceDWN: getString(payload.sourceDWN),
-    nodeKeyDelivery: isObject(payload.nodeKeyDelivery) ? payload.nodeKeyDelivery as MeshdNodeKeyDelivery : undefined,
     preAuthKeyId: getString(payload.preAuthKeyId),
     preAuthProof: getString(payload.preAuthProof),
     requestedAt: getString(payload.requestedAt),
@@ -944,29 +956,6 @@ async function markPreAuthKeyUsed(
   );
 }
 
-function validateNodeKeyDelivery(nodeDID: string, key?: MeshdNodeKeyDelivery): MeshdNodeKeyDelivery {
-  if (!key) {
-    throw new Error("The pending request is missing node key-delivery data. Ask the node to run an updated meshd CLI.");
-  }
-  const rootKeyId = key.rootKeyId || key.publicKeyJwk?.kid;
-  if (!rootKeyId) {
-    throw new Error("The pending request is missing node key-delivery rootKeyId.");
-  }
-  if (rootKeyId !== `${nodeDID}#1`) {
-    throw new Error(`The pending request key-delivery rootKeyId does not match node DID ${nodeDID}.`);
-  }
-  if (key.publicKeyJwk?.kid && key.publicKeyJwk.kid !== rootKeyId) {
-    throw new Error("The pending request key-delivery public key id does not match rootKeyId.");
-  }
-  if (key.publicKeyJwk?.kty !== "OKP" || key.publicKeyJwk?.crv !== "X25519") {
-    throw new Error("The pending request key-delivery public key must be an X25519 OKP key.");
-  }
-  if (!key.publicKeyJwk?.x || base64UrlDecodeBytes(key.publicKeyJwk.x).length !== 32) {
-    throw new Error("The pending request node key-delivery public key must be 32 bytes.");
-  }
-  return key;
-}
-
 function ipv4ToInt(ip: string): number {
   const parts = ip.split(".").map((part) => Number.parseInt(part, 10));
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
@@ -1088,7 +1077,6 @@ export async function approveMeshdNodeRequest(
   }
 
   const preAuthKey = ownerScopedRequest ? undefined : await readPreAuthKey(session, network, request);
-  const nodeKeyDelivery = validateNodeKeyDelivery(request.nodeDID, request.nodeKeyDelivery);
   const requestOwnerDID = nodeOwnerDID(request);
   const member = await ensureMemberRecord(session, network, requestOwnerDID, request.label);
   const meshIP = await allocateMeshIp(network.meshCIDR, request.nodeDID);
@@ -1096,6 +1084,12 @@ export async function approveMeshdNodeRequest(
     ? options.expiresAt?.trim()
     : request.expiresAt;
 
+  // Sealed-model key delivery: the member and node records below are role
+  // records with a recipient, so the agent automatically mints the sealed
+  // `$encryption/audience` keys during the encrypted writes and provisions
+  // `$encryption/delivery` records for the recipients
+  // (provisionAudienceKeyForAcceptedRoleRecord). The joining meshd daemon
+  // decrypts its records via those delivery records — nothing to do here.
   const nodeRecord = await writeRecord(
     session,
     MESHD_PROTOCOL_URI,
@@ -1114,8 +1108,7 @@ export async function approveMeshdNodeRequest(
       ownerDID: requestOwnerDID,
       memberDID: requestOwnerDID,
       ...(request.delegateDID ? { delegateDID: request.delegateDID } : {}),
-      ...(expiresAt ? { expiresAt } : {}),
-      nodeKeyDelivery
+      ...(expiresAt ? { expiresAt } : {})
     },
     true
   );
@@ -1231,8 +1224,7 @@ async function writeUpdatedMeshdNode(
       ...(node.ownerDID ? { ownerDID: node.ownerDID } : {}),
       ...(node.memberDID ? { memberDID: node.memberDID } : {}),
       ...(node.delegateDID ? { delegateDID: node.delegateDID } : {}),
-      ...(node.sourceDWN ? { sourceDWN: node.sourceDWN } : {}),
-      ...(node.nodeKeyDelivery ? { nodeKeyDelivery: node.nodeKeyDelivery } : {})
+      ...(node.sourceDWN ? { sourceDWN: node.sourceDWN } : {})
     },
     true
   );

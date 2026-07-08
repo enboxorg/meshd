@@ -404,6 +404,19 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     );
   }
 
+  if (!delegateDid) {
+    // The dashboard never holds the owner's signing key: every DWN
+    // operation must be signed by the wallet session's delegate. A session
+    // restored without its delegate cannot sign anything — fail closed
+    // here instead of surfacing per-action KMS errors.
+    return (
+      <StatePanel
+        title="Delegated access unavailable"
+        detail="This wallet session restored without its delegate identity, so the dashboard cannot sign changes. Disconnect and reconnect your wallet to restore delegated access."
+      />
+    );
+  }
+
   if (protocolSetupError) {
     return <StatePanel title="Protocol setup failed" detail={protocolSetupError} />;
   }

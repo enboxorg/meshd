@@ -3,6 +3,8 @@ import type { Enbox } from "@enbox/browser";
 import { DwnInterfaceName, DwnMethodName } from "@enbox/dwn-sdk-js";
 import { describe, expect, it, vi } from "vitest";
 
+import rawMeshProtocolDefinition from "../../../protocols/wireguard-mesh.json";
+
 import {
   DAPP_PROTOCOLS,
   MESHD_PROTOCOL_URI,
@@ -62,7 +64,46 @@ describe("meshd admin protocol requests", () => {
 
     expect(requests.map((item) => item.protocolDefinition.protocol)).toEqual([MESHD_PROTOCOL_URI]);
   });
+
+  it("strips the epoch-era $keyAgreement placeholders from the definition sent to the wallet", () => {
+    // The embedded JSON (shared with the Go daemon) still carries
+    // `{"rootKeyId": "#dwn-enc", "publicKeyJwk": {}}` placeholders, which
+    // dwn-sdk-js 0.4.8 rejects during ProtocolsConfigure validation.
+    expect(JSON.stringify(rawMeshProtocolDefinition)).toContain("$keyAgreement");
+    expect(JSON.stringify(rawMeshProtocolDefinition)).toContain("rootKeyId");
+
+    // The dapp-facing definition (wallet connect requests, defineProtocol,
+    // installed-definition comparison) must not carry any of them.
+    expect(JSON.stringify(MeshProtocolDefinition)).not.toContain("$keyAgreement");
+    expect(JSON.stringify(MeshProtocolDefinition)).not.toContain("rootKeyId");
+    for (const request of normalizeProtocolRequests(DAPP_PROTOCOLS)) {
+      expect(JSON.stringify(request.protocolDefinition)).not.toContain("$keyAgreement");
+      expect(JSON.stringify(request.protocolDefinition)).not.toContain("rootKeyId");
+    }
+  });
 });
+
+function withInjectedKeyAgreement(definition: unknown): Record<string, unknown> {
+  const injected = structuredClone(definition) as Record<string, unknown>;
+  const keyAgreement = {
+    publicKeyJwk: { kty: "OKP", crv: "X25519", x: "8Rq6xdMDGi5DjM2FsGh_JGpsUtoBTWSU9k9DeDDeC0M" }
+  };
+
+  const injectAtEveryPath = (structure: Record<string, unknown>) => {
+    for (const [key, child] of Object.entries(structure)) {
+      if (key.startsWith("$") || typeof child !== "object" || child === null) {
+        continue;
+      }
+      const ruleSet = child as Record<string, unknown>;
+      ruleSet["$keyAgreement"] = structuredClone(keyAgreement);
+      injectAtEveryPath(ruleSet);
+    }
+  };
+
+  injected["$keyAgreement"] = structuredClone(keyAgreement);
+  injectAtEveryPath(injected.structure as Record<string, unknown>);
+  return injected;
+}
 
 describe("ensureProtocolsReady", () => {
   it("runs the SDK readiness/import step for the mesh protocol", async () => {
@@ -71,6 +112,17 @@ describe("ensureProtocolsReady", () => {
     await expect(ensureProtocolsReady(fakeEnbox(mesh))).resolves.toBeUndefined();
 
     expect(mesh.configure).toHaveBeenCalledOnce();
+  });
+
+  it("accepts the wallet-installed definition carrying sealed $keyAgreement key blocks", async () => {
+    // At 0.4.8 the wallet installs the protocol with derived
+    // `$keyAgreement: { publicKeyJwk }` blocks (no rootKeyId) at the top
+    // level and at every structure path. The readiness comparison must
+    // treat those as runtime metadata, not a definition mismatch.
+    const installed = withInjectedKeyAgreement(MeshProtocolDefinition);
+    const mesh = configurableProtocol(MESHD_PROTOCOL_URI, installed);
+
+    await expect(ensureProtocolsReady(fakeEnbox(mesh))).resolves.toBeUndefined();
   });
 
   it("fails when the wallet-installed mesh protocol is missing expected types", async () => {
