@@ -2,10 +2,7 @@ import { defineProtocol } from "@enbox/browser";
 import type { Enbox } from "@enbox/browser";
 import type { ConnectPermissionRequest } from "@enbox/agent";
 
-import {
-  MESHD_PROTOCOL_URI,
-  MeshProtocolDefinition
-} from "./config";
+import { MESHD_PROTOCOL_URI, MeshProtocolDefinition } from "./config";
 
 type MeshProtocolSchemaMap = {
   network: Record<string, unknown>;
@@ -103,23 +100,27 @@ function assertExpectedProtocolDefinition(
   expectedDefinition: ProtocolDefinition,
   installedDefinition: unknown
 ) {
+  // Structural checks only (protocol URI, type names, paths): `$`-prefixed
+  // keys — including the owner-derived $keyAgreement blocks the installer
+  // injects — are never part of the comparison.
   const installed = protocolDefinition(installedDefinition);
+  const expected = expectedDefinition;
   if (!installed) {
     return;
   }
 
-  if (installed.protocol !== expectedDefinition.protocol) {
+  if (installed.protocol !== expected.protocol) {
     throw new Error(`${label}: wallet installed an unexpected protocol definition.`);
   }
 
-  const expectedTypes = isRecord(expectedDefinition.types) ? Object.keys(expectedDefinition.types) : [];
+  const expectedTypes = isRecord(expected.types) ? Object.keys(expected.types) : [];
   const installedTypes = isRecord(installed.types) ? Object.keys(installed.types) : [];
   const missingTypes = expectedTypes.filter((type) => !installedTypes.includes(type));
   if (missingTypes.length > 0) {
     throw new Error(`${label}: wallet protocol is missing types: ${missingTypes.join(", ")}.`);
   }
 
-  const expectedPaths = collectProtocolPaths(expectedDefinition.structure);
+  const expectedPaths = collectProtocolPaths(expected.structure);
   const installedPaths = collectProtocolPaths(installed.structure);
   const missingPaths = expectedPaths.filter((path) => !installedPaths.includes(path));
   if (missingPaths.length > 0) {

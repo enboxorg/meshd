@@ -7,7 +7,9 @@ import {
   buildMeshdInviteURL,
   createMeshdInvite,
   createMeshdNetwork,
+  DELEGATE_SESSION_REQUIRED_ERROR,
   fetchMeshdNetworks,
+  rejectMeshdNodeRequest,
   updateMeshdNodeExpiry,
   updateMeshdNodeLabel,
   type MeshdAdminAgent,
@@ -43,22 +45,28 @@ function recordEntry(recordId: string, protocolPath: string, data: Record<string
 
 function createFakeSession(options: {
   delegate?: boolean;
+  grant?: boolean;
   endpoints?: string[];
   queryEntries?: unknown[];
   recordIds?: string[];
 } = {}) {
   const requests: CapturedRequest[] = [];
-  const pushes: CapturedRequest[] = [];
+  const pushes: Array<string | undefined> = [];
   const recordIds = [...(options.recordIds ?? ["record-1", "record-2", "record-3"])];
   let cid = 0;
 
   const agent: MeshdAdminAgent = {
     permissions: {
-      getPermissionForRequest: vi.fn(async (request) => ({
-        message: {
-          grant: `${request.protocol}:${String(request.messageType)}`
+      getPermissionForRequest: vi.fn(async (request) => {
+        if (options.grant === false) {
+          throw new Error(`CachedPermissions: No permissions found for ${String(request.messageType)}`);
         }
-      }))
+        return {
+          message: {
+            grant: `${request.protocol}:${String(request.messageType)}`
+          }
+        };
+      })
     },
     dwn: {
       getDwnEndpointUrlsForTarget: vi.fn(async () => options.endpoints ?? ["https://dev.aws.dwn.enbox.id"])
@@ -84,17 +92,18 @@ function createFakeSession(options: {
         messageCid: `cid-${++cid}`
       };
     }),
-    sendDwnRequest: vi.fn(async (request: CapturedRequest) => {
-      pushes.push(request);
-      return { reply: { status: { code: 202, detail: "Accepted" } } };
-    })
+    sync: {
+      sync: vi.fn(async (direction?: "push" | "pull") => {
+        pushes.push(direction);
+      })
+    }
   };
 
   return {
     session: {
       agent,
       ownerDid: "did:example:owner",
-      ...(options.delegate ? { delegateDid: "did:example:delegate" } : {})
+      ...(options.delegate === false ? {} : { delegateDid: "did:example:delegate" })
     } satisfies MeshdAdminSession,
     agent,
     requests,
@@ -150,14 +159,9 @@ describe("meshd admin DWN operations", () => {
       meshCIDR: "10.201.0.0/16",
       anchorEndpoint: "https://dev.aws.dwn.enbox.id"
     });
-    expect(pushes).toEqual([
-      {
-        author: "did:example:owner",
-        target: "did:example:owner",
-        messageType: DwnInterface.RecordsWrite,
-        messageCid: "cid-1"
-      }
-    ]);
+    // Remote propagation goes through the delegate-aware sync engine —
+    // never through an owner-authored sendDwnRequest push.
+    expect(pushes).toEqual(["push"]);
   });
 
   it("uses the beta DWN endpoint when the owner does not publish one", async () => {
@@ -349,15 +353,6 @@ describe("meshd admin DWN operations", () => {
       addedAt: "2026-06-24T00:00:00Z",
       expiresAt: "2026-06-25T00:00:00Z",
       sourceDWN: "https://node.dwn.example",
-      nodeKeyDelivery: {
-        rootKeyId: "did:example:node#1",
-        publicKeyJwk: {
-          kid: "did:example:node#1",
-          kty: "OKP",
-          crv: "X25519",
-          x: "abc"
-        }
-      },
       createdAt: "2026-06-24T00:00:00Z"
     }, "2026-07-01T00:00:00Z");
 
@@ -384,16 +379,7 @@ describe("meshd admin DWN operations", () => {
       ownerDID: "did:example:owner",
       memberDID: "did:example:owner",
       delegateDID: "did:example:delegate",
-      sourceDWN: "https://node.dwn.example",
-      nodeKeyDelivery: {
-        rootKeyId: "did:example:node#1",
-        publicKeyJwk: {
-          kid: "did:example:node#1",
-          kty: "OKP",
-          crv: "X25519",
-          x: "abc"
-        }
-      }
+      sourceDWN: "https://node.dwn.example"
     });
     expect(requests[1]).toMatchObject({
       messageType: DwnInterface.RecordsWrite,
@@ -531,6 +517,55 @@ describe("meshd admin DWN operations", () => {
       expiresAt: "2026-06-25T00:00:00Z"
     });
     await expect(blobJson(requests[0].dataStream)).resolves.not.toHaveProperty("label");
+  });
+
+  it("fails closed when the session has no delegate identity (never authors as owner)", async () => {
+    const { session, agent, requests, pushes } = createFakeSession({ delegate: false });
+
+    await expect(createMeshdNetwork(session, {
+      name: "Home mesh",
+      meshCIDR: "10.200.0.0/16"
+    })).rejects.toThrow(DELEGATE_SESSION_REQUIRED_ERROR);
+
+    await expect(fetchMeshdNetworks(session)).rejects.toThrow(DELEGATE_SESSION_REQUIRED_ERROR);
+
+    await expect(rejectMeshdNodeRequest(session, {
+      recordId: "request-record",
+      nodeDID: "did:example:node"
+    })).rejects.toThrow(DELEGATE_SESSION_REQUIRED_ERROR);
+
+    expect(DELEGATE_SESSION_REQUIRED_ERROR).toContain("reconnect your wallet");
+    expect(agent.processDwnRequest).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(0);
+    expect(pushes).toHaveLength(0);
+  });
+
+  it("fails closed when the wallet session holds no matching delegated grant", async () => {
+    const { session, agent, requests } = createFakeSession({ grant: false });
+
+    await expect(createMeshdNetwork(session, {
+      name: "Home mesh",
+      meshCIDR: "10.200.0.0/16"
+    })).rejects.toThrow(`The wallet session did not grant ${MESHD_PROTOCOL_URI} access to this dashboard.`);
+
+    await expect(fetchMeshdNetworks(session)).rejects.toThrow("reconnect your wallet");
+
+    expect(agent.processDwnRequest).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(0);
+  });
+
+  it("keeps a failed remote push non-fatal (sync retries in the background)", async () => {
+    const { session, agent } = createFakeSession({ recordIds: ["network-record"] });
+    (agent.sync!.sync as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("SyncEngineLevel: Sync operation is already in progress.")
+    );
+
+    const network = await createMeshdNetwork(session, {
+      name: "Home mesh",
+      meshCIDR: "10.200.0.0/16"
+    });
+
+    expect(network.recordId).toBe("network-record");
   });
 
   it("fetches and sorts network records through delegated records queries", async () => {

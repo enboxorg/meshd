@@ -43,7 +43,6 @@ import {
   definitionsMatch,
   hasEncryptedTypes,
   hasEncryptionKeysInstalled,
-  stripKeyAgreementPlaceholders,
 } from './definition-utils.ts';
 
 // ─── stdout hygiene ─────────────────────────────────────────────────
@@ -325,19 +324,9 @@ async function main(): Promise<void> {
       `${request.permissionRequests.length} protocol(s), delegate ${request.delegateDid ?? '<wallet-minted>'}`,
     );
 
-    // 6. Strip placeholder $keyAgreement nodes from the requested protocol
-    //    definitions; the agent injects owner-derived keys during configure.
-    for (const permissionRequest of request.permissionRequests) {
-      const stripped = stripKeyAgreementPlaceholders(permissionRequest.protocolDefinition);
-      if (stripped > 0) {
-        console.error(
-          `approver: stripped ${stripped} placeholder $keyAgreement node(s) from ` +
-          `${permissionRequest.protocolDefinition.protocol}`,
-        );
-      }
-    }
-
-    // 7. Install the requested protocols on the owner tenant (local + remote).
+    // 6. Install the requested protocols on the owner tenant (local + remote).
+    //    Authored definitions carry no $keyAgreement; the agent injects
+    //    owner-derived keys during configure.
     for (const permissionRequest of request.permissionRequests) {
       await prepareProtocol({
         agent,

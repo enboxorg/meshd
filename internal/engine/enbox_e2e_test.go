@@ -25,6 +25,7 @@ package engine_test
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -256,10 +257,7 @@ func connectViaApprover(t *testing.T, ctx context.Context, p connectParams) *enb
 
 	pinCh := make(chan string, 1)
 	approverErr := make(chan error, 1)
-	meshDef, err := protocols.MeshProtocolDefinitionForConnect()
-	if err != nil {
-		t.Fatalf("preparing protocol definition: %v", err)
-	}
+	meshDef := json.RawMessage(protocols.MeshProtocolJSON)
 
 	res, err := enboxconnect.Connect(ctx, enboxconnect.Options{
 		AppName:          "meshd e2e",

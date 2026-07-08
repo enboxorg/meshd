@@ -3,47 +3,6 @@
  * headless approver and the selfcheck. No enbox imports — plain JSON walking.
  */
 
-/**
- * Strip placeholder `$keyAgreement` nodes (missing or empty `publicKeyJwk`,
- * e.g. `{"rootKeyId": "#dwn-enc", "publicKeyJwk": {}}`) from a protocol
- * definition, in place.
- *
- * Client-authored definitions (meshd's protocols/wireguard-mesh.json) carry
- * such placeholders to mark where the wallet must inject owner-derived
- * X25519 public keys. The agent's ProtocolsConfigure with `encryption: true`
- * derives and injects real keys at every path; stripping the placeholders
- * first keeps the definition valid for any non-encrypted install path and
- * makes the "wallet injects the real keys" contract explicit.
- *
- * @returns the number of placeholder nodes removed.
- */
-export function stripKeyAgreementPlaceholders(definition: any): number {
-  let stripped = 0;
-
-  const walk = (ruleSet: any): void => {
-    if (ruleSet === null || typeof ruleSet !== 'object' || Array.isArray(ruleSet)) {
-      return;
-    }
-    if ('$keyAgreement' in ruleSet && isKeyAgreementPlaceholder(ruleSet.$keyAgreement)) {
-      delete ruleSet.$keyAgreement;
-      stripped += 1;
-    }
-    for (const [key, child] of Object.entries(ruleSet)) {
-      if (!key.startsWith('$')) {
-        walk(child);
-      }
-    }
-  };
-
-  if ('$keyAgreement' in definition && isKeyAgreementPlaceholder(definition.$keyAgreement)) {
-    delete definition.$keyAgreement;
-    stripped += 1;
-  }
-  walk(definition.structure);
-
-  return stripped;
-}
-
 /** A `$keyAgreement` node without a usable X25519 public key. */
 export function isKeyAgreementPlaceholder(node: any): boolean {
   return node !== null && typeof node === 'object' &&

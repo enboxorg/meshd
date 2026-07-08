@@ -1,6 +1,6 @@
 import type { AuthManagerOptions, Permission, ProtocolRequest, WalletOption } from "@enbox/browser";
 
-import meshProtocolDefinition from "../../../protocols/wireguard-mesh.json";
+import meshProtocolDefinitionJson from "../../../protocols/wireguard-mesh.json";
 
 export const MESHD_PROTOCOL_URI = "https://enbox.id/protocols/wireguard-mesh";
 
@@ -30,7 +30,7 @@ export const DWN_ENDPOINTS = (
 ).split(",").map((endpoint: string) => endpoint.trim()).filter(Boolean);
 export const DEFAULT_DWN_ENDPOINT = DWN_ENDPOINTS[0] || "https://dev.aws.dwn.enbox.id";
 
-export const MeshProtocolDefinition = meshProtocolDefinition;
+export const MeshProtocolDefinition = meshProtocolDefinitionJson;
 
 export const DAPP_PROTOCOLS = [
   { definition: MeshProtocolDefinition, permissions: ADMIN_PERMISSIONS }
