@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.4](https://github.com/enboxorg/meshd/compare/v0.14.3...v0.14.4) (2026-07-08)
+
+
+### Bug Fixes
+
+* **cli:** member-associated nodes read the peer map with the network/member role ([#183](https://github.com/enboxorg/meshd/issues/183)) ([24a2e2d](https://github.com/enboxorg/meshd/commit/24a2e2daeacb7772fc86ebc58cc9e55e66ed6b66))
+
 ## [0.14.3](https://github.com/enboxorg/meshd/compare/v0.14.2...v0.14.3) (2026-07-08)
 
 
