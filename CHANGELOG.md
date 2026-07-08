@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.2](https://github.com/enboxorg/meshd/compare/v0.14.1...v0.14.2) (2026-07-08)
+
+
+### Bug Fixes
+
+* **admin:** polyfill Buffer/process in the service worker ([#177](https://github.com/enboxorg/meshd/issues/177)) ([e87aff3](https://github.com/enboxorg/meshd/commit/e87aff3695ce43f5ac3a86e18b3ba2a1535b0c8c))
+* **install:** add PATH for fish shells ([#178](https://github.com/enboxorg/meshd/issues/178)) ([04e1553](https://github.com/enboxorg/meshd/commit/04e1553af3b7400030e7d45d00be33dd8e749632))
+
 ## [0.14.1](https://github.com/enboxorg/meshd/compare/v0.14.0...v0.14.1) (2026-07-08)
 
 
