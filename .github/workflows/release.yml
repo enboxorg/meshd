@@ -15,7 +15,10 @@ permissions:
 jobs:
   build-and-upload:
     name: Build ${{ matrix.os }}-${{ matrix.arch }}
-    runs-on: ubuntu-latest
+    # darwin targets build on a macOS runner so the Mach-O binaries are ad-hoc
+    # code-signed; Apple Silicon SIGKILLs unsigned binaries. Everything else
+    # cross-compiles on Linux.
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
@@ -25,36 +28,43 @@ jobs:
             goos: linux
             goarch: amd64
             ext: tar.gz
+            runner: ubuntu-latest
           - os: linux
             arch: arm64
             goos: linux
             goarch: arm64
             ext: tar.gz
+            runner: ubuntu-latest
           - os: darwin
             arch: x64
             goos: darwin
             goarch: amd64
             ext: tar.gz
+            runner: macos-latest
           - os: darwin
             arch: arm64
             goos: darwin
             goarch: arm64
             ext: tar.gz
+            runner: macos-latest
           - os: windows
             arch: x64
             goos: windows
             goarch: amd64
             ext: zip
+            runner: ubuntu-latest
           - os: windows
             arch: arm64
             goos: windows
             goarch: arm64
             ext: zip
+            runner: ubuntu-latest
           - os: freebsd
             arch: x64
             goos: freebsd
             goarch: amd64
             ext: tar.gz
+            runner: ubuntu-latest
 
     steps:
       - name: Checkout repository
@@ -81,6 +91,12 @@ jobs:
           tag="${{ github.event.inputs.tag || github.event.release.tag_name }}"
           version="${tag#v}"
           go build -trimpath -ldflags="-s -w -X main.version=${version}" -o "$out" ./cmd/meshd
+
+      - name: Ad-hoc code-sign (macOS)
+        if: matrix.os == 'darwin'
+        run: |
+          codesign --force --sign - dist/release/meshd
+          codesign --verify --verbose dist/release/meshd
 
       - name: Package artifact
         run: |
