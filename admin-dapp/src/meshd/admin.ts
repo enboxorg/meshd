@@ -398,7 +398,16 @@ async function queryRecords(
           ...extraFilter
         },
         dateSort: "createdAscending"
-      }
+      },
+      // Mesh records (preAuthKey, member/node payloads) are written with
+      // encryption: true. The agent only auto-decrypts reply data when the
+      // *query* also carries this flag (maybeDecryptReply early-returns
+      // otherwise), so without it encrypted records come back as ciphertext
+      // that decodeRecordPayload cannot parse — leaving preAuthKey lookups and
+      // the topology invite list silently empty. Plaintext records (e.g.
+      // network) are unaffected: decryption only touches entries whose own
+      // encryption descriptor is set.
+      encryption: true
     },
     protocol
   );
