@@ -97,3 +97,19 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.tag || github.event.release.tag_name }}
           files: ${{ env.artifact }}
+
+  install-smoke:
+    name: Smoke test public installer
+    needs: build-and-upload
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install latest release via meshd.sh
+        env:
+          MESHD_INSTALL_REQUESTED_VERSION: ${{ github.event.inputs.tag }}
+          MESHD_INSTALL_EXPECTED_VERSION: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+        run: ./scripts/e2e/install-smoke.sh
