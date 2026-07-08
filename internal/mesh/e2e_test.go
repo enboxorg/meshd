@@ -2,6 +2,7 @@ package mesh_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"testing"
@@ -104,7 +105,6 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 	protocolDef, err := dwncrypto.InjectEncryptionDirectives(
 		protocols.MeshProtocolJSON,
 		nodeA.DID.EncryptionPrivateKey,
-		nodeA.DID.EncryptionKeyID(),
 	)
 	if err != nil {
 		t.Fatalf("injecting encryption directives: %v", err)
@@ -210,7 +210,6 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 	protocolDefB, err := dwncrypto.InjectEncryptionDirectives(
 		protocols.MeshProtocolJSON,
 		nodeB.DID.EncryptionPrivateKey,
-		nodeB.DID.EncryptionKeyID(),
 	)
 	if err != nil {
 		t.Fatalf("injecting encryption directives for node B: %v", err)
@@ -275,11 +274,17 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 	}
 
 	// ---- Step 10: Verify local encryption round-trip ----
+	// The sealed write path: one protocolPath entry to the published
+	// $keyAgreement key plus one roleAudience entry per reading role.
 	t.Log("Step 10: Verifying local encryption round-trip")
 	testPlaintext := []byte(`{"test":"e2e encryption verification","timestamp":"2026-02-24T00:00:00Z"}`)
-	recipients, err := nodeA.EncMgr.DeriveWriteEncryption("network/node")
+	audienceSrc := &memoryAudienceSource{}
+	recipients, err := dwncrypto.BuildWriteEncryption(ctx, protocolDef, "network/node", networkRecordID, audienceSrc)
 	if err != nil {
-		t.Fatalf("deriving node encryption: %v", err)
+		t.Fatalf("building node write encryption: %v", err)
+	}
+	if len(recipients) < 2 {
+		t.Fatalf("expected protocolPath + roleAudience entries, got %d", len(recipients))
 	}
 
 	ciphertext, enc, err := dwncrypto.EncryptData(testPlaintext, recipients)
@@ -292,6 +297,7 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 	}
 	t.Logf("  Encrypted %d bytes → %d bytes ciphertext", len(testPlaintext), len(ciphertext))
 
+	// Owner decrypts via the protocolPath entry.
 	decryptKey, err := nodeA.EncMgr.DeriveDecryptionKey("network/node")
 	if err != nil {
 		t.Fatalf("DeriveDecryptionKey: %v", err)
@@ -305,37 +311,64 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 	if string(decrypted) != string(testPlaintext) {
 		t.Fatalf("decrypted data mismatch: got %q, want %q", decrypted, testPlaintext)
 	}
-	t.Logf("  Decryption verified: %q", string(decrypted))
+	t.Logf("  Owner decryption verified: %q", string(decrypted))
 
-	// ---- Step 11: Verify hierarchical key property ----
-	// A key derived at "network" should be able to decrypt records at
-	// "network/node" (parent can decrypt children).
-	t.Log("Step 11: Verifying hierarchical key property")
-	nodePlaintext := []byte(`{"meshIP":"10.200.0.5","addedAt":"2026-02-24","hostname":"test-node"}`)
-	nodeRecipients, err := nodeA.EncMgr.DeriveWriteEncryption("network/node")
+	// A role holder decrypts via the roleAudience entry with the audience
+	// private key.
+	roleInfo := dwncrypto.RoleAudienceEntryInfo(enc)
+	if roleInfo == nil {
+		t.Fatal("encrypted record has no roleAudience keyEncryption entry")
+	}
+	audiencePriv := audienceSrc.privateKey(t, roleInfo.KeyID)
+	roleDec, err := dwncrypto.NewRoleAudienceDecrypter(audiencePriv)
 	if err != nil {
-		t.Fatalf("deriving node encryption: %v", err)
+		t.Fatalf("NewRoleAudienceDecrypter: %v", err)
+	}
+	defer roleDec.Close()
+	roleDecrypted, err := roleDec.Decrypt(ciphertext, enc)
+	if err != nil {
+		t.Fatalf("roleAudience Decrypt: %v", err)
+	}
+	if string(roleDecrypted) != string(testPlaintext) {
+		t.Fatalf("role decrypted mismatch: got %q, want %q", roleDecrypted, testPlaintext)
+	}
+	t.Log("  Role-audience decryption verified")
+
+	// ---- Step 11: Verify nested-path encryption round-trip ----
+	// A child record (network/node/nodeInfo) built through the same sealed
+	// write path decrypts with the leaf key derived from the owner root.
+	t.Log("Step 11: Verifying nested-path encryption round-trip")
+	nodePlaintext := []byte(`{"hostname":"test-node","os":"linux"}`)
+	nodeRecipients, err := dwncrypto.BuildWriteEncryption(
+		ctx,
+		protocolDef,
+		"network/node/nodeInfo",
+		networkRecordID+"/"+regA.NodeRecordID,
+		audienceSrc,
+	)
+	if err != nil {
+		t.Fatalf("building nodeInfo write encryption: %v", err)
 	}
 
 	nodeCT, nodeEnc, err := dwncrypto.EncryptData(nodePlaintext, nodeRecipients)
 	if err != nil {
-		t.Fatalf("encrypting node data: %v", err)
+		t.Fatalf("encrypting nodeInfo data: %v", err)
 	}
 
-	nodeDecryptKey, err := nodeA.EncMgr.DeriveDecryptionKey("network/node")
+	nodeDecryptKey, err := nodeA.EncMgr.DeriveDecryptionKey("network/node/nodeInfo")
 	if err != nil {
-		t.Fatalf("DeriveDecryptionKey for node: %v", err)
+		t.Fatalf("DeriveDecryptionKey for nodeInfo: %v", err)
 	}
 
 	nodeDecrypted, err := dwncrypto.DecryptData(nodeCT, nodeEnc, nodeDecryptKey)
 	if err != nil {
-		t.Fatalf("DecryptData for node: %v", err)
+		t.Fatalf("DecryptData for nodeInfo: %v", err)
 	}
 
 	if string(nodeDecrypted) != string(nodePlaintext) {
-		t.Fatalf("node decrypted mismatch: got %q, want %q", nodeDecrypted, nodePlaintext)
+		t.Fatalf("nodeInfo decrypted mismatch: got %q, want %q", nodeDecrypted, nodePlaintext)
 	}
-	t.Logf("  Node decryption verified: %q", string(nodeDecrypted))
+	t.Logf("  nodeInfo decryption verified: %q", string(nodeDecrypted))
 
 	// ---- Summary ----
 	t.Log("=== E2E Test Summary ===")
@@ -343,8 +376,53 @@ func TestE2ENetworkCreateJoinQueryDecrypt(t *testing.T) {
 	t.Logf("  Node A: %s → %s", nodeA.DID.URI[:30]+"...", meshIPA)
 	t.Logf("  Node B: %s → %s", nodeB.DID.URI[:30]+"...", meshIPB)
 	t.Logf("  Nodes found: %d", len(nodes))
-	t.Log("  Encryption: verified (HKDF → ECDH-ES+A256KW → A256GCM)")
-	t.Log("  Hierarchical keys: verified")
+	t.Log("  Encryption: verified (sealed model: protocolPath + roleAudience entries)")
+	t.Log("  Nested-path keys: verified")
+}
+
+// memoryAudienceSource is a mint-free dwncrypto.AudienceSource for local
+// round-trip tests: it generates one random audience key per tuple in memory
+// instead of writing `$encryption/audience` records to a DWN.
+type memoryAudienceSource struct {
+	keys map[string]*dwncrypto.RoleAudienceKeyMaterial
+}
+
+func (s *memoryAudienceSource) Current(_ context.Context, protocol, rolePath, contextID string) ([]byte, string, error) {
+	if s.keys == nil {
+		s.keys = make(map[string]*dwncrypto.RoleAudienceKeyMaterial)
+	}
+	tuple := protocol + "\n" + rolePath + "\n" + contextID
+	km, ok := s.keys[tuple]
+	if !ok {
+		var err error
+		km, err = dwncrypto.GenerateAudienceKey()
+		if err != nil {
+			return nil, "", err
+		}
+		s.keys[tuple] = km
+	}
+	pub, err := base64.RawURLEncoding.DecodeString(km.PublicKeyJwk.X)
+	if err != nil {
+		return nil, "", err
+	}
+	return pub, km.KeyID, nil
+}
+
+// privateKey returns the raw audience private key for a minted keyId.
+func (s *memoryAudienceSource) privateKey(t *testing.T, keyID string) []byte {
+	t.Helper()
+	for _, km := range s.keys {
+		if km.KeyID != keyID {
+			continue
+		}
+		priv, err := base64.RawURLEncoding.DecodeString(km.PrivateKeyJwk.D)
+		if err != nil {
+			t.Fatalf("decoding audience private key: %v", err)
+		}
+		return priv
+	}
+	t.Fatalf("no audience key minted for keyId %s", keyID)
+	return nil
 }
 
 // TestE2EMeshIPAllocation verifies that different DIDs get different mesh IPs

@@ -33,11 +33,14 @@ var (
 
 // dwnClientOptions holds configuration for the DWN control client.
 type dwnClientOptions struct {
-	logger       *slog.Logger
-	resolver     Resolver
-	encManager   *dwncrypto.EncryptionKeyManager
-	protocolRole string
-	grantID      string
+	logger         *slog.Logger
+	resolver       Resolver
+	encManager     *dwncrypto.EncryptionKeyManager
+	protocolRole   string
+	grantID        string
+	delegatedGrant json.RawMessage
+	grantKeys      *GrantKeySet
+	audienceSource *SealedAudienceSource
 }
 
 // Option configures a DWNClient.
@@ -82,6 +85,32 @@ func WithPermissionGrantID(grantID string) Option {
 	}
 }
 
+// WithDelegatedGrant sets the delegated grant (full grant RecordsWrite
+// message) invoked for read queries. Takes precedence over a plain
+// permission grant ID.
+func WithDelegatedGrant(grant json.RawMessage) Option {
+	return func(o *dwnClientOptions) {
+		o.delegatedGrant = grant
+	}
+}
+
+// WithGrantKeys sets the delegate's grant-key subtree decrypters, used to
+// decrypt any record whose protocol path is covered by a delivered grant key.
+func WithGrantKeys(keys *GrantKeySet) Option {
+	return func(o *dwnClientOptions) {
+		o.grantKeys = keys
+	}
+}
+
+// WithAudienceSource sets the sealed audience source used to recover
+// role-audience private keys (via seal) when decrypting role-readable
+// records.
+func WithAudienceSource(src *SealedAudienceSource) Option {
+	return func(o *dwnClientOptions) {
+		o.audienceSource = src
+	}
+}
+
 // DWNClient reads mesh state from DWN records and produces MapResponse
 // snapshots for the networking engine.
 type DWNClient struct {
@@ -101,6 +130,16 @@ type DWNClient struct {
 
 	// grantID is an optional DWN permission grant invoked for read queries.
 	grantID string
+
+	// delegatedGrant is an optional delegated grant message invoked for read
+	// queries. Takes precedence over grantID.
+	delegatedGrant json.RawMessage
+
+	// grantKeys holds the delegate's grant-key subtree decrypters.
+	grantKeys *GrantKeySet
+
+	// audienceSource recovers role-audience private keys via seal unsealing.
+	audienceSource *SealedAudienceSource
 
 	mu      sync.RWMutex
 	network *NetworkConfig
@@ -129,8 +168,12 @@ func NewDWNClient(
 		opt(options)
 	}
 
+	// Non-anchor nodes default to role-based reads — unless a delegated
+	// grant authorizes the queries (the delegated author is the owner, not
+	// a role holder, and a message cannot invoke both).
 	protocolRole := options.protocolRole
-	if protocolRole == "" && anchorTenant != "" && selfDID != "" && anchorTenant != selfDID {
+	if protocolRole == "" && len(options.delegatedGrant) == 0 &&
+		anchorTenant != "" && selfDID != "" && anchorTenant != selfDID {
 		protocolRole = "network/node"
 	}
 
@@ -145,10 +188,22 @@ func NewDWNClient(
 		encManager:      options.encManager,
 		protocolRole:    protocolRole,
 		grantID:         options.grantID,
+		delegatedGrant:  options.delegatedGrant,
+		grantKeys:       options.grantKeys,
+		audienceSource:  options.audienceSource,
 		members:         make(map[string]*MemberRecord),
 		nodes:           make(map[string]*NodeRecord),
 		peerEndpoints:   make(map[string]*PeerEndpointInfo),
 	}
+}
+
+// readAuth builds the message auth for read queries at the given role. A
+// delegated grant takes precedence over a plain permission grant.
+func (c *DWNClient) readAuth(role string) dwn.MessageAuth {
+	if len(c.delegatedGrant) > 0 {
+		return dwn.MessageAuth{ProtocolRole: role, DelegatedGrant: c.delegatedGrant}
+	}
+	return dwn.MessageAuth{ProtocolRole: role, PermissionGrantID: c.grantID}
 }
 
 // LoadState reads the current mesh state from the anchor DWN and builds
@@ -173,9 +228,9 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 		slog.String("recordId", c.networkRecordID),
 	)
 
-	netResp, err := c.anchorDWN.RecordsRead(ctx, c.anchorTenant, dwn.RecordsFilter{
+	netResp, err := c.anchorDWN.RecordsReadWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
 		RecordID: c.networkRecordID,
-	}, role, c.grantID)
+	}, c.readAuth(role))
 	if err != nil {
 		return nil, fmt.Errorf("reading network: %w", err)
 	}
@@ -201,11 +256,11 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	// 2. Query owner-provisioned node records (network/node).
 	c.logger.DebugContext(ctx, "querying owner-provisioned nodes")
 
-	nodesResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
+	nodesResp, err := c.anchorDWN.RecordsQueryWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/node",
 		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, role, c.grantID)
+	}, "createdAscending", nil, c.readAuth(role))
 	if err != nil {
 		return nil, fmt.Errorf("querying nodes: %w", err)
 	}
@@ -228,11 +283,11 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	// 3. Query member records (network/member) to discover members.
 	c.logger.DebugContext(ctx, "querying members")
 
-	membersResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
+	membersResp, err := c.anchorDWN.RecordsQueryWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/member",
 		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, role, c.grantID)
+	}, "createdAscending", nil, c.readAuth(role))
 	if err != nil {
 		// Non-fatal: members are optional (a simple personal mesh may have none).
 		c.logger.DebugContext(ctx, "querying members failed", slog.Any("error", err))
@@ -279,11 +334,11 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 
 	memberNodeCount := 0
 	for _, query := range c.memberNodeParentQueries() {
-		memberNodesResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
+		memberNodesResp, err := c.anchorDWN.RecordsQueryWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
 			Protocol:     protocols.MeshProtocolURI,
 			ProtocolPath: "network/member/node",
 			ContextID:    query.ParentContextID,
-		}, "createdAscending", nil, role, c.grantID)
+		}, "createdAscending", nil, c.readAuth(role))
 		if err != nil {
 			// Non-fatal: member nodes are optional.
 			c.logger.DebugContext(ctx, "querying member nodes failed",
@@ -313,11 +368,11 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	c.logger.DebugContext(ctx, "loaded member nodes", slog.Int("count", memberNodeCount))
 
 	// 5. Query relay records.
-	relayResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
+	relayResp, err := c.anchorDWN.RecordsQueryWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/relay",
 		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, role, c.grantID)
+	}, "createdAscending", nil, c.readAuth(role))
 	if err != nil {
 		return nil, fmt.Errorf("querying relays: %w", err)
 	}
@@ -341,11 +396,11 @@ func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
 	c.mu.Unlock()
 
 	// 6. Query ACL policy record.
-	aclResp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
+	aclResp, err := c.anchorDWN.RecordsQueryWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: "network/aclPolicy",
 		ContextID:    c.networkRecordID,
-	}, "createdDescending", nil, role, c.grantID)
+	}, "createdDescending", nil, c.readAuth(role))
 	if err != nil {
 		// Non-fatal: ACL policy is optional. Default to allow-all.
 		c.logger.DebugContext(ctx, "querying ACL policy failed", slog.Any("error", err))
@@ -502,11 +557,11 @@ func (c *DWNClient) loadNodeChildRecords(ctx context.Context, childType string, 
 // loadChildRecords queries child records at the given protocol path under a
 // direct parent context and processes each entry with the provided handler.
 func (c *DWNClient) loadChildRecords(ctx context.Context, protocolPath string, parentContextID string, role string, handler func(ctx context.Context, entry json.RawMessage, decryptor EntryDecryptor)) int {
-	resp, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
+	resp, err := c.anchorDWN.RecordsQueryWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: protocolPath,
 		ContextID:    parentContextID,
-	}, "createdDescending", nil, role, c.grantID)
+	}, "createdDescending", nil, c.readAuth(role))
 	if err != nil {
 		c.logger.DebugContext(ctx, "querying child records failed",
 			slog.String("path", protocolPath),
@@ -1240,25 +1295,49 @@ func ParseEntryData(entry json.RawMessage, dst any, decryptor EntryDecryptor) er
 type EntryDecryptor func(ciphertext []byte, enc *dwncrypto.Encryption) ([]byte, error)
 
 // makeDecryptor creates an encryption-v1 decryptor for records read at the
-// given protocolPath. Returns nil if no key manager is available.
+// given protocolPath. Returns nil if no key material is available.
 //
-//   - The network owner derives the protocolPath leaf key from its root (HKDF)
-//     and decrypts the record's protocolPath keyEncryption entry.
-//   - A role-holding node decrypts role-readable records via the roleAudience
-//     scheme: it fetches the EncryptionProtocol audienceKey record delivered to
-//     it, recovers the audience private key, and unwraps the record's
-//     roleAudience keyEncryption entry.
+// Decryption chain (first applicable wins):
+//  1. Network owner: derive the protocolPath leaf key from the encryption
+//     root and unwrap the record's protocolPath keyEncryption entry.
+//  2. Delegate grant keys: a delivered grant-key subtree covering the path
+//     decrypts the protocolPath entry directly.
+//  3. Role audience: recover the audience private key — by unsealing the
+//     `$encryption/audience` record (owner or grant-key seal coverage), or
+//     from a `$encryption/delivery` record addressed to this node — and
+//     unwrap the record's roleAudience entry.
+//  4. Fallback: protocolPath via this node's own root (records the reader
+//     authored on paths keyed to its own definition).
 func (c *DWNClient) makeDecryptor(ctx context.Context, protocolPath string) EntryDecryptor {
-	if c.encManager == nil {
+	if c.encManager == nil && c.grantKeys.Empty() && c.audienceSource == nil {
 		return nil
 	}
 
 	return func(ciphertext []byte, enc *dwncrypto.Encryption) ([]byte, error) {
-		if c.isNetworkOwner() {
+		if c.isNetworkOwner() && c.encManager != nil {
 			return c.decryptWithProtocolPath(ciphertext, enc, protocolPath)
 		}
-		if info := dwncrypto.RoleAudienceEntryInfo(enc); info != nil {
-			return c.decryptRoleAudience(ctx, ciphertext, enc, info)
+		if dec := c.grantKeys.DecrypterFor(protocols.MeshProtocolURI, protocolPath); dec != nil {
+			plaintext, err := dec.Decrypt(ciphertext, enc, protocols.MeshProtocolURI, protocolPath)
+			if err == nil {
+				return plaintext, nil
+			}
+			c.logger.Debug("grant-key decrypt failed, trying role audience",
+				slog.String("path", protocolPath), slog.Any("error", err))
+		}
+		if infos := dwncrypto.RoleAudienceEntryInfos(enc); len(infos) > 0 {
+			plaintext, err := c.decryptRoleAudience(ctx, ciphertext, enc, infos)
+			if err == nil {
+				return plaintext, nil
+			}
+			c.logger.Debug("role-audience decrypt failed",
+				slog.String("path", protocolPath), slog.Any("error", err))
+			if c.encManager == nil {
+				return nil, err
+			}
+		}
+		if c.encManager == nil {
+			return nil, fmt.Errorf("no key material decrypts record at %s", protocolPath)
 		}
 		// No roleAudience entry — attempt protocolPath (e.g. records the
 		// reader authored and can re-derive).
@@ -1283,68 +1362,123 @@ func (c *DWNClient) decryptWithProtocolPath(ciphertext []byte, enc *dwncrypto.En
 }
 
 // decryptRoleAudience decrypts a role-readable record via the roleAudience
-// scheme. It fetches the audienceKey record delivered to this node for the
-// record's (role, epoch, keyId), recovers the audience key, and unwraps the
-// record's roleAudience keyEncryption entry.
-func (c *DWNClient) decryptRoleAudience(ctx context.Context, ciphertext []byte, enc *dwncrypto.Encryption, info *dwncrypto.RoleAudienceInfo) ([]byte, error) {
-	akEnc, akData, err := c.fetchAudienceKeyRecord(ctx, info.KeyID)
-	if err != nil {
-		return nil, err
+// scheme. A record carries one roleAudience entry per reading role; entries
+// matching this reader's own role are tried first. Per entry, the audience
+// PRIVATE key for (protocol, rolePath, keyId) is recovered two ways:
+//
+//  1. Seal: the `$encryption/audience` record's sealedPrivateKey, unsealed
+//     with a role-path seal key this reader can derive (owner root or a
+//     covering grant-key subtree) via the audience source.
+//  2. Delivery: a `$encryption/delivery` record addressed to this node,
+//     decrypted with this node's own role-path key.
+func (c *DWNClient) decryptRoleAudience(ctx context.Context, ciphertext []byte, enc *dwncrypto.Encryption, infos []*dwncrypto.RoleAudienceInfo) ([]byte, error) {
+	// Prefer the entry for this reader's own role: seal/delivery lookups for
+	// other roles' tuples cannot succeed for a pure role holder.
+	if c.protocolRole != "" {
+		preferred := make([]*dwncrypto.RoleAudienceInfo, 0, len(infos))
+		var rest []*dwncrypto.RoleAudienceInfo
+		for _, info := range infos {
+			if info.RolePath == c.protocolRole {
+				preferred = append(preferred, info)
+			} else {
+				rest = append(rest, info)
+			}
+		}
+		infos = append(preferred, rest...)
 	}
-	return dwncrypto.DecryptRoleAudienceRecord(dwncrypto.RoleAudienceParams{
-		MeshEncryption:        enc,
-		MeshCiphertext:        ciphertext,
-		NodeEncRootKey:        c.encManager.RootPrivateKey,
-		AudienceKeyEncryption: akEnc,
-		AudienceKeyCiphertext: akData,
-	})
+
+	var errs []error
+	for _, info := range infos {
+		if c.audienceSource != nil {
+			audiencePriv, err := c.audienceSource.AudiencePrivateKeyByKeyID(ctx, info.Protocol, info.RolePath, info.KeyID)
+			if err == nil {
+				dec, err := dwncrypto.NewRoleAudienceDecrypter(audiencePriv)
+				clear(audiencePriv)
+				if err != nil {
+					return nil, err
+				}
+				plaintext, err := dec.Decrypt(ciphertext, enc)
+				dec.Close()
+				if err == nil {
+					return plaintext, nil
+				}
+				errs = append(errs, fmt.Errorf("%s seal decrypt: %w", info.RolePath, err))
+			} else {
+				errs = append(errs, fmt.Errorf("%s seal: %w", info.RolePath, err))
+			}
+		}
+
+		plaintext, err := c.decryptViaDelivery(ctx, ciphertext, enc, info)
+		if err == nil {
+			return plaintext, nil
+		}
+		errs = append(errs, fmt.Errorf("%s delivery: %w", info.RolePath, err))
+	}
+	return nil, fmt.Errorf("role audience key unavailable: %w", errors.Join(errs...))
 }
 
-// fetchAudienceKeyRecord queries the anchor DWN for the EncryptionProtocol
-// audienceKey record delivered to this node and returns its encryption-v1
-// envelope and ciphertext (the encrypted AudienceKeyPayload).
-func (c *DWNClient) fetchAudienceKeyRecord(ctx context.Context, keyID string) (*dwncrypto.Encryption, []byte, error) {
-	reply, err := c.anchorDWN.RecordsQuery(ctx, c.anchorTenant, dwn.RecordsFilter{
-		Protocol:     protocols.EncryptionProtocolURI,
-		ProtocolPath: "audienceKey",
+// decryptViaDelivery recovers the audience key from a `$encryption/delivery`
+// record addressed to this node and unwraps the record's roleAudience entry.
+// The delivery record is encrypted to this node's OWN role-path key, derived
+// from its encryption root.
+func (c *DWNClient) decryptViaDelivery(ctx context.Context, ciphertext []byte, enc *dwncrypto.Encryption, info *dwncrypto.RoleAudienceInfo) ([]byte, error) {
+	if c.encManager == nil {
+		return nil, fmt.Errorf("no encryption root available for delivery records")
+	}
+	reply, err := c.anchorDWN.RecordsQueryWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
+		Protocol:     info.Protocol,
+		ProtocolPath: dwncrypto.EncryptionControlDeliveryPath,
 		Recipient:    c.selfDID,
-	}, "createdDescending", nil, "", "")
+		Tags: map[string]any{
+			"protocol": info.Protocol,
+			"rolePath": info.RolePath,
+			"keyId":    info.KeyID,
+		},
+	}, "createdDescending", nil, dwn.MessageAuth{}) // recipient-readable, plain query
 	if err != nil {
-		return nil, nil, fmt.Errorf("querying audienceKey records: %w", err)
+		return nil, fmt.Errorf("querying delivery records: %w", err)
 	}
 	entries, err := dwn.QueryEntries(reply)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parsing audienceKey query: %w", err)
+		return nil, fmt.Errorf("parsing delivery query: %w", err)
 	}
 	for _, entry := range entries {
-		ak, ok := parseAudienceKeyEntry(entry)
-		if !ok || ak.keyID != keyID {
+		deliveryEnc, deliveryData, ok := entryEncryptionAndData(entry)
+		if !ok || deliveryEnc == nil {
 			continue
 		}
-		if ak.encryption == nil {
-			return nil, nil, fmt.Errorf("audienceKey record for keyId %s missing encryption", keyID)
+		payload, err := dwncrypto.DecryptDeliveryRecord(c.encManager.RootPrivateKey, info.Protocol, info.RolePath, deliveryEnc, deliveryData)
+		if err != nil {
+			c.logger.Debug("delivery record decrypt failed", slog.Any("error", err))
+			continue
 		}
-		return ak.encryption, ak.data, nil
+		if payload.KeyID != info.KeyID {
+			continue
+		}
+		audiencePriv, err := base64.RawURLEncoding.DecodeString(payload.KeyMaterial.PrivateKeyJwk.D)
+		if err != nil {
+			continue
+		}
+		dec, err := dwncrypto.NewRoleAudienceDecrypter(audiencePriv)
+		clear(audiencePriv)
+		if err != nil {
+			continue
+		}
+		plaintext, err := dec.Decrypt(ciphertext, enc)
+		dec.Close()
+		if err == nil {
+			return plaintext, nil
+		}
 	}
-	return nil, nil, fmt.Errorf("no audienceKey record found for keyId %s", keyID)
+	return nil, fmt.Errorf("no delivery record for keyId %s at %s", info.KeyID, info.RolePath)
 }
 
-// audienceKeyEntry holds the fields parsed from an audienceKey query entry.
-type audienceKeyEntry struct {
-	keyID      string
-	encryption *dwncrypto.Encryption
-	data       []byte
-}
-
-// parseAudienceKeyEntry extracts the encryption envelope, encoded data and
-// keyId tag from an audienceKey query entry (wrapped or flat form).
-func parseAudienceKeyEntry(entry json.RawMessage) (audienceKeyEntry, bool) {
+// entryEncryptionAndData extracts the encryption envelope and decoded data
+// from a query entry (wrapped or flat form).
+func entryEncryptionAndData(entry json.RawMessage) (*dwncrypto.Encryption, []byte, bool) {
 	type record struct {
 		EncodedData string                `json:"encodedData"`
 		Encryption  *dwncrypto.Encryption `json:"encryption"`
-		Descriptor  struct {
-			Tags map[string]any `json:"tags"`
-		} `json:"descriptor"`
 	}
 
 	rec := record{}
@@ -1355,16 +1489,15 @@ func parseAudienceKeyEntry(entry json.RawMessage) (audienceKeyEntry, bool) {
 		(wrapped.RecordsWrite.EncodedData != "" || wrapped.RecordsWrite.Encryption != nil) {
 		rec = wrapped.RecordsWrite
 	} else if err := json.Unmarshal(entry, &rec); err != nil {
-		return audienceKeyEntry{}, false
+		return nil, nil, false
 	}
 
 	if rec.EncodedData == "" {
-		return audienceKeyEntry{}, false
+		return nil, nil, false
 	}
 	data, err := base64.RawURLEncoding.DecodeString(rec.EncodedData)
 	if err != nil {
-		return audienceKeyEntry{}, false
+		return nil, nil, false
 	}
-	keyID, _ := rec.Descriptor.Tags["keyId"].(string)
-	return audienceKeyEntry{keyID: keyID, encryption: rec.Encryption, data: data}, true
+	return rec.Encryption, data, true
 }

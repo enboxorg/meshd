@@ -113,6 +113,11 @@ type WriteParams struct {
 	Published         *bool
 	PermissionGrantID string
 
+	// DelegatedGrant is the full delegated grant RecordsWrite message as
+	// received (including encodedData). When set, the write is signed as an
+	// author-delegate. Mutually exclusive with PermissionGrantID.
+	DelegatedGrant json.RawMessage
+
 	// Data is the record payload. For the DwnRequest, this should also
 	// be set on DwnRequest.DataStream for large payloads.
 	Data []byte
@@ -141,8 +146,8 @@ type WriteParams struct {
 	Squash bool
 
 	// EncryptionRecipients enables encryption for this write.
-	// When set, the data is encrypted with A256GCM and the CEK is
-	// wrapped per-recipient using ECDH-ES+A256KW.
+	// When set, the data is encrypted with A256CTR and the CEK is wrapped
+	// per recipient using X25519-HKDF-SHA256+A256KW.
 	EncryptionRecipients []dwncrypto.KeyEncryptionInput
 }
 
@@ -150,6 +155,10 @@ type WriteParams struct {
 type ReadParams struct {
 	Filter            RecordsFilter
 	PermissionGrantID string
+
+	// DelegatedGrant is the full delegated grant RecordsWrite message as
+	// received. Mutually exclusive with PermissionGrantID.
+	DelegatedGrant json.RawMessage
 }
 
 // QueryParams configures a RecordsQuery operation.
@@ -158,6 +167,10 @@ type QueryParams struct {
 	DateSort          string
 	Pagination        *Pagination
 	PermissionGrantID string
+
+	// DelegatedGrant is the full delegated grant RecordsWrite message as
+	// received. Mutually exclusive with PermissionGrantID.
+	DelegatedGrant json.RawMessage
 }
 
 // DeleteParams configures a RecordsDelete operation.
@@ -165,6 +178,10 @@ type DeleteParams struct {
 	RecordID          string
 	Prune             bool
 	PermissionGrantID string
+
+	// DelegatedGrant is the full delegated grant RecordsWrite message as
+	// received. Mutually exclusive with PermissionGrantID.
+	DelegatedGrant json.RawMessage
 }
 
 // SubscribeParams configures a RecordsSubscribe operation.
@@ -271,6 +288,7 @@ func (a *SimpleAgent) sendRecordsWrite(ctx context.Context, target string, req D
 		DataFormat:           params.DataFormat,
 		Published:            params.Published,
 		PermissionGrantID:    firstNonEmpty(params.PermissionGrantID, req.PermissionGrantID),
+		DelegatedGrant:       params.DelegatedGrant,
 		Data:                 data,
 		RecordID:             params.RecordID,
 		DateCreated:          params.DateCreated,
@@ -295,7 +313,11 @@ func (a *SimpleAgent) sendRecordsRead(ctx context.Context, target string, req Dw
 		return nil, fmt.Errorf("RecordsRead requires *ReadParams, got %T", req.MessageParams)
 	}
 
-	result, err := a.client.RecordsRead(ctx, target, params.Filter, req.ProtocolRole, firstNonEmpty(params.PermissionGrantID, req.PermissionGrantID))
+	result, err := a.client.RecordsReadWithAuth(ctx, target, params.Filter, MessageAuth{
+		ProtocolRole:      req.ProtocolRole,
+		PermissionGrantID: firstNonEmpty(params.PermissionGrantID, req.PermissionGrantID),
+		DelegatedGrant:    params.DelegatedGrant,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +335,11 @@ func (a *SimpleAgent) sendRecordsQuery(ctx context.Context, target string, req D
 		return nil, fmt.Errorf("RecordsQuery requires *QueryParams, got %T", req.MessageParams)
 	}
 
-	reply, err := a.client.RecordsQuery(ctx, target, params.Filter, params.DateSort, params.Pagination, req.ProtocolRole, firstNonEmpty(params.PermissionGrantID, req.PermissionGrantID))
+	reply, err := a.client.RecordsQueryWithAuth(ctx, target, params.Filter, params.DateSort, params.Pagination, MessageAuth{
+		ProtocolRole:      req.ProtocolRole,
+		PermissionGrantID: firstNonEmpty(params.PermissionGrantID, req.PermissionGrantID),
+		DelegatedGrant:    params.DelegatedGrant,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +356,11 @@ func (a *SimpleAgent) sendRecordsDelete(ctx context.Context, target string, req 
 		return nil, fmt.Errorf("RecordsDelete requires *DeleteParams, got %T", req.MessageParams)
 	}
 
-	reply, err := a.client.RecordsDelete(ctx, target, params.RecordID, params.Prune, req.ProtocolRole, firstNonEmpty(params.PermissionGrantID, req.PermissionGrantID))
+	reply, err := a.client.RecordsDeleteWithAuth(ctx, target, params.RecordID, params.Prune, MessageAuth{
+		ProtocolRole:      req.ProtocolRole,
+		PermissionGrantID: firstNonEmpty(params.PermissionGrantID, req.PermissionGrantID),
+		DelegatedGrant:    params.DelegatedGrant,
+	})
 	if err != nil {
 		return nil, err
 	}

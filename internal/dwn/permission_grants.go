@@ -45,6 +45,14 @@ type PermissionGrantMatch struct {
 	ProtocolPath string
 	ContextID    string
 	Now          time.Time
+
+	// AllowDelegated permits grants issued with delegated:true to match
+	// FindPermissionGrantID. Delegated grants must normally be invoked by
+	// embedding the full grant message (see FindDelegatedGrant), not as plain
+	// permissionGrantId grants, so FindPermissionGrantID skips them by
+	// default. This exists only as a compatibility escape hatch for legacy
+	// call sites. It has no effect on FindDelegatedGrant.
+	AllowDelegated bool
 }
 
 func ParsePermissionGrant(raw json.RawMessage) (*PermissionGrant, error) {
@@ -104,11 +112,18 @@ func ParsePermissionGrant(raw json.RawMessage) (*PermissionGrant, error) {
 	}, nil
 }
 
+// FindPermissionGrantID returns the ID of a plain (non-delegated) permission
+// grant matching the given criteria, or "" when none matches. Grants issued
+// with delegated:true are skipped unless match.AllowDelegated is set — they
+// must be invoked as delegated grants (see FindDelegatedGrant).
 func FindPermissionGrantID(rawGrants []json.RawMessage, match PermissionGrantMatch) (string, error) {
 	var fallback string
 	for _, raw := range rawGrants {
 		grant, err := ParsePermissionGrant(raw)
 		if err != nil {
+			continue
+		}
+		if grant.Delegated && !match.AllowDelegated {
 			continue
 		}
 		if !permissionGrantMatches(grant, match) {
@@ -122,6 +137,42 @@ func FindPermissionGrantID(rawGrants []json.RawMessage, match PermissionGrantMat
 		}
 	}
 	return fallback, nil
+}
+
+// FindDelegatedGrant returns the raw message and parsed form of a delegated
+// grant (delegated:true) matching the given criteria, using the same matching
+// semantics as FindPermissionGrantID: grantor/grantee/expiry checks, a
+// Records/Read scope satisfying both RecordsRead and RecordsQuery, and an
+// exact interface+method scope preferred over a broader match. The raw
+// message is returned exactly as supplied so it can be embedded verbatim as
+// authorization.authorDelegatedGrant.
+//
+// Returns (nil, nil, nil) when no delegated grant matches.
+func FindDelegatedGrant(rawGrants []json.RawMessage, match PermissionGrantMatch) (json.RawMessage, *PermissionGrant, error) {
+	var (
+		fallbackRaw   json.RawMessage
+		fallbackGrant *PermissionGrant
+	)
+	for _, raw := range rawGrants {
+		grant, err := ParsePermissionGrant(raw)
+		if err != nil {
+			continue
+		}
+		if !grant.Delegated {
+			continue
+		}
+		if !permissionGrantMatches(grant, match) {
+			continue
+		}
+		if grant.Scope.Interface+grant.Scope.Method == string(match.MessageType) {
+			return raw, grant, nil
+		}
+		if fallbackRaw == nil {
+			fallbackRaw = raw
+			fallbackGrant = grant
+		}
+	}
+	return fallbackRaw, fallbackGrant, nil
 }
 
 func permissionGrantMatches(grant *PermissionGrant, match PermissionGrantMatch) bool {

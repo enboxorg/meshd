@@ -40,6 +40,37 @@ meshd up
 # through encrypted WireGuard tunnels. NAT traversal is automatic.
 ```
 
+### Wallet-delegate onboarding (enbox connect)
+
+For wallet-owned meshes, `meshd auth connect` now onboards each machine
+through the standard Enbox connect flow: meshd pushes an encrypted permission
+request to a connect relay, you approve it in your Enbox wallet (link or QR),
+type the 4-digit PIN the wallet shows, and meshd receives delegated DWN
+grants plus wrapped encryption keys for its local delegate DID — private keys
+never leave the machine.
+
+```bash
+# On each machine: connect it to your wallet (prints a wallet link + PIN prompt).
+meshd auth connect
+
+# On the first machine: create the wallet-owned network directly.
+meshd network create home
+
+# On the other machines: join it directly — no dashboard approval round-trip.
+meshd up
+```
+
+Useful flags/env: `--wallet <url>` (default `https://enbox-wallet.pages.dev`),
+`--connect-server <url>` / `ENBOX_CONNECT_SERVER_URL` (default: discovered
+from the wallet's `/.well-known/enbox-connect`), `--wallet-uri-out <file>`
+(for scripted flows), `--legacy` (the previous meshd-specific wallet flow).
+
+> **Note:** the deployed Enbox wallet has not yet been upgraded to issue the
+> hardened (sealed-audience) encryption keys this flow requires; until it is,
+> approve with a wallet running current `@enbox/agent` — see
+> [docs/e2e-local.md](docs/e2e-local.md) for running the full loop locally,
+> including the headless approver used by the e2e tests.
+
 ### Dashboard-owned enrollment
 
 For wallet-owned meshes, the CLI does not need to connect directly to the

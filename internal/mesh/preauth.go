@@ -109,7 +109,17 @@ func CreatePreAuthKey(ctx context.Context, params CreatePreAuthKeyParams) (*PreA
 		return nil, fmt.Errorf("marshaling preauth key: %w", err)
 	}
 
-	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption("network/preAuthKey")
+	// preAuthKey records have no reading roles, so this produces a single
+	// protocolPath entry to the owner's published key.
+	recipients, err := buildEncryptionRecipients(ctx, writeEncryptionParams{
+		anchorEndpoint:  params.AnchorEndpoint,
+		anchorDID:       params.AnchorDID,
+		signer:          params.Signer,
+		encMgr:          params.EncryptionKeyManager,
+		protocolPath:    "network/preAuthKey",
+		parentContextID: params.NetworkRecordID,
+		writeAuth:       dwn.MessageAuth{PermissionGrantID: params.PermissionGrantID},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("deriving preauth encryption: %w", err)
 	}
@@ -249,6 +259,12 @@ type ApprovePreAuthRequestsParams struct {
 	ReadPermissionGrantID   string
 	WritePermissionGrantID  string
 	DeletePermissionGrantID string
+
+	// ProtocolDefinition and AudienceSource are resolved/constructed once
+	// per pass when empty; tests and long-running approval loops may supply
+	// them to reuse caches across passes.
+	ProtocolDefinition json.RawMessage
+	AudienceSource     *control.SealedAudienceSource
 }
 
 // ApprovePreAuthResult summarizes processed preauth requests.
@@ -267,6 +283,29 @@ func ApprovePreAuthRequests(ctx context.Context, params ApprovePreAuthRequestsPa
 	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
 	api := dwn.NewDwnAPI(agent)
 	result := &ApprovePreAuthResult{}
+
+	// One shared audience source (and resolved definition) for every write
+	// and delivery in this pass: mints happen once per role and the unsealed
+	// keys stay cached for delivery.
+	if params.ProtocolDefinition == nil || params.AudienceSource == nil {
+		def, err := resolveInstalledDefinition(ctx, writeEncryptionParams{
+			anchorEndpoint: params.AnchorEndpoint,
+			anchorDID:      params.AnchorDID,
+			signer:         params.Signer,
+			encMgr:         params.EncryptionKeyManager,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("resolving installed definition: %w", err)
+		}
+		params.ProtocolDefinition = def
+		params.AudienceSource = control.NewSealedAudienceSource(control.SealedAudienceSourceConfig{
+			Client:             dwn.NewClient(params.AnchorEndpoint, params.Signer),
+			Tenant:             params.AnchorDID,
+			ProtocolDefinition: def,
+			WriteAuth:          dwn.MessageAuth{PermissionGrantID: params.WritePermissionGrantID},
+			SealKeys:           ownerSealKeys(writeEncryptionParams{encMgr: params.EncryptionKeyManager, anchorDID: params.AnchorDID}),
+		})
+	}
 
 	requests, status, err := api.Query(ctx, params.AnchorDID, dwn.QueryParams{
 		Filter: dwn.RecordsFilter{
@@ -314,20 +353,19 @@ func ApprovePreAuthRequests(ctx context.Context, params ApprovePreAuthRequestsPa
 			result.Pending++
 			continue
 		}
+		memberDID := ownerDID
+		memberRecordID := ""
+		if ownerDID != "" && ownerDID != req.NodeDID {
+			memberRecordID, err = ensureMemberRecord(ctx, api, params, memberDID, firstNonEmpty(req.Label, key.Label))
+			if err != nil {
+				result.Pending++
+				continue
+			}
+		}
+		if memberDID == "" {
+			memberDID = req.NodeDID
+		}
 		if !exists {
-			memberDID := ownerDID
-			memberRecordID := ""
-			if memberDID != "" && memberDID != req.NodeDID {
-				memberRecordID, err = ensureMemberRecord(ctx, api, params, memberDID, firstNonEmpty(req.Label, key.Label))
-				if err != nil {
-					result.Pending++
-					continue
-				}
-			}
-			if memberDID == "" {
-				memberDID = req.NodeDID
-			}
-
 			meshIP, err := AllocateMeshIP(params.MeshCIDR, req.NodeDID)
 			if err != nil {
 				result.Rejected++
@@ -347,11 +385,23 @@ func ApprovePreAuthRequests(ctx context.Context, params ApprovePreAuthRequestsPa
 				OwnerDID:             memberDID,
 				DelegateDID:          req.DelegateDID,
 				PermissionGrantID:    params.WritePermissionGrantID,
+				ProtocolDefinition:   params.ProtocolDefinition,
+				AudienceSource:       audienceSourceOrNil(params.AudienceSource),
 			})
 			if err != nil {
 				result.Pending++
 				continue
 			}
+		}
+
+		// Hand the joiner its role-audience key so it can decrypt the
+		// network's records (sealed model: role holders read via
+		// `$encryption/delivery` records). Requires the joiner to have
+		// installed the mesh protocol on its own tenant; leaving the
+		// request pending retries the delivery on the next approval cycle.
+		if err := deliverJoinerAudienceKeys(ctx, params, memberRecordID, memberDID, req.NodeDID); err != nil {
+			result.Pending++
+			continue
 		}
 
 		if err := markPreAuthKeyUsed(ctx, api, params, keyRecord, key, req.NodeDID); err != nil {
@@ -495,7 +545,15 @@ func markPreAuthKeyUsed(ctx context.Context, api *dwn.DwnAPI, params ApprovePreA
 	if err != nil {
 		return fmt.Errorf("marshaling used preauth key: %w", err)
 	}
-	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption("network/preAuthKey")
+	recipients, err := buildEncryptionRecipients(ctx, writeEncryptionParams{
+		anchorEndpoint:  params.AnchorEndpoint,
+		anchorDID:       params.AnchorDID,
+		signer:          params.Signer,
+		encMgr:          params.EncryptionKeyManager,
+		protocolPath:    "network/preAuthKey",
+		parentContextID: params.NetworkRecordID,
+		writeAuth:       dwn.MessageAuth{PermissionGrantID: params.WritePermissionGrantID},
+	})
 	if err != nil {
 		return fmt.Errorf("deriving preauth update encryption: %w", err)
 	}
@@ -636,4 +694,84 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// deliverJoinerAudienceKeys hands an approved joiner (and its member, when a
+// member layer exists) the sealed role-audience keys for the roles they were
+// just assigned, via `$encryption/delivery` records. Node-role delivery is
+// required (the joiner cannot decrypt network state without it); member-role
+// delivery is best-effort, since a member DID may not host a DWN tenant with
+// the protocol installed. Existing deliveries are detected and skipped, so
+// retries are idempotent.
+func deliverJoinerAudienceKeys(ctx context.Context, params ApprovePreAuthRequestsParams, memberRecordID, memberDID, nodeDID string) error {
+	if !isOwnerRootManager(params.EncryptionKeyManager, params.AnchorDID) {
+		// Only the owner can unseal audience keys for delivery. Wallet-owned
+		// networks approve through the dashboard, which delivers keys itself.
+		return nil
+	}
+	src := params.AudienceSource
+	if src == nil {
+		return fmt.Errorf("audience source is required for delivery")
+	}
+	client := dwn.NewClient(params.AnchorEndpoint, params.Signer)
+
+	type target struct {
+		rolePath  string
+		recipient string
+		contextID string
+		required  bool
+	}
+	var targets []target
+	if memberRecordID != "" {
+		targets = append(targets,
+			target{"network/member", memberDID, params.NetworkRecordID, false},
+			target{"network/member/node", nodeDID, params.NetworkRecordID + "/" + memberRecordID, true},
+		)
+	} else {
+		targets = append(targets, target{"network/node", nodeDID, params.NetworkRecordID, true})
+	}
+
+	for _, tgt := range targets {
+		delivered, err := deliveryRecordExists(ctx, client, params.AnchorDID, tgt.rolePath, tgt.contextID, tgt.recipient)
+		if err == nil && delivered {
+			continue
+		}
+		err = DeliverAudienceKey(ctx, DeliverAudienceKeyParams{
+			AnchorEndpoint: params.AnchorEndpoint,
+			AnchorDID:      params.AnchorDID,
+			Signer:         params.Signer,
+			AudienceSource: src,
+			RecipientDID:   tgt.recipient,
+			RolePath:       tgt.rolePath,
+			ContextID:      tgt.contextID,
+			WriteAuth:      dwn.MessageAuth{PermissionGrantID: params.WritePermissionGrantID},
+		})
+		if err != nil && tgt.required {
+			return fmt.Errorf("delivering %s audience key to %s: %w", tgt.rolePath, tgt.recipient, err)
+		}
+	}
+	return nil
+}
+
+// deliveryRecordExists reports whether a `$encryption/delivery` record for
+// the tuple already reached the recipient.
+func deliveryRecordExists(ctx context.Context, client *dwn.Client, tenant, rolePath, contextID, recipient string) (bool, error) {
+	reply, err := client.RecordsQuery(ctx, tenant, dwn.RecordsFilter{
+		Protocol:     protocols.MeshProtocolURI,
+		ProtocolPath: dwncrypto.EncryptionControlDeliveryPath,
+		Recipient:    recipient,
+		Tags: map[string]any{
+			"protocol":  protocols.MeshProtocolURI,
+			"rolePath":  rolePath,
+			"contextId": contextID,
+		},
+	}, "createdDescending", nil, "")
+	if err != nil {
+		return false, err
+	}
+	entries, err := dwn.QueryEntries(reply)
+	if err != nil {
+		return false, err
+	}
+	return len(entries) > 0, nil
 }

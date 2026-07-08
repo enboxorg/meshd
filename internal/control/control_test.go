@@ -712,7 +712,12 @@ func TestRoleAudienceEntryInfo(t *testing.T) {
 			enc: &dwncrypto.Encryption{
 				KeyEncryption: []dwncrypto.KeyEncryption{
 					{DerivationScheme: dwncrypto.DerivationSchemeProtocolPath},
-					{DerivationScheme: dwncrypto.DerivationSchemeRoleAudience, Role: "network/node", Epoch: 1},
+					{
+						DerivationScheme: dwncrypto.DerivationSchemeRoleAudience,
+						Protocol:         "https://enbox.id/protocols/wireguard-mesh",
+						RolePath:         "network/node",
+						KeyID:            "audience-key-thumbprint",
+					},
 				},
 			},
 			wantRole: true,
@@ -724,6 +729,18 @@ func TestRoleAudienceEntryInfo(t *testing.T) {
 			info := dwncrypto.RoleAudienceEntryInfo(tc.enc)
 			if (info != nil) != tc.wantRole {
 				t.Errorf("RoleAudienceEntryInfo present = %v, want %v", info != nil, tc.wantRole)
+			}
+			if info == nil {
+				return
+			}
+			if info.Protocol != "https://enbox.id/protocols/wireguard-mesh" {
+				t.Errorf("Protocol = %q", info.Protocol)
+			}
+			if info.RolePath != "network/node" {
+				t.Errorf("RolePath = %q", info.RolePath)
+			}
+			if info.KeyID != "audience-key-thumbprint" {
+				t.Errorf("KeyID = %q", info.KeyID)
 			}
 		})
 	}
@@ -786,13 +803,21 @@ func TestParseEntryData(t *testing.T) {
 			ProtocolURI:    "https://example.com/proto",
 		}
 
-		recipients, err := mgr.DeriveWriteEncryption("network/node")
+		// The sealed-model write path wraps the CEK to the rule set's
+		// published $keyAgreement public key; reproduce that key by deriving
+		// the protocol-path leaf from the owner root.
+		_, leafPub, err := dwncrypto.DerivePrivateKey(
+			rootPriv,
+			dwncrypto.BuildProtocolPathDerivation(mgr.ProtocolURI, "network", "node"),
+		)
 		if err != nil {
-			t.Fatalf("deriving encryption: %v", err)
+			t.Fatalf("deriving leaf key: %v", err)
 		}
 
 		plaintext := []byte(`{"name":"encrypted","meshCIDR":"10.200.0.0/16"}`)
-		ciphertext, enc, err := dwncrypto.EncryptData(plaintext, recipients)
+		ciphertext, enc, err := dwncrypto.EncryptData(plaintext, []dwncrypto.KeyEncryptionInput{
+			{PublicKey: leafPub, DerivationScheme: dwncrypto.DerivationSchemeProtocolPath},
+		})
 		if err != nil {
 			t.Fatalf("encrypting: %v", err)
 		}

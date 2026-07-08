@@ -60,6 +60,7 @@ type Subscription struct {
 	target  string
 	filter  RecordsFilter
 	signer  *Signer
+	auth    MessageAuth
 	handler EventHandler
 	cursor  string // last known cursor for reconnection
 	logger  *slog.Logger
@@ -104,6 +105,20 @@ func (m *SubscriptionManager) Subscribe(
 	filter RecordsFilter,
 	handler EventHandler,
 ) (*Subscription, error) {
+	return m.SubscribeWithAuth(ctx, target, signer, filter, MessageAuth{}, handler)
+}
+
+// SubscribeWithAuth starts a new subscription with explicit authorization
+// options (protocol role, plain grant, or delegated grant), mirroring the
+// Records read/query/delete builders.
+func (m *SubscriptionManager) SubscribeWithAuth(
+	ctx context.Context,
+	target string,
+	signer *Signer,
+	filter RecordsFilter,
+	auth MessageAuth,
+	handler EventHandler,
+) (*Subscription, error) {
 	subCtx, cancel := context.WithCancel(ctx)
 	subscriptionID := uuid.New().String()
 
@@ -112,6 +127,7 @@ func (m *SubscriptionManager) Subscribe(
 		target:         target,
 		filter:         filter,
 		signer:         signer,
+		auth:           auth,
 		handler:        handler,
 		logger: m.logger.With(
 			slog.String("subscription_id", subscriptionID),
@@ -226,7 +242,7 @@ func (s *Subscription) sendSubscribeRequest(ctx context.Context, conn *websocket
 	cursor := s.cursor
 	s.mu.Unlock()
 
-	msg, err := buildSubscribeMessage(s.signer, s.filter, cursor)
+	msg, err := buildSubscribeMessage(s.signer, s.filter, cursor, s.auth)
 	if err != nil {
 		return fmt.Errorf("building subscribe message: %w", err)
 	}
@@ -397,7 +413,11 @@ func (s *Subscription) closeSubscription(conn *websocket.Conn) {
 }
 
 // buildSubscribeMessage creates a RecordsSubscribe DWN message.
-func buildSubscribeMessage(signer *Signer, filter RecordsFilter, cursor string) (*Message, error) {
+//
+// Like the other Records builders it supports protocol-role, plain-grant
+// (permissionGrantId in descriptor + payload), and delegated-grant
+// (authorDelegatedGrant + delegatedGrantId) authorization.
+func buildSubscribeMessage(signer *Signer, filter RecordsFilter, cursor string, auth MessageAuth) (*Message, error) {
 	desc := map[string]any{
 		"interface":        "Records",
 		"method":           "Subscribe",
@@ -408,7 +428,7 @@ func buildSubscribeMessage(signer *Signer, filter RecordsFilter, cursor string) 
 		desc["cursor"] = cursor
 	}
 
-	return signGenericMessage(signer, desc, "")
+	return signGenericMessage(signer, desc, auth)
 }
 
 // httpToWS converts an HTTP(S) URL to a WS(S) URL.

@@ -1,0 +1,814 @@
+{
+  "description": "pre-supplied-delegate grantKey fixture (enbox #1189, wrapped mode). The wallet grants a delegated Records.Read over the whole wireguard-mesh protocol and writes a PLAINTEXT grantKey record (protocol https://identity.foundation/dwn/protocols/encryption, protocolPath grantKey) whose data is a WrappedGrantKeyEnvelope: the GrantKeyPayload JSON (carrying the owner-derived whole-protocol X25519 subtree PRIVATE key) is A256CTR-encrypted with a random DEK, and the DEK is wrapped to the delegate ROOT X25519 key (Ed25519->X25519 conversion of its did:jwk signing key) using the protocolPath KEK info with keyId = the delegate root key RFC 7638 thumbprint. Produced by the agent's createGrantKeyRecordsForGrants and server-validated by a real DWN. The included encrypted wireguard-mesh record (network/preAuthKey, protocolPath entry to the owner leaf) is decryptable with the delivered subtree key.",
+  "generatedAt": "2026-07-08T00:51:20.611Z",
+  "sdkCommit": "6b5b9786ee931f8d80d84e5f2865166c39568eb6",
+  "generator": "scripts/gen-crypto-fixtures/generate.ts",
+  "_encoding": "all binary values base64url.",
+  "_scheme": {
+    "note": "HKDF-SHA256 KEK info strings are COMPACT JSON arrays (exact JSON.stringify output, no whitespace); KEK = HKDF-SHA256(ikm=X25519 ECDH shared secret, salt=empty, info, 32 bytes); key wrap = RFC 3394 AES-KW of the raw 32-byte CEK; content encryption = AES-256-CTR with the 16-byte initializationVector as the full counter block.",
+    "protocolPath": "[\"X25519-HKDF-SHA256+A256KW\",\"protocolPath\",\"<keyId>\"]",
+    "roleAudience": "[\"X25519-HKDF-SHA256+A256KW\",\"roleAudience\",\"<protocol>\",\"<rolePath>\",\"<keyId>\"]",
+    "seal": "[\"X25519-HKDF-SHA256+A256KW\",\"seal\",\"<protocol>\",\"<rolePath>\",\"<contextId>\",\"<audienceKeyId>\"]"
+  },
+  "protocol": "https://enbox.id/protocols/wireguard-mesh",
+  "ownerDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IjJ2eXktT2Z6ZVBOVWxpVDJNdHNfNmNEWlpUOW54aXhyTjgyX3RkWmtzV3ciLCJraWQiOiJPNjNpZml3b1Fma1lvRzMwTXFWN0FTWVZYSGJ3VFFNc09mc3lYcXQ5b0lnIiwiYWxnIjoiRWREU0EifQ",
+  "ownerRootKeyId": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IjJ2eXktT2Z6ZVBOVWxpVDJNdHNfNmNEWlpUOW54aXhyTjgyX3RkWmtzV3ciLCJraWQiOiJPNjNpZml3b1Fma1lvRzMwTXFWN0FTWVZYSGJ3VFFNc09mc3lYcXQ5b0lnIiwiYWxnIjoiRWREU0EifQ#0",
+  "ownerEncPrivateKeyJwk": {
+    "kty": "OKP",
+    "crv": "X25519",
+    "d": "ONv4OzRahL7IgPy8BavLIqc3uA4Dnpc9dc9Nu9cPul8",
+    "x": "MPX0zFU8Ynw9dXj4L_bxgE-DyIOn4UbJnSjLDSFByHs",
+    "kid": "rrkf-e-qEQH0jVgRTsHEdq_lgWnBN2MSjpcYQggKqBc"
+  },
+  "delegate": {
+    "did": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IlZWTmRyckFHV1V2NzV3RGRrNnlIUTRrY3p2enljSURhTTc1bzhpNlhua3ciLCJraWQiOiI0dE5LM2JPMl8xeE5PS0ZVUnFZUURraHhGbGUtY3gtLWI0Q3JReUluUGRnIiwiYWxnIjoiRWREU0EifQ",
+    "keyId": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IlZWTmRyckFHV1V2NzV3RGRrNnlIUTRrY3p2enljSURhTTc1bzhpNlhua3ciLCJraWQiOiI0dE5LM2JPMl8xeE5PS0ZVUnFZUURraHhGbGUtY3gtLWI0Q3JReUluUGRnIiwiYWxnIjoiRWREU0EifQ#0",
+    "edPrivateKeyJwk": {
+      "crv": "Ed25519",
+      "d": "wBMBcI1U-s4o0VLFPjEIbtFulGp2RG-Ct4Y8lXbPoXo",
+      "kty": "OKP",
+      "x": "VVNdrrAGWUv75wDdk6yHQ4kczvzycIDaM75o8i6Xnkw",
+      "kid": "4tNK3bO2_1xNOKFURqYQDkhxFle-cx--b4CrQyInPdg",
+      "alg": "EdDSA"
+    },
+    "encPrivateKeyJwk": {
+      "kty": "OKP",
+      "crv": "X25519",
+      "d": "0FbTvtW2cbb48uMzFEdbCWgSf04vXk3N77d-mTC9mFI",
+      "x": "80HK9OvGH-B-Ak8zIrjW5h7pK-uZBg0ELVLgk0GBxmw",
+      "kid": "_PsT4fOq_5lnxi0jbzA0XlHyfwFIs0T6b61HXDPObbc"
+    },
+    "encRootKeyThumbprint": "_PsT4fOq_5lnxi0jbzA0XlHyfwFIs0T6b61HXDPObbc",
+    "note": "encPrivateKeyJwk is the Ed25519->X25519 conversion of edPrivateKeyJwk (meshd: internal/did EncryptionPrivateKey)"
+  },
+  "grant": {
+    "grantId": "bafyreicwqdbrplrlfryerpkgutcgklefz6rqaqhjdknuvaqlrtk2uioosy",
+    "message": {
+      "recordId": "bafyreicwqdbrplrlfryerpkgutcgklefz6rqaqhjdknuvaqlrtk2uioosy",
+      "descriptor": {
+        "interface": "Records",
+        "method": "Write",
+        "protocol": "https://identity.foundation/dwn/permissions",
+        "protocolPath": "grant",
+        "recipient": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IlZWTmRyckFHV1V2NzV3RGRrNnlIUTRrY3p2enljSURhTTc1bzhpNlhua3ciLCJraWQiOiI0dE5LM2JPMl8xeE5PS0ZVUnFZUURraHhGbGUtY3gtLWI0Q3JReUluUGRnIiwiYWxnIjoiRWREU0EifQ",
+        "tags": {
+          "protocol": "https://enbox.id/protocols/wireguard-mesh"
+        },
+        "dataCid": "bafkreifpoyz26c3tlzjbsnj25z75fjjk7gyrlbhvzgj57woria7g3fxuce",
+        "dataSize": 211,
+        "dateCreated": "2026-07-08T00:51:20.862000Z",
+        "messageTimestamp": "2026-07-08T00:51:20.862000Z",
+        "dataFormat": "application/json"
+      },
+      "contextId": "bafyreicwqdbrplrlfryerpkgutcgklefz6rqaqhjdknuvaqlrtk2uioosy",
+      "authorization": {
+        "signature": {
+          "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWljd3FkYnJwbHJsZnJ5ZXJwa2d1dGNna2xlZno2cnFhcWhqZGtudXZhcWxydGsydWlvb3N5IiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWlnemZ5cjRpZTM1dTNkeGFhZmxxY2ZraHppM2ZxdnVrYzI3bnJidmF2emhoNDdwM3RsaHRlIiwiY29udGV4dElkIjoiYmFmeXJlaWN3cWRicnBscmxmcnllcnBrZ3V0Y2drbGVmejZycWFxaGpka251dmFxbHJ0azJ1aW9vc3kifQ",
+          "signatures": [
+            {
+              "protected": "eyJraWQiOiJkaWQ6andrOmV5SmpjbllpT2lKRlpESTFOVEU1SWl3aWEzUjVJam9pVDB0UUlpd2llQ0k2SWpKMmVYa3RUMlo2WlZCT1ZXeHBWREpOZEhOZk5tTkVXbHBVT1c1NGFYaHlUamd5WDNSa1dtdHpWM2NpTENKcmFXUWlPaUpQTmpOcFptbDNiMUZtYTFsdlJ6TXdUWEZXTjBGVFdWWllTR0ozVkZGTmMwOW1jM2xZY1hRNWIwbG5JaXdpWVd4bklqb2lSV1JFVTBFaWZRIzAiLCJhbGciOiJFZERTQSJ9",
+              "signature": "Vf2z0Gwi7FtI8pPhnyAHGwEde4v5rzLn6MksSTeM56krBmXQ2l2cW3AO-VGaHu3N8CjxtSFIJwZZESHFXBbtBA"
+            }
+          ]
+        }
+      },
+      "encodedData": "eyJkYXRlRXhwaXJlcyI6IjIwMjYtMTAtMDZUMDA6NTE6MjAuODYyMDAwWiIsImRlc2NyaXB0aW9uIjoibWVzaGQgZGVsZWdhdGUgcmVhZCAoZml4dHVyZSkiLCJkZWxlZ2F0ZWQiOnRydWUsInNjb3BlIjp7ImludGVyZmFjZSI6IlJlY29yZHMiLCJtZXRob2QiOiJSZWFkIiwicHJvdG9jb2wiOiJodHRwczovL2VuYm94LmlkL3Byb3RvY29scy93aXJlZ3VhcmQtbWVzaCJ9fQ"
+    },
+    "scope": {
+      "interface": "Records",
+      "method": "Read",
+      "protocol": "https://enbox.id/protocols/wireguard-mesh"
+    }
+  },
+  "grantKeyRecord": {
+    "message": {
+      "recordId": "bafyreia3givfewlaxufiyvjfsltirdukciff2nwnzrby7esu3jn25f5wg4",
+      "descriptor": {
+        "interface": "Records",
+        "method": "Write",
+        "protocol": "https://identity.foundation/dwn/protocols/encryption",
+        "protocolPath": "grantKey",
+        "recipient": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IlZWTmRyckFHV1V2NzV3RGRrNnlIUTRrY3p2enljSURhTTc1bzhpNlhua3ciLCJraWQiOiI0dE5LM2JPMl8xeE5PS0ZVUnFZUURraHhGbGUtY3gtLWI0Q3JReUluUGRnIiwiYWxnIjoiRWREU0EifQ",
+        "schema": "https://identity.foundation/dwn/json-schemas/encryption/grant-key.json",
+        "tags": {
+          "grantId": "bafyreicwqdbrplrlfryerpkgutcgklefz6rqaqhjdknuvaqlrtk2uioosy",
+          "protocol": "https://enbox.id/protocols/wireguard-mesh",
+          "keyId": "7XjiIiDlLPVENMQXUFYvGO_TYwYENoLacyOF_vmeydQ"
+        },
+        "dataCid": "bafkreibucqphpvo5d7ikycuzcdx4bwcyurc5vzuk553keuqq7nk62hfkjq",
+        "dataSize": 1452,
+        "dateCreated": "2026-07-08T00:51:20.874000Z",
+        "messageTimestamp": "2026-07-08T00:51:20.874000Z",
+        "dataFormat": "application/json"
+      },
+      "contextId": "bafyreia3givfewlaxufiyvjfsltirdukciff2nwnzrby7esu3jn25f5wg4",
+      "authorization": {
+        "signature": {
+          "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWlhM2dpdmZld2xheHVmaXl2amZzbHRpcmR1a2NpZmYybnduenJieTdlc3Uzam4yNWY1d2c0IiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWlkYm5kc3hobzY3enJnMmZ1bmt0cXZpYnhmZDJmd3dwbTU3dXhzcHFpaDJzbnNtYmVlM3pxIiwiY29udGV4dElkIjoiYmFmeXJlaWEzZ2l2ZmV3bGF4dWZpeXZqZnNsdGlyZHVrY2lmZjJud256cmJ5N2VzdTNqbjI1ZjV3ZzQifQ",
+          "signatures": [
+            {
+              "protected": "eyJraWQiOiJkaWQ6andrOmV5SmpjbllpT2lKRlpESTFOVEU1SWl3aWEzUjVJam9pVDB0UUlpd2llQ0k2SWpKMmVYa3RUMlo2WlZCT1ZXeHBWREpOZEhOZk5tTkVXbHBVT1c1NGFYaHlUamd5WDNSa1dtdHpWM2NpTENKcmFXUWlPaUpQTmpOcFptbDNiMUZtYTFsdlJ6TXdUWEZXTjBGVFdWWllTR0ozVkZGTmMwOW1jM2xZY1hRNWIwbG5JaXdpWVd4bklqb2lSV1JFVTBFaWZRIzAiLCJhbGciOiJFZERTQSJ9",
+              "signature": "eKlrAsZbqe-inO1Zyknz7TSAhuX-kD9iVMwtV_ERzePgB7a37Mpxo7KOt9w0U-AKV-Ee0DEtJn6C_FNHJZclBQ"
+            }
+          ]
+        }
+      },
+      "encodedData": "eyJmb3JtYXQiOiJlbmJveC93cmFwcGVkLWdyYW50LWtleUAxIiwia2V5RW5jcnlwdGlvbiI6eyJhbGdvcml0aG0iOiJYMjU1MTktSEtERi1TSEEyNTYrQTI1NktXIiwiZW5jcnlwdGVkS2V5IjoidHZ2ekFSYUJCVkQ1b01lTGNSVGZDQmUta2pVYlJLQmhtZTc2X3hPN3hoVEt4Vkx5NjZuUFB3IiwiZXBoZW1lcmFsUHVibGljS2V5Ijp7Imt0eSI6Ik9LUCIsImNydiI6IlgyNTUxOSIsIngiOiIwZlgzTTB4WjZPcE54UHZqYVQ3T2toMUs1ZTZsNzVULUIyVnBnLW1nZUY4Iiwia2lkIjoiQVVIZi1kbXVuLWMyeVBTVkQ3QzBKQ1ZDOUR3bm1XSEZ2V3l3ME8ySzFhdyJ9LCJrZXlJZCI6Il9Qc1Q0Zk9xXzVsbnhpMGpiekEwWGxIeWZ3RklzMFQ2YjYxSFhEUE9iYmMifSwiY29udGVudEVuY3J5cHRpb24iOnsiYWxnb3JpdGhtIjoiQTI1NkNUUiIsImluaXRpYWxpemF0aW9uVmVjdG9yIjoidFN0bGJnYmdYTzRYajZWcl9RcV9NQSJ9LCJjaXBoZXJ0ZXh0IjoibXlLaVo4LXBmZXZMRXJVbWxaT2w3R21TM0pWQmtRT3JkTDJibUxHM3p6MkhVbWRwVzFrbVotQ0FfcnEzRlBCUVdxUnc4bXNxSnZCZUZ2cE9yQV8ydWFHa2tMVEk3VzdFVG1sUXBWVkpMNFJxRjJUak5CU0FtQm1XWmZodnJ5Q0NrX2JlMFRNVGNvazllTWJVMV9yYV94d0pROVB2R3BoazVuRVV5b1FFamQwMlIyamhiem56RllraWZCdzJQRGRoQmtBWUdoczJybzlWRjVnT1V5STdYMkFhTlhyQlJnemhlRU42QkZIckJnS3ZURHV5UmZHR29qSkE4VHVodWFRVTZFSXVUemFFbWlYZk5sbkdGRXI0SlJQVnRXZXNoczlDVHhmVk9uYXlfT3RzNUczLWZuXzlmLVQ1S1d0cURiVVRrVTZOeHoxRzVzS1JVUmdMa1NLWGJvTUlUR0o4RlhockpFZEVLY1F5aEh1MkIxeUhETmc3T0xuTkhuNU9JbVZNM2JlUWx5UU00Q0JldTRwamViMXFUY2dBOFgxb2FKVFB4MUZOV1hfU2FvOXdlWWtsdFR0TnpJUUd1bmx1Q1JoRnZaeE40SXlVZktOblhTYjVJbUlxdklIaWRVV3ZfZHBvMUp4UjBRdE03ZWo4X0ljdUFrX3NscWhkMGdmaHVjdHgxaVIzbDFMUXpMcmI0djcwUDVocGlrOEtieWROcFFtZ25YUm5NZUZyNFQ0eE96ZTlNV3l1LVh5OVgtMENPbWg3NEw2cmxHRHZlQTIwbkVDaEpSUTlMOFQ4SDFYM1pFdDR5LWR2Yk1LRGF1a3lrX1JnZ1lBZmJCTjNkS1pFZWE5Mk9pdE54QzJqaFRySVlfZXVBVXVjbUZ2dVc2N0ZJR1NjMHlyemVSNm5zLTE5YTFSUW9wR0kyOXBCZGJJWFQxdXM1VFJZeHN4MHJCWGVnR1FmaWh1VWprbzNSendWSVlncU85WkE5NFJGV2x1SU9NRmlGdWZBMHZEeXZURXFadDZnQmV3cGFQUEhiZ0NQZjNWMl9TaFczOXUzaWR6cTg4QzZtNUMzWjFHMnpmV0JUN1FaTGpZYzU1bi1kMUtwRHFDbzFpLXR1c2hnblhsQWRybjA0V0JMVHdLekowYWpuWmVXU1d4WWNhcjlMcWhIUnZvb1hIdmRSVFBFZDE0cVZQU0NlVWFrYlowN1RZb0FJbEhsNFp0V2tjRDZodDdKdU1wOHJQSlQzaUZkenlNRWJXS2R4M1FtLWN2b1hOQ2RwYjd1RlhreFRvbTJ1USJ9"
+    },
+    "tags": {
+      "grantId": "bafyreicwqdbrplrlfryerpkgutcgklefz6rqaqhjdknuvaqlrtk2uioosy",
+      "protocol": "https://enbox.id/protocols/wireguard-mesh",
+      "keyId": "7XjiIiDlLPVENMQXUFYvGO_TYwYENoLacyOF_vmeydQ"
+    },
+    "note": "plaintext record: descriptor has NO encryption; message.encodedData decodes to wrappedGrantKeyEnvelope JSON"
+  },
+  "wrappedGrantKeyEnvelope": {
+    "format": "enbox/wrapped-grant-key@1",
+    "keyEncryption": {
+      "algorithm": "X25519-HKDF-SHA256+A256KW",
+      "encryptedKey": "tvvzARaBBVD5oMeLcRTfCBe-kjUbRKBhme76_xO7xhTKxVLy66nPPw",
+      "ephemeralPublicKey": {
+        "kty": "OKP",
+        "crv": "X25519",
+        "x": "0fX3M0xZ6OpNxPvjaT7Okh1K5e6l75T-B2Vpg-mgeF8",
+        "kid": "AUHf-dmun-c2yPSVD7C0JCVC9DwnmWHFvWyw0O2K1aw"
+      },
+      "keyId": "_PsT4fOq_5lnxi0jbzA0XlHyfwFIs0T6b61HXDPObbc"
+    },
+    "contentEncryption": {
+      "algorithm": "A256CTR",
+      "initializationVector": "tStlbgbgXO4Xj6Vr_Qq_MA"
+    },
+    "ciphertext": "myKiZ8-pfevLErUmlZOl7GmS3JVBkQOrdL2bmLG3zz2HUmdpW1kmZ-CA_rq3FPBQWqRw8msqJvBeFvpOrA_2uaGkkLTI7W7ETmlQpVVJL4RqF2TjNBSAmBmWZfhvryCCk_be0TMTcok9eMbU1_ra_xwJQ9PvGphk5nEUyoQEjd02R2jhbznzFYkifBw2PDdhBkAYGhs2ro9VF5gOUyI7X2AaNXrBRgzheEN6BFHrBgKvTDuyRfGGojJA8TuhuaQU6EIuTzaEmiXfNlnGFEr4JRPVtWeshs9CTxfVOnay_Ots5G3-fn_9f-T5KWtqDbUTkU6Nxz1G5sKRURgLkSKXboMITGJ8FXhrJEdEKcQyhHu2B1yHDNg7OLnNHn5OImVM3beQlyQM4CBeu4pjeb1qTcgA8X1oaJTPx1FNWX_Sao9weYkltTtNzIQGunluCRhFvZxN4IyUfKNnXSb5ImIqvIHidUWv_dpo1JxR0QtM7ej8_IcuAk_slqhd0gfhuctx1iR3l1LQzLrb4v70P5hpik8KbydNpQmgnXRnMeFr4T4xOze9MWyu-Xy9X-0COmh74L6rlGDveA20nEChJRQ9L8T8H1X3ZEt4y-dvbMKDaukyk_RggYAfbBN3dKZEea92OitNxC2jhTrIY_euAUucmFvuW67FIGSc0yrzeR6ns-19a1RQopGI29pBdbIXT1us5TRYxsx0rBXegGQfihuUjko3RzwVIYgqO9ZA94RFWluIOMFiFufA0vDyvTEqZt6gBewpaPPHbgCPf3V2_ShW39u3idzq88C6m5C3Z1G2zfWBT7QZLjYc55n-d1KpDqCo1i-tushgnXlAdrn04WBLTwKzJ0ajnZeWSWxYcar9LqhHRvooXHvdRTPEd14qVPSCeUakbZ07TYoAIlHl4ZtWkcD6ht7JuMp8rPJT3iFdzyMEbWKdx3Qm-cvoXNCdpb7uFXkxTom2uQ"
+  },
+  "unwrapKekInfo": "[\"X25519-HKDF-SHA256+A256KW\",\"protocolPath\",\"_PsT4fOq_5lnxi0jbzA0XlHyfwFIs0T6b61HXDPObbc\"]",
+  "expectedGrantKeyPayload": {
+    "grantId": "bafyreicwqdbrplrlfryerpkgutcgklefz6rqaqhjdknuvaqlrtk2uioosy",
+    "scope": {
+      "scheme": "protocolPath",
+      "protocol": "https://enbox.id/protocols/wireguard-mesh"
+    },
+    "keyMaterial": {
+      "algorithm": "X25519-HKDF-SHA256+A256KW",
+      "derivationPath": [
+        "protocolPath",
+        "https://enbox.id/protocols/wireguard-mesh"
+      ],
+      "derivationScheme": "protocolPath",
+      "keyId": "7XjiIiDlLPVENMQXUFYvGO_TYwYENoLacyOF_vmeydQ",
+      "privateKeyJwk": {
+        "kty": "OKP",
+        "crv": "X25519",
+        "d": "8gtfUJ7QZL1N5feK5sQCDEtN5RD9ZxaVZEVq41wfjmE",
+        "x": "O_7HTScjHYAMOousgxR1PFghTmGHHIdcmNK-GJJ7i0I",
+        "kid": "7XjiIiDlLPVENMQXUFYvGO_TYwYENoLacyOF_vmeydQ"
+      },
+      "publicKeyJwk": {
+        "kty": "OKP",
+        "crv": "X25519",
+        "x": "O_7HTScjHYAMOousgxR1PFghTmGHHIdcmNK-GJJ7i0I",
+        "kid": "7XjiIiDlLPVENMQXUFYvGO_TYwYENoLacyOF_vmeydQ"
+      }
+    }
+  },
+  "encryptedRecord": {
+    "protocolPath": "network/preAuthKey",
+    "message": {
+      "recordId": "bafyreideapjdclt45wgqv354fhzwgrdnc32aopzw633om7frkcg4qdhtbm",
+      "descriptor": {
+        "interface": "Records",
+        "method": "Write",
+        "protocol": "https://enbox.id/protocols/wireguard-mesh",
+        "protocolPath": "network/preAuthKey",
+        "schema": "https://enbox.id/schemas/wireguard-mesh/pre-auth-key",
+        "parentId": "bafyreigsu2p56r564dq5p7l5njdp6shpcd65ufqfwgoutsbplomunn6njy",
+        "dataCid": "bafkreihduu72ptbxewybxtuwk2navyfw2qcaodxb43thcqocmk67pyiizu",
+        "dataSize": 62,
+        "dateCreated": "2026-07-08T00:51:20.855000Z",
+        "messageTimestamp": "2026-07-08T00:51:20.855000Z",
+        "dataFormat": "application/json"
+      },
+      "encryption": {
+        "algorithm": "A256CTR",
+        "initializationVector": "c78wN-JIFahuF8ip38iwyw",
+        "keyEncryption": [
+          {
+            "algorithm": "X25519-HKDF-SHA256+A256KW",
+            "encryptedKey": "DosA_71N5L2oW1k5mLlNIAPaXhG5oVYnsQ_Id_c4tMOyHboZCASlnA",
+            "ephemeralPublicKey": {
+              "kty": "OKP",
+              "crv": "X25519",
+              "x": "l3Hw7XRXGeopMGu0C3N_XCNl5Xl-vP2VxC5Ex5AjRXc",
+              "kid": "Yp0cHX6HYHVIeAipxQilKOUhlZ3nW87IH5t33owz-RQ"
+            },
+            "keyId": "ZHVd-F15W-4benvjSVR6r78wPzY98IZF3YOO9qgEmgw",
+            "derivationScheme": "protocolPath"
+          }
+        ]
+      },
+      "contextId": "bafyreigsu2p56r564dq5p7l5njdp6shpcd65ufqfwgoutsbplomunn6njy/bafyreideapjdclt45wgqv354fhzwgrdnc32aopzw633om7frkcg4qdhtbm",
+      "authorization": {
+        "signature": {
+          "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWlkZWFwamRjbHQ0NXdncXYzNTRmaHp3Z3JkbmMzMmFvcHp3NjMzb203ZnJrY2c0cWRodGJtIiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWliMmxwYmhwYnVjNjR5Z3Iyc2k0cG1rNXd2Z3lzbDZyaG1ycmJ2M2hucjdia2l4MmxtNGQ0IiwiY29udGV4dElkIjoiYmFmeXJlaWdzdTJwNTZyNTY0ZHE1cDdsNW5qZHA2c2hwY2Q2NXVmcWZ3Z291dHNicGxvbXVubjZuankvYmFmeXJlaWRlYXBqZGNsdDQ1d2dxdjM1NGZoendncmRuYzMyYW9wenc2MzNvbTdmcmtjZzRxZGh0Ym0iLCJlbmNyeXB0aW9uQ2lkIjoiYmFmeXJlaWF2bnM1bzdkNDVmMjJ1a2h4NGhvZGtlZGR2d3QyeWd6Mmphd3RsYnFwMmJneGFnNWdieG0ifQ",
+          "signatures": [
+            {
+              "protected": "eyJraWQiOiJkaWQ6andrOmV5SmpjbllpT2lKRlpESTFOVEU1SWl3aWEzUjVJam9pVDB0UUlpd2llQ0k2SWpKMmVYa3RUMlo2WlZCT1ZXeHBWREpOZEhOZk5tTkVXbHBVT1c1NGFYaHlUamd5WDNSa1dtdHpWM2NpTENKcmFXUWlPaUpQTmpOcFptbDNiMUZtYTFsdlJ6TXdUWEZXTjBGVFdWWllTR0ozVkZGTmMwOW1jM2xZY1hRNWIwbG5JaXdpWVd4bklqb2lSV1JFVTBFaWZRIzAiLCJhbGciOiJFZERTQSJ9",
+              "signature": "isD-PuwcHnirMe7YzjvbMipE4fLGecI5O45TT8hGYbxRaxjMNxRrACh6-QyzYOy0l2f40qHtSA-fJMJuwA1gDg"
+            }
+          ]
+        }
+      }
+    },
+    "ciphertext_b64u": "luvNw3DznBBaJAqdHS59z4bojSjmwFofzdDxg5JYFuD0uYib4FRj-7L_mpRravACHztOav9YQ8VNfvSvDXY",
+    "plaintext_b64u": "eyJwcmVBdXRoS2V5IjoicGFrXzVmMGM5ZDJiIiwiZXhwaXJlcyI6IjIwMjctMDEtMDFUMDA6MDA6MDBaIn0",
+    "note": "decrypt with expectedGrantKeyPayload.keyMaterial: derive the remaining path segments (network, preAuthKey) below keyMaterial.derivationPath, unwrap the protocolPath keyEncryption entry."
+  },
+  "ownerInstalledDefinition": {
+    "protocol": "https://enbox.id/protocols/wireguard-mesh",
+    "published": true,
+    "types": {
+      "network": {
+        "schema": "https://enbox.id/schemas/wireguard-mesh/network",
+        "dataFormats": [
+          "application/json"
+        ]
+      },
+      "member": {
+        "schema": "https://enbox.id/schemas/wireguard-mesh/member",
+        "dataFormats": [
+          "application/json"
+        ]
+      },
+      "nodeRequest": {
+        "schema": "https://enbox.id/schemas/wireguard-mesh/node-request",
+        "dataFormats": [
+          "application/json"
+        ]
+      },
+      "nodeApproval": {
+        "schema": "https://enbox.id/schemas/wireguard-mesh/node-approval",
+        "dataFormats": [
+          "application/json"
+        ]
+      },
+      "node": {
+        "schema": "https://enbox.id/schemas/wireguard-mesh/node",
+        "dataFormats": [
+          "application/json"
+        ],
+        "encryptionRequired": true
+      },
+      "nodeInfo": {
+        "schema": "https://enbox.id/schemas/wireguard-mesh/node-info",
+        "dataFormats": [
+          "application/json"
+        ],
+        "encryptionRequired": true
+      },
+      "endpoint": {
+        "schema": "https://enbox.id/schemas/wireguard-mesh/endpoint",
+        "dataFormats": [
+          "application/json"
+        ],
+        "encryptionRequired": true
+      },
+      "aclPolicy": {
+        "schema": "https://enbox.id/schemas/wireguard-mesh/acl-policy",
+        "dataFormats": [
+          "application/json"
+        ],
+        "encryptionRequired": true
+      },
+      "relay": {
+        "schema": "https://enbox.id/schemas/wireguard-mesh/relay",
+        "dataFormats": [
+          "application/json"
+        ],
+        "encryptionRequired": true
+      },
+      "preAuthKey": {
+        "schema": "https://enbox.id/schemas/wireguard-mesh/pre-auth-key",
+        "dataFormats": [
+          "application/json"
+        ],
+        "encryptionRequired": true
+      }
+    },
+    "structure": {
+      "nodeRequest": {
+        "$size": {
+          "max": 3000
+        },
+        "$actions": [
+          {
+            "who": "anyone",
+            "can": [
+              "create"
+            ]
+          },
+          {
+            "who": "recipient",
+            "of": "nodeRequest",
+            "can": [
+              "create",
+              "read",
+              "delete"
+            ]
+          },
+          {
+            "who": "author",
+            "of": "nodeRequest",
+            "can": [
+              "create",
+              "read",
+              "delete"
+            ]
+          }
+        ],
+        "$keyAgreement": {
+          "publicKeyJwk": {
+            "kty": "OKP",
+            "crv": "X25519",
+            "x": "FFUxW3jlOrbW3u_2ZFIoEN5kn64O3nSpdPSnMGI4hww",
+            "kid": "BRAbJbao1oha4JfUONv2dhzxUMuzQ4kftnNOqKjbBC8"
+          }
+        }
+      },
+      "nodeApproval": {
+        "$size": {
+          "max": 3000
+        },
+        "$actions": [
+          {
+            "who": "recipient",
+            "of": "nodeApproval",
+            "can": [
+              "read"
+            ]
+          },
+          {
+            "who": "author",
+            "of": "nodeApproval",
+            "can": [
+              "create",
+              "read",
+              "delete"
+            ]
+          }
+        ],
+        "$keyAgreement": {
+          "publicKeyJwk": {
+            "kty": "OKP",
+            "crv": "X25519",
+            "x": "2cEx0JpWlS139yEAlnpKAVS5e0hMLZSLMzSQvB28HXA",
+            "kid": "s0LYpt5uspG6Kx4pqpWYEhSkkoq59eiD1BdKrrrPhnc"
+          }
+        }
+      },
+      "network": {
+        "$keyAgreement": {
+          "publicKeyJwk": {
+            "kty": "OKP",
+            "crv": "X25519",
+            "x": "t39uI7oBNqTvnYzRXW9-JKqvZWG7tZcoukNct9Pv6HE",
+            "kid": "7R0khZW39ElwX1Y_WBQtrEabmI0ACA7GsjWQI7NSKvg"
+          }
+        },
+        "$actions": [
+          {
+            "who": "anyone",
+            "can": [
+              "read"
+            ]
+          }
+        ],
+        "member": {
+          "$role": true,
+          "$keyAgreement": {
+            "publicKeyJwk": {
+              "kty": "OKP",
+              "crv": "X25519",
+              "x": "tW9SgaYUXR-yJELoTcyXvITWnZpwxwMSfk96OXILszY",
+              "kid": "HPLEfMJh03HT8yiGZqPmGrgIMpUhFdDRq-6kTR9wMNM"
+            }
+          },
+          "$actions": [
+            {
+              "who": "author",
+              "of": "network",
+              "can": [
+                "create",
+                "update",
+                "co-delete",
+                "co-prune"
+              ]
+            },
+            {
+              "role": "network/member",
+              "can": [
+                "read"
+              ]
+            },
+            {
+              "role": "network/node",
+              "can": [
+                "read"
+              ]
+            }
+          ],
+          "nodeRequest": {
+            "$size": {
+              "max": 2000
+            },
+            "$actions": [
+              {
+                "who": "recipient",
+                "of": "network/member",
+                "can": [
+                  "create",
+                  "delete"
+                ]
+              },
+              {
+                "who": "author",
+                "of": "network",
+                "can": [
+                  "read",
+                  "co-delete"
+                ]
+              },
+              {
+                "role": "network/member",
+                "can": [
+                  "read"
+                ]
+              }
+            ],
+            "$keyAgreement": {
+              "publicKeyJwk": {
+                "kty": "OKP",
+                "crv": "X25519",
+                "x": "wreZnVNFEE_M6A-WoTcH8TcRogq21B617J33uxvm20c",
+                "kid": "6OoosO4zYAQ5tNzjHwTdKwWsOeXPCVwkN90dyn_L4wA"
+              }
+            }
+          },
+          "node": {
+            "$role": true,
+            "$squash": true,
+            "$size": {
+              "max": 10000
+            },
+            "$keyAgreement": {
+              "publicKeyJwk": {
+                "kty": "OKP",
+                "crv": "X25519",
+                "x": "zJc7_xSlyoQ4BSi5IegNszDk8iQOs-E839Iyv7htaV0",
+                "kid": "tAlt4iNuMzC9OYwOtHE-QoUIfDMmDOjRy4jCl7N41PI"
+              }
+            },
+            "$actions": [
+              {
+                "who": "author",
+                "of": "network",
+                "can": [
+                  "create",
+                  "update",
+                  "delete"
+                ]
+              },
+              {
+                "role": "network/member",
+                "can": [
+                  "read"
+                ]
+              },
+              {
+                "role": "network/node",
+                "can": [
+                  "read"
+                ]
+              }
+            ],
+            "nodeInfo": {
+              "$squash": true,
+              "$size": {
+                "max": 5000
+              },
+              "$keyAgreement": {
+                "publicKeyJwk": {
+                  "kty": "OKP",
+                  "crv": "X25519",
+                  "x": "iHNjDprTUl8nAmNRVQzfSEO7zzSHwQmaToKF-achNzY",
+                  "kid": "ZJJIJ5647ewJtJ24MfaRNdA7DRbc7L9qFKlMCar0HyY"
+                }
+              },
+              "$actions": [
+                {
+                  "who": "recipient",
+                  "of": "network/member/node",
+                  "can": [
+                    "create",
+                    "update"
+                  ]
+                },
+                {
+                  "role": "network/member",
+                  "can": [
+                    "read"
+                  ]
+                },
+                {
+                  "role": "network/node",
+                  "can": [
+                    "read"
+                  ]
+                }
+              ]
+            },
+            "endpoint": {
+              "$squash": true,
+              "$size": {
+                "max": 2000
+              },
+              "$keyAgreement": {
+                "publicKeyJwk": {
+                  "kty": "OKP",
+                  "crv": "X25519",
+                  "x": "xUIDORdPuKJfsGXUJic_vLP-3T92j6Vou_CvEs_q9yc",
+                  "kid": "7E4ZJ5r_cRrfzc2pfK5rmqoQ-G43EnI7ZSRon9xFzkA"
+                }
+              },
+              "$actions": [
+                {
+                  "who": "recipient",
+                  "of": "network/member/node",
+                  "can": [
+                    "create",
+                    "update"
+                  ]
+                },
+                {
+                  "role": "network/member",
+                  "can": [
+                    "read"
+                  ]
+                },
+                {
+                  "role": "network/node",
+                  "can": [
+                    "read"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "nodeRequest": {
+          "$size": {
+            "max": 2000
+          },
+          "$actions": [
+            {
+              "who": "anyone",
+              "can": [
+                "create"
+              ]
+            },
+            {
+              "who": "author",
+              "of": "network",
+              "can": [
+                "create",
+                "read",
+                "delete",
+                "co-delete"
+              ]
+            }
+          ],
+          "$keyAgreement": {
+            "publicKeyJwk": {
+              "kty": "OKP",
+              "crv": "X25519",
+              "x": "_Wu9ySZ8tcurra6-tRmhbUU0z_L-7joa3LdvA8vmx08",
+              "kid": "ko7PCzJa8linELU0vE9WdvKCczA2xx0lfPqqFNMWFIc"
+            }
+          }
+        },
+        "node": {
+          "$role": true,
+          "$squash": true,
+          "$size": {
+            "max": 10000
+          },
+          "$keyAgreement": {
+            "publicKeyJwk": {
+              "kty": "OKP",
+              "crv": "X25519",
+              "x": "cjeM6LhCFJ-343sqH0nYrPfNJH0Q1wrNSO3g7Pk3Lzk",
+              "kid": "SrP8Fb9C5rcE2NRi2Vb-t0q5BOUMyRCLYB-wS8bP5qo"
+            }
+          },
+          "$actions": [
+            {
+              "who": "author",
+              "of": "network",
+              "can": [
+                "create",
+                "update",
+                "delete"
+              ]
+            },
+            {
+              "role": "network/member",
+              "can": [
+                "read"
+              ]
+            },
+            {
+              "role": "network/node",
+              "can": [
+                "read"
+              ]
+            }
+          ],
+          "nodeInfo": {
+            "$squash": true,
+            "$size": {
+              "max": 5000
+            },
+            "$keyAgreement": {
+              "publicKeyJwk": {
+                "kty": "OKP",
+                "crv": "X25519",
+                "x": "KLlOvfBjGm6Q6B5lVck7egCvZ6d3s315yXTevBkQZV0",
+                "kid": "siLovoONGcVggskBRmb5KjNFy_JHFHsz5hlqXU2QJD4"
+              }
+            },
+            "$actions": [
+              {
+                "who": "recipient",
+                "of": "network/node",
+                "can": [
+                  "create",
+                  "update"
+                ]
+              },
+              {
+                "role": "network/member",
+                "can": [
+                  "read"
+                ]
+              },
+              {
+                "role": "network/node",
+                "can": [
+                  "read"
+                ]
+              }
+            ]
+          },
+          "endpoint": {
+            "$squash": true,
+            "$size": {
+              "max": 2000
+            },
+            "$keyAgreement": {
+              "publicKeyJwk": {
+                "kty": "OKP",
+                "crv": "X25519",
+                "x": "mAdZ2bYooUbjYZ-ts3DPbKEDTWSR6XRO5GScLPmt-FY",
+                "kid": "UlqMq1sf_Wqfl6lVWdYBofhziMlniCAu4H-J_iV-XDc"
+              }
+            },
+            "$actions": [
+              {
+                "who": "recipient",
+                "of": "network/node",
+                "can": [
+                  "create",
+                  "update"
+                ]
+              },
+              {
+                "role": "network/member",
+                "can": [
+                  "read"
+                ]
+              },
+              {
+                "role": "network/node",
+                "can": [
+                  "read"
+                ]
+              }
+            ]
+          }
+        },
+        "aclPolicy": {
+          "$squash": true,
+          "$size": {
+            "max": 100000
+          },
+          "$keyAgreement": {
+            "publicKeyJwk": {
+              "kty": "OKP",
+              "crv": "X25519",
+              "x": "TfXmdUgB3CRbmmt4CUNhNEyrj6_xpxXN2pE5nEyMeEo",
+              "kid": "ULEVGFfuX5ORz750WbM2wMCdSQEwXNdv3Xp6OVkefZA"
+            }
+          },
+          "$actions": [
+            {
+              "who": "author",
+              "of": "network",
+              "can": [
+                "create",
+                "update"
+              ]
+            },
+            {
+              "role": "network/member",
+              "can": [
+                "read"
+              ]
+            },
+            {
+              "role": "network/node",
+              "can": [
+                "read"
+              ]
+            }
+          ]
+        },
+        "relay": {
+          "$keyAgreement": {
+            "publicKeyJwk": {
+              "kty": "OKP",
+              "crv": "X25519",
+              "x": "N6QZAG-p1FCmKSNNamYbXkaCloHO3ZfW21Dpapr28DU",
+              "kid": "u7dEPbB8HF4BG5_PVQIAn0J6oyV9K9M72WNxBIJgAII"
+            }
+          },
+          "$actions": [
+            {
+              "who": "author",
+              "of": "network",
+              "can": [
+                "create",
+                "update",
+                "delete"
+              ]
+            },
+            {
+              "role": "network/member",
+              "can": [
+                "read"
+              ]
+            },
+            {
+              "role": "network/node",
+              "can": [
+                "read"
+              ]
+            }
+          ]
+        },
+        "preAuthKey": {
+          "$keyAgreement": {
+            "publicKeyJwk": {
+              "kty": "OKP",
+              "crv": "X25519",
+              "x": "YyZayLe9Laxtc4hfBrUlxQbrbPntXpa9tTjlzNn2uS8",
+              "kid": "ZHVd-F15W-4benvjSVR6r78wPzY98IZF3YOO9qgEmgw"
+            }
+          },
+          "$recordLimit": {
+            "max": 100,
+            "strategy": "reject"
+          },
+          "$actions": [
+            {
+              "who": "author",
+              "of": "network",
+              "can": [
+                "create",
+                "delete",
+                "read"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "$keyAgreement": {
+      "publicKeyJwk": {
+        "kty": "OKP",
+        "crv": "X25519",
+        "x": "O_7HTScjHYAMOousgxR1PFghTmGHHIdcmNK-GJJ7i0I",
+        "kid": "7XjiIiDlLPVENMQXUFYvGO_TYwYENoLacyOF_vmeydQ"
+      }
+    }
+  },
+  "networkRecordId": "bafyreigsu2p56r564dq5p7l5njdp6shpcd65ufqfwgoutsbplomunn6njy"
+}

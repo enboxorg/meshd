@@ -70,7 +70,7 @@ func TestNewJsonRpcSubscribeRequest(t *testing.T) {
 	msg, _ := buildSubscribeMessage(s, RecordsFilter{
 		Protocol:     "https://example.com/test",
 		ProtocolPath: "root",
-	}, "")
+	}, "", MessageAuth{})
 
 	subID := "sub-test-123"
 	req := newJsonRpcSubscribeRequest("did:dht:target", msg, subID)

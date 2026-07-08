@@ -43,6 +43,21 @@ type CreateMemberParams struct {
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 	Label                string
 	PermissionGrantID    string
+
+	// DelegatedGrant is the full delegated grant message invoked when the
+	// signer is a wallet-session delegate. Mutually exclusive with
+	// PermissionGrantID.
+	DelegatedGrant json.RawMessage
+
+	// ProtocolDefinition is the installed mesh protocol definition (with
+	// injected $keyAgreement keys). Empty resolves it automatically (the
+	// owner rebuilds it locally; other writers fetch it from the anchor DWN).
+	ProtocolDefinition json.RawMessage
+
+	// AudienceSource resolves (and mints) sealed role-audience keys for
+	// roleAudience keyEncryption entries. Nil uses a DWN-backed source on
+	// the anchor DWN with owner seal keys when available.
+	AudienceSource dwncrypto.AudienceSource
 }
 
 // CreateMember creates a member record on the anchor DWN.
@@ -60,12 +75,19 @@ func CreateMember(ctx context.Context, params CreateMemberParams) (*MemberRegist
 		return nil, fmt.Errorf("marshaling member data: %w", err)
 	}
 
-	var recipients []dwncrypto.KeyEncryptionInput
-	if params.EncryptionKeyManager != nil {
-		recipients, err = params.EncryptionKeyManager.DeriveWriteEncryption("network/member")
-		if err != nil {
-			return nil, fmt.Errorf("deriving member encryption: %w", err)
-		}
+	recipients, err := buildEncryptionRecipients(ctx, writeEncryptionParams{
+		anchorEndpoint:  params.AnchorEndpoint,
+		anchorDID:       params.AnchorDID,
+		signer:          params.Signer,
+		encMgr:          params.EncryptionKeyManager,
+		protocolPath:    "network/member",
+		parentContextID: params.NetworkRecordID,
+		protocolDef:     params.ProtocolDefinition,
+		audienceSource:  params.AudienceSource,
+		writeAuth:       dwn.MessageAuth{PermissionGrantID: params.PermissionGrantID, DelegatedGrant: params.DelegatedGrant},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("deriving member encryption: %w", err)
 	}
 
 	agent := dwn.NewSimpleAgent(params.AnchorEndpoint, params.Signer)
@@ -81,6 +103,7 @@ func CreateMember(ctx context.Context, params CreateMemberParams) (*MemberRegist
 		Data:                 memberDataBytes,
 		EncryptionRecipients: recipients,
 		PermissionGrantID:    params.PermissionGrantID,
+		DelegatedGrant:       params.DelegatedGrant,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("writing member record: %w", err)
@@ -169,6 +192,21 @@ type RegisterNodeParams struct {
 	// PermissionGrantID invokes a wallet/member grant when the signer is a
 	// local node DID acting for the network owner.
 	PermissionGrantID string
+
+	// DelegatedGrant is the full delegated grant message invoked when the
+	// signer is a wallet-session delegate. Mutually exclusive with
+	// PermissionGrantID.
+	DelegatedGrant json.RawMessage
+
+	// ProtocolDefinition is the installed mesh protocol definition (with
+	// injected $keyAgreement keys). Empty resolves it automatically (the
+	// owner rebuilds it locally; other writers fetch it from the anchor DWN).
+	ProtocolDefinition json.RawMessage
+
+	// AudienceSource resolves (and mints) sealed role-audience keys for
+	// roleAudience keyEncryption entries. Nil uses a DWN-backed source on
+	// the anchor DWN with owner seal keys when available.
+	AudienceSource dwncrypto.AudienceSource
 }
 
 // RegisterNode writes or updates the node record (encrypted) on the anchor DWN.
@@ -181,8 +219,8 @@ type RegisterNodeParams struct {
 // (network/node or network/member/node) for authorization. The node can then
 // write its own nodeInfo and endpoint records as the recipient.
 func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistration, error) {
-	if params.EncryptionKeyManager == nil {
-		return nil, fmt.Errorf("EncryptionKeyManager is required for encrypted writes")
+	if params.EncryptionKeyManager == nil && params.AudienceSource == nil && len(params.ProtocolDefinition) == 0 {
+		return nil, fmt.Errorf("encrypted writes need an EncryptionKeyManager (owner) or a delegate AudienceSource/ProtocolDefinition")
 	}
 
 	nodeData := map[string]any{
@@ -226,7 +264,17 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 	}
 
 	// Derive encryption recipients.
-	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
+	recipients, err := buildEncryptionRecipients(ctx, writeEncryptionParams{
+		anchorEndpoint:  params.AnchorEndpoint,
+		anchorDID:       params.AnchorDID,
+		signer:          params.Signer,
+		encMgr:          params.EncryptionKeyManager,
+		protocolPath:    encryptionPath,
+		parentContextID: parentContextID,
+		protocolDef:     params.ProtocolDefinition,
+		audienceSource:  params.AudienceSource,
+		writeAuth:       dwn.MessageAuth{PermissionGrantID: params.PermissionGrantID, DelegatedGrant: params.DelegatedGrant},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("deriving node encryption: %w", err)
 	}
@@ -245,6 +293,7 @@ func RegisterNode(ctx context.Context, params RegisterNodeParams) (*NodeRegistra
 		EncryptionRecipients: recipients,
 		Squash:               params.Squash,
 		PermissionGrantID:    params.PermissionGrantID,
+		DelegatedGrant:       params.DelegatedGrant,
 	}
 
 	// If updating, set the existing record ID and preserve dateCreated.
@@ -283,6 +332,9 @@ type WriteNodeInfoParams struct {
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 	Hostname             string
 	PermissionGrantID    string
+	DelegatedGrant       json.RawMessage
+	ProtocolDefinition   json.RawMessage
+	AudienceSource       dwncrypto.AudienceSource
 }
 
 // WriteNodeInfo writes or updates the node's operational info record (encrypted).
@@ -291,8 +343,8 @@ type WriteNodeInfoParams struct {
 // operational data: hostname, OS, and capabilities. It is written by the device
 // itself using recipient-of-node authorization.
 func WriteNodeInfo(ctx context.Context, params WriteNodeInfoParams) error {
-	if params.EncryptionKeyManager == nil {
-		return fmt.Errorf("EncryptionKeyManager is required for encrypted writes")
+	if params.EncryptionKeyManager == nil && params.AudienceSource == nil && len(params.ProtocolDefinition) == 0 {
+		return fmt.Errorf("encrypted writes need an EncryptionKeyManager (owner) or a delegate AudienceSource/ProtocolDefinition")
 	}
 
 	hostname := params.Hostname
@@ -324,7 +376,17 @@ func WriteNodeInfo(ctx context.Context, params WriteNodeInfoParams) error {
 		encryptionPath = "network/node/nodeInfo"
 	}
 
-	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
+	recipients, err := buildEncryptionRecipients(ctx, writeEncryptionParams{
+		anchorEndpoint:  params.AnchorEndpoint,
+		anchorDID:       params.AnchorDID,
+		signer:          params.Signer,
+		encMgr:          params.EncryptionKeyManager,
+		protocolPath:    encryptionPath,
+		parentContextID: nodeContextID,
+		protocolDef:     params.ProtocolDefinition,
+		audienceSource:  params.AudienceSource,
+		writeAuth:       dwn.MessageAuth{PermissionGrantID: params.PermissionGrantID, DelegatedGrant: params.DelegatedGrant},
+	})
 	if err != nil {
 		return fmt.Errorf("deriving nodeInfo encryption: %w", err)
 	}
@@ -343,6 +405,7 @@ func WriteNodeInfo(ctx context.Context, params WriteNodeInfoParams) error {
 		EncryptionRecipients: recipients,
 		Squash:               true,
 		PermissionGrantID:    params.PermissionGrantID,
+		DelegatedGrant:       params.DelegatedGrant,
 	})
 	if err != nil {
 		return fmt.Errorf("writing nodeInfo: %w", err)
@@ -359,8 +422,8 @@ func WriteNodeInfo(ctx context.Context, params WriteNodeInfoParams) error {
 // The endpoint record is a child of the node record and contains the
 // node's network-reachable endpoints (public IPs, local IPs, NAT type).
 func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
-	if params.EncryptionKeyManager == nil {
-		return fmt.Errorf("EncryptionKeyManager is required for encrypted writes")
+	if params.EncryptionKeyManager == nil && params.AudienceSource == nil && len(params.ProtocolDefinition) == 0 {
+		return fmt.Errorf("encrypted writes need an EncryptionKeyManager (owner) or a delegate AudienceSource/ProtocolDefinition")
 	}
 
 	epMap := map[string]any{
@@ -392,7 +455,17 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 		encryptionPath = "network/node/endpoint"
 	}
 
-	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption(encryptionPath)
+	recipients, err := buildEncryptionRecipients(ctx, writeEncryptionParams{
+		anchorEndpoint:  params.AnchorEndpoint,
+		anchorDID:       params.AnchorDID,
+		signer:          params.Signer,
+		encMgr:          params.EncryptionKeyManager,
+		protocolPath:    encryptionPath,
+		parentContextID: nodeContextID,
+		protocolDef:     params.ProtocolDefinition,
+		audienceSource:  params.AudienceSource,
+		writeAuth:       dwn.MessageAuth{PermissionGrantID: params.PermissionGrantID, DelegatedGrant: params.DelegatedGrant},
+	})
 	if err != nil {
 		return fmt.Errorf("deriving endpoint encryption: %w", err)
 	}
@@ -411,6 +484,7 @@ func WriteEndpoint(ctx context.Context, params WriteEndpointParams) error {
 		EncryptionRecipients: recipients,
 		Squash:               true,
 		PermissionGrantID:    params.PermissionGrantID,
+		DelegatedGrant:       params.DelegatedGrant,
 	})
 	if err != nil {
 		return fmt.Errorf("writing endpoint: %w", err)
@@ -435,6 +509,9 @@ type WriteEndpointParams struct {
 	LocalEndpoints       []string
 	NATType              string
 	PermissionGrantID    string
+	DelegatedGrant       json.RawMessage
+	ProtocolDefinition   json.RawMessage
+	AudienceSource       dwncrypto.AudienceSource
 
 	// DiscoKey is this node's current disco public key (base64).
 	DiscoKey string
@@ -448,6 +525,9 @@ type WriteACLPolicyParams struct {
 	Signer               *dwn.Signer
 	EncryptionKeyManager *dwncrypto.EncryptionKeyManager
 	PermissionGrantID    string
+	DelegatedGrant       json.RawMessage
+	ProtocolDefinition   json.RawMessage
+	AudienceSource       dwncrypto.AudienceSource
 
 	// PolicyData is the JSON-encoded ACL policy payload.
 	PolicyData []byte
@@ -456,11 +536,21 @@ type WriteACLPolicyParams struct {
 // WriteACLPolicy writes a squashed ACL policy snapshot (encrypted) on the anchor
 // DWN. Only the network author (anchor) can create/update the ACL policy.
 func WriteACLPolicy(ctx context.Context, params WriteACLPolicyParams) error {
-	if params.EncryptionKeyManager == nil {
-		return fmt.Errorf("EncryptionKeyManager is required for encrypted writes")
+	if params.EncryptionKeyManager == nil && params.AudienceSource == nil && len(params.ProtocolDefinition) == 0 {
+		return fmt.Errorf("encrypted writes need an EncryptionKeyManager (owner) or a delegate AudienceSource/ProtocolDefinition")
 	}
 
-	recipients, err := params.EncryptionKeyManager.DeriveWriteEncryption("network/aclPolicy")
+	recipients, err := buildEncryptionRecipients(ctx, writeEncryptionParams{
+		anchorEndpoint:  params.AnchorEndpoint,
+		anchorDID:       params.AnchorDID,
+		signer:          params.Signer,
+		encMgr:          params.EncryptionKeyManager,
+		protocolPath:    "network/aclPolicy",
+		parentContextID: params.NetworkRecordID,
+		protocolDef:     params.ProtocolDefinition,
+		audienceSource:  params.AudienceSource,
+		writeAuth:       dwn.MessageAuth{PermissionGrantID: params.PermissionGrantID, DelegatedGrant: params.DelegatedGrant},
+	})
 	if err != nil {
 		return fmt.Errorf("deriving ACL policy encryption: %w", err)
 	}
@@ -478,6 +568,7 @@ func WriteACLPolicy(ctx context.Context, params WriteACLPolicyParams) error {
 		EncryptionRecipients: recipients,
 		Squash:               true,
 		PermissionGrantID:    params.PermissionGrantID,
+		DelegatedGrant:       params.DelegatedGrant,
 	})
 	if err != nil {
 		return fmt.Errorf("writing ACL policy: %w", err)

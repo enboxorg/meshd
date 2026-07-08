@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
@@ -120,6 +121,30 @@ type Config struct {
 	// runtime endpoint writes.
 	WritePermissionGrantID string
 
+	// DelegatedGrant is the full delegated grant message invoked for
+	// control-plane read/query operations. Takes precedence over
+	// PermissionGrantID (enbox connect sessions).
+	DelegatedGrant json.RawMessage
+
+	// WriteDelegatedGrant is the full delegated grant message invoked for
+	// this node's runtime endpoint writes. Takes precedence over
+	// WritePermissionGrantID.
+	WriteDelegatedGrant json.RawMessage
+
+	// GrantKeys holds the delegate's grant-key subtree decrypters for
+	// decrypting protocol records (enbox connect sessions).
+	GrantKeys *control.GrantKeySet
+
+	// AudienceSource resolves (and mints) sealed role-audience keys for
+	// encrypted endpoint writes and role-audience decryption. Nil lets each
+	// write construct a default DWN-backed source.
+	AudienceSource *control.SealedAudienceSource
+
+	// ProtocolDefinition is the installed mesh protocol definition (with
+	// injected $keyAgreement keys), used for encrypted endpoint writes.
+	// Empty resolves it from the anchor DWN per write.
+	ProtocolDefinition json.RawMessage
+
 	// WireGuardPrivateKey is the raw 32-byte X25519 private key derived from
 	// the node's did:jwk identity. The engine uses this key for WireGuard,
 	// so peers can derive the matching public key from the node's DID.
@@ -205,6 +230,15 @@ func New(cfg Config) (*Engine, error) {
 	}
 	if cfg.PermissionGrantID != "" {
 		controlOpts = append(controlOpts, control.WithPermissionGrantID(cfg.PermissionGrantID))
+	}
+	if len(cfg.DelegatedGrant) > 0 {
+		controlOpts = append(controlOpts, control.WithDelegatedGrant(cfg.DelegatedGrant))
+	}
+	if cfg.GrantKeys != nil {
+		controlOpts = append(controlOpts, control.WithGrantKeys(cfg.GrantKeys))
+	}
+	if cfg.AudienceSource != nil {
+		controlOpts = append(controlOpts, control.WithAudienceSource(cfg.AudienceSource))
 	}
 	dwnClient := control.NewDWNClient(
 		cfg.AnchorEndpoint,
@@ -631,6 +665,9 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 			DiscoKey:             discoKeyB64,
 			NATType:              "unknown",
 			PermissionGrantID:    cfg.WritePermissionGrantID,
+			DelegatedGrant:       cfg.WriteDelegatedGrant,
+			ProtocolDefinition:   cfg.ProtocolDefinition,
+			AudienceSource:       audienceSourceOrNil(cfg.AudienceSource),
 		})
 		if err != nil {
 			l.Warn("failed to publish endpoints to DWN",
@@ -638,6 +675,15 @@ func makeEndpointUpdateFunc(cfg Config, l *slog.Logger) func(context.Context, []
 			)
 		}
 	}
+}
+
+// audienceSourceOrNil converts a possibly-nil *control.SealedAudienceSource
+// into a dwncrypto.AudienceSource interface without wrapping a typed nil.
+func audienceSourceOrNil(src *control.SealedAudienceSource) dwncrypto.AudienceSource {
+	if src == nil {
+		return nil
+	}
+	return src
 }
 
 // init registers the slogToLogf adapter.

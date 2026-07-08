@@ -1,83 +1,89 @@
 {
-  "_README": "encryption-v1 protocolPath fixture. Decrypt: derive X25519 leaf private key from readerEncPrivateKeyJwk along derivationPath (HKDF-SHA256 per segment), then for the keyEncryption entry whose derivationScheme==='protocolPath': ECDH(leafPriv, entry.ephemeralPublicKey) -> HKDF-SHA256 KEK (info below) -> AES-KW unwrap entry.encryptedKey -> CEK; then AES-256-CTR decrypt ciphertext with recordMessage.encryption.initializationVector.",
-  "_encoding": "ciphertext_b64 and expectedPlaintext_b64 are STANDARD base64. All JWK members (x, d) and every field under recordMessage.encryption are base64url, exactly as emitted by the SDK.",
+  "description": "encryption v1-sealed protocolPath fixture (wireguard-mesh network/preAuthKey). Decrypt: derive the X25519 leaf private key from readerEncPrivateKeyJwk along derivationPath (HKDF-SHA256 per segment, salt empty, info = utf8(segment)), then for the keyEncryption entry whose derivationScheme === \"protocolPath\": ECDH(leafPriv, entry.ephemeralPublicKey) -> HKDF-SHA256 KEK (info = compact JSON array, see _scheme) -> AES-KW unwrap entry.encryptedKey -> CEK; AES-256-CTR decrypt ciphertext with recordMessage.encryption.initializationVector.",
+  "generatedAt": "2026-07-08T00:51:20.611Z",
+  "sdkCommit": "6b5b9786ee931f8d80d84e5f2865166c39568eb6",
+  "generator": "scripts/gen-crypto-fixtures/generate.ts",
+  "_README": "The record is genuine, server-validated SDK output: the wireguard-mesh protocol (with $keyAgreement keys injected via Protocols.deriveAndInjectPublicEncryptionKeys from the owner root) was installed on a real DWN and the encrypted RecordsWrite passed full protocol authorization including encryption enforcement. network/preAuthKey has no read-role rules, so keyEncryption has exactly one protocolPath entry.",
+  "_encoding": "ciphertext_b64 and expectedPlaintext_b64 are STANDARD base64 (legacy field shape). All JWK members (x, d) and every field under recordMessage.encryption are base64url, exactly as emitted by the SDK.",
   "_scheme": {
-    "contentEncryption": "A256CTR (AES-256-CTR, 16-byte IV, no authentication tag)",
-    "keyWrap": "X25519-HKDF-SHA256+A256KW (ECDH X25519 -> HKDF-SHA256 -> AES-KeyWrap)",
-    "kekHkdf": "HKDF-SHA256, salt = empty, length = 32 bytes, info (utf-8) = \"X25519-HKDF-SHA256+A256KW|protocolPath|<keyId>\"",
+    "contentEncryption": "A256CTR (AES-256-CTR, 16-byte IV used as the full counter block, no authentication tag)",
+    "keyWrap": "X25519-HKDF-SHA256+A256KW (ECDH X25519 -> HKDF-SHA256 -> RFC 3394 AES-KeyWrap)",
+    "kekHkdf": "HKDF-SHA256, salt = empty, length = 32 bytes, info (utf-8) = [\"X25519-HKDF-SHA256+A256KW\",\"protocolPath\",\"<keyId>\"] (compact JSON array, no whitespace)",
     "encryptionLocation": "top-level `encryption` field on the RecordsWrite message (NOT inside `descriptor`)"
   },
-  "protocol": "https://enbox.id/protocols/test-mesh",
-  "protocolPath": "network/config",
+  "protocol": "https://enbox.id/protocols/wireguard-mesh",
+  "protocolPath": "network/preAuthKey",
   "derivationScheme": "protocolPath",
   "derivationPath": [
     "protocolPath",
-    "https://enbox.id/protocols/test-mesh",
+    "https://enbox.id/protocols/wireguard-mesh",
     "network",
-    "config"
+    "preAuthKey"
   ],
-  "rootKeyId": "did:dht:hkxryjw1gajwuw6ubz1buwrt5fq5opwxy4nyndyaxb3qq83iad6o#enc",
-  "readerDid": "did:dht:hkxryjw1gajwuw6ubz1buwrt5fq5opwxy4nyndyaxb3qq83iad6o",
+  "rootKeyId": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6InVKb3pNcFpyeUJmdWFHZXFiLUliTXluZHVoQ0RwamtibUd1SUNTZEtIOGciLCJraWQiOiI5NDc4cDJUeU9QX2k2OGtRbHRuWmc2WUlTYkk3NUh1el9aOHctWmRfWXhjIiwiYWxnIjoiRWREU0EifQ#0",
+  "readerDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6InVKb3pNcFpyeUJmdWFHZXFiLUliTXluZHVoQ0RwamtibUd1SUNTZEtIOGciLCJraWQiOiI5NDc4cDJUeU9QX2k2OGtRbHRuWmc2WUlTYkk3NUh1el9aOHctWmRfWXhjIiwiYWxnIjoiRWREU0EifQ",
   "readerEncPrivateKeyJwk": {
     "kty": "OKP",
     "crv": "X25519",
-    "d": "-Io6nmkAl5MErJAhw4gNR9LEKJvsQPiTXUtCJohBT9E",
-    "x": "bOFlq67TRRnDaJdDNh4GefffY5BtzaATOKbNkxnV6HU",
-    "kid": "GWQ0SrfSGBfA_gZ55aKto0SoOP-bH4Mi8LNqRUsCOUo"
+    "d": "-OTiRxviXcqQW7dB-OOwJZvEAYYJAfZZk_-T8hJhCVI",
+    "x": "Yruji4JwQ8m_kmFVqWs9uR7ycMRtYnObLHZxBpj06HA",
+    "kid": "5pMhti2zx2grNZxslu6f1blDHTGp__G-ibhhT5zYlIk"
   },
-  "contextId": "bafyreiftaxsl43vunckremkfgh7rbpvabott77mah5zlz6wdqv4qd3pd4q/bafyreih5ohmx6yfbekvatcepnh4ikgvpn6fhadppejvw5fro7u4met5qr4",
+  "contextId": "bafyreiaz5dp2wwr2bc6w7viapiq2lsv7ghhndy3ycjkfczgtrzd37bjnue/bafyreifxmvgag5sgu6tp33wehmh7tdmifx3cpk5e7s2qrgl4nyanehffsq",
+  "networkRecordId": "bafyreiaz5dp2wwr2bc6w7viapiq2lsv7ghhndy3ycjkfczgtrzd37bjnue",
   "recordMessage": {
-    "recordId": "bafyreih5ohmx6yfbekvatcepnh4ikgvpn6fhadppejvw5fro7u4met5qr4",
+    "recordId": "bafyreifxmvgag5sgu6tp33wehmh7tdmifx3cpk5e7s2qrgl4nyanehffsq",
     "descriptor": {
       "interface": "Records",
       "method": "Write",
-      "protocol": "https://enbox.id/protocols/test-mesh",
-      "protocolPath": "network/config",
-      "parentId": "bafyreiftaxsl43vunckremkfgh7rbpvabott77mah5zlz6wdqv4qd3pd4q",
-      "dataCid": "bafkreibmurt5lg376j2jvxvpvxfqfikdgo2l36g5wiidfaf63rj3e4rppi",
+      "protocol": "https://enbox.id/protocols/wireguard-mesh",
+      "protocolPath": "network/preAuthKey",
+      "schema": "https://enbox.id/schemas/wireguard-mesh/pre-auth-key",
+      "parentId": "bafyreiaz5dp2wwr2bc6w7viapiq2lsv7ghhndy3ycjkfczgtrzd37bjnue",
+      "dataCid": "bafkreiar3lv7ynxvxvlev5h7mlqeed7tecw4csfab4dihdr5s7pehle4yi",
       "dataSize": 37,
-      "dateCreated": "2026-06-30T17:47:34.236654Z",
-      "messageTimestamp": "2026-06-30T17:47:34.236654Z",
+      "dateCreated": "2026-07-08T00:51:20.711000Z",
+      "messageTimestamp": "2026-07-08T00:51:20.711000Z",
       "dataFormat": "application/json"
     },
     "encryption": {
       "algorithm": "A256CTR",
-      "initializationVector": "GFJcb3uUesPe7AuddPCJPQ",
+      "initializationVector": "PIVTrFZyexLcYsUDXG6inw",
       "keyEncryption": [
         {
           "algorithm": "X25519-HKDF-SHA256+A256KW",
-          "encryptedKey": "t_9vgAYx0TQ4D4MYt4n82BQSXV2cOZ9OnLUZH0VWpcCwDRczauX15g",
+          "encryptedKey": "UMl3pIp04_R6D-tkDNhEpZ0NksMXx0GLc7FWSE5SFUjWNKnGEW3jdg",
           "ephemeralPublicKey": {
             "kty": "OKP",
             "crv": "X25519",
-            "x": "017uZvs4PqigkXJgg-TidQtcoKrgf8YUk6qXAmhF1yA",
-            "kid": "NF2i3lMMF3Jx4XIa74jof5swEqhdvCa6ol8_06hjQ3E"
+            "x": "d_ipDRvcQOsdpa0rTV3QZJp_ypH76vcSAtLrHuHcOVU",
+            "kid": "ALYRFfFodGHJfkmm9bdKHWBPmFDRQuDMFGzJPMF-yLI"
           },
-          "keyId": "1P3SpOIoxU2CoygEUcyOAUe6I_2uQl_F6blHrvqHjwg",
+          "keyId": "IFNC3iOkUL2mvMu0DA6ewxYmmAEnKT6_6zaYvkswvSE",
           "derivationScheme": "protocolPath"
         }
       ]
     },
-    "contextId": "bafyreiftaxsl43vunckremkfgh7rbpvabott77mah5zlz6wdqv4qd3pd4q/bafyreih5ohmx6yfbekvatcepnh4ikgvpn6fhadppejvw5fro7u4met5qr4",
+    "contextId": "bafyreiaz5dp2wwr2bc6w7viapiq2lsv7ghhndy3ycjkfczgtrzd37bjnue/bafyreifxmvgag5sgu6tp33wehmh7tdmifx3cpk5e7s2qrgl4nyanehffsq",
     "authorization": {
       "signature": {
-        "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWloNW9obXg2eWZiZWt2YXRjZXBuaDRpa2d2cG42ZmhhZHBwZWp2dzVmcm83dTRtZXQ1cXI0IiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWlld2V1dXBuYXhnaGR3aHBmZ2x0bzN1anhzbjV5NjU3bmJ3cDJyb3RoeGxpcHh3Y29wMzQ0IiwiY29udGV4dElkIjoiYmFmeXJlaWZ0YXhzbDQzdnVuY2tyZW1rZmdoN3JicHZhYm90dDc3bWFoNXpsejZ3ZHF2NHFkM3BkNHEvYmFmeXJlaWg1b2hteDZ5ZmJla3ZhdGNlcG5oNGlrZ3ZwbjZmaGFkcHBlanZ3NWZybzd1NG1ldDVxcjQiLCJlbmNyeXB0aW9uQ2lkIjoiYmFmeXJlaWR6NXN5c3JweGV2ZjJjNmgybjdzdDdnZ2xxMjRnZ2s3dXhueGJ5MnBreHMzaWFrZ2U0dGUifQ",
+        "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWlmeG12Z2FnNXNndTZ0cDMzd2VobWg3dGRtaWZ4M2NwazVlN3MycXJnbDRueWFuZWhmZnNxIiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWljM2lueXp5enZxZWk2YTV6ZnV2c2NwczRrMnJtb2hsZWduejQ2bW5ydmN4eGhrbGdmN3VpIiwiY29udGV4dElkIjoiYmFmeXJlaWF6NWRwMnd3cjJiYzZ3N3ZpYXBpcTJsc3Y3Z2hobmR5M3ljamtmY3pndHJ6ZDM3YmpudWUvYmFmeXJlaWZ4bXZnYWc1c2d1NnRwMzN3ZWhtaDd0ZG1pZngzY3BrNWU3czJxcmdsNG55YW5laGZmc3EiLCJlbmNyeXB0aW9uQ2lkIjoiYmFmeXJlaWZzNnJycXJxMzVtZGVucGl6enYzemllN2dyenBiYmM0ZW93NmhpNWFjcmZkNm9scmNwN2EifQ",
         "signatures": [
           {
-            "protected": "eyJraWQiOiJkaWQ6ZGh0OmhreHJ5ancxZ2Fqd3V3NnViejFidXdydDVmcTVvcHd4eTRueW5keWF4YjNxcTgzaWFkNm8jMCIsImFsZyI6IkVkRFNBIn0",
-            "signature": "7l5RZZRMiFFtU-UBRv1ptjhMTMJq5l9eFBIzkLlcbNZJIQ6FcHUPjiEm__zM15fWw7ap_L5fKdxPbDoFn5J2DA"
+            "protected": "eyJraWQiOiJkaWQ6andrOmV5SmpjbllpT2lKRlpESTFOVEU1SWl3aWEzUjVJam9pVDB0UUlpd2llQ0k2SW5WS2IzcE5jRnB5ZVVKbWRXRkhaWEZpTFVsaVRYbHVaSFZvUTBSd2FtdGliVWQxU1VOVFpFdElPR2NpTENKcmFXUWlPaUk1TkRjNGNESlVlVTlRWDJrMk9HdFJiSFJ1V21jMldVbFRZa2szTlVoMWVsOWFPSGN0V21SZldYaGpJaXdpWVd4bklqb2lSV1JFVTBFaWZRIzAiLCJhbGciOiJFZERTQSJ9",
+            "signature": "cdBUrW3y1q6i4_JeGp8AYmEgTTj2KkNzOQsuDrsrTUOcZx4LlF7YKCI7c56RL_ilkT0ztE58YkkDHrXjixCAAg"
           }
         ]
       }
     }
   },
-  "ciphertext_b64": "ZcnZQjL3Wbk3LOu7OoPXEC4yn4bERPCXmSYvCXIHBZajDXUMgQ==",
+  "ciphertext_b64": "bcma5WQtWfnImXjEE4IcF3EP5xOtNhwH1xIdVyZVnYicEG/LqA==",
   "expectedPlaintext_b64": "eyJzZWNyZXQiOiJwcm90b2NvbFBhdGgtb25seSIsIm4iOjQyfQ==",
   "_fields": {
-    "readerEncPrivateKeyJwk": "owner identity's #enc X25519 root private key JWK; `d` is the 32-byte scalar (base64url)",
-    "rootKeyId": "fully-qualified verification-method id of the reader #enc key",
+    "readerEncPrivateKeyJwk": "owner X25519 root private key JWK (did:jwk identity: Ed25519 signing key converted to X25519, as the enbox agent does); `d` is the 32-byte scalar (base64url)",
+    "rootKeyId": "fully-qualified verification-method id of the owner did:jwk key",
     "derivationPath": "absolute HKDF path from root to the protocol-path leaf key",
-    "recordMessage": "full RecordsWriteMessage; recordMessage.encryption is the encryption-v1 envelope",
+    "recordMessage": "full RecordsWriteMessage; recordMessage.encryption is the encryption envelope",
     "ciphertext_b64": "the encrypted record DATA bytes (what encryption decrypts to expectedPlaintext)",
     "expectedPlaintext_b64": "original plaintext bytes BEFORE encryption"
   }

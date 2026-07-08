@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,12 +48,22 @@ func TestApprovePreAuthRequestsRegistersWalletOwnedNodeUnderMember(t *testing.T)
 		Label:     "wallet-owned-node",
 	}
 
+	// The joiner has the mesh protocol installed on its own tenant (as
+	// `meshd join` ensures) — the delivery record is wrapped to the
+	// role-path key it publishes there.
+	nodeInstalledDef, err := dwncrypto.InjectEncryptionDirectives(protocols.MeshProtocolJSON, node.EncryptionPrivateKey)
+	if err != nil {
+		t.Fatalf("injecting node encryption keys: %v", err)
+	}
+
 	var (
 		mu                  sync.Mutex
 		memberRecordID      string
 		memberNodeWrite     *dwn.Message
 		topLevelNodeWritten bool
 		deleteRecordID      string
+		deliveryWrites      []*dwn.Message
+		deliveryBodies      [][]byte
 	)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -67,6 +78,18 @@ func TestApprovePreAuthRequestsRegistersWalletOwnedNodeUnderMember(t *testing.T)
 		}
 
 		msg := rpcReq.Params.Message
+		if descriptorString(msg.Descriptor, "interface") == "Protocols" {
+			// The delivery flow fetches the RECIPIENT's installed protocol
+			// definition to find its role-path $keyAgreement key.
+			entry, err := json.Marshal(map[string]any{
+				"descriptor": map[string]any{"definition": json.RawMessage(nodeInstalledDef)},
+			})
+			if err != nil {
+				t.Fatalf("marshal protocols entry: %v", err)
+			}
+			writeDWNTestReply(t, w, rpcReq.ID, dwn.Status{Code: 200, Detail: "OK"}, []json.RawMessage{entry})
+			return
+		}
 		switch descriptorString(msg.Descriptor, "method") {
 		case "Query":
 			filter, _ := msg.Descriptor["filter"].(map[string]any)
@@ -98,6 +121,11 @@ func TestApprovePreAuthRequestsRegistersWalletOwnedNodeUnderMember(t *testing.T)
 				memberNodeWrite = &copyMsg
 			case "network/node":
 				topLevelNodeWritten = true
+			case dwncrypto.EncryptionControlDeliveryPath:
+				copyMsg := *msg
+				body, _ := io.ReadAll(r.Body)
+				deliveryWrites = append(deliveryWrites, &copyMsg)
+				deliveryBodies = append(deliveryBodies, body)
 			}
 			mu.Unlock()
 			writeDWNTestReply(t, w, rpcReq.ID, dwn.Status{Code: 202, Detail: "Accepted"}, nil)
@@ -161,6 +189,37 @@ func TestApprovePreAuthRequestsRegistersWalletOwnedNodeUnderMember(t *testing.T)
 	}
 	if deleteRecordID != requestRecordID {
 		t.Fatalf("deleted record = %q, want node request %q", deleteRecordID, requestRecordID)
+	}
+
+	// The approval must hand the joiner its role-audience key: a delivery
+	// record for the required network/member/node role wrapped to the
+	// node's role-path key, decryptable with the node's own root.
+	var nodeDelivery *dwn.Message
+	var deliveryData []byte
+	for i, delivery := range deliveryWrites {
+		if descriptorString(delivery.Descriptor, "recipient") != node.URI {
+			continue
+		}
+		tags, _ := delivery.Descriptor["tags"].(map[string]any)
+		if descriptorString(tags, "rolePath") == "network/member/node" {
+			nodeDelivery = delivery
+			deliveryData = deliveryBodies[i]
+			break
+		}
+	}
+	if nodeDelivery == nil {
+		t.Fatalf("no network/member/node delivery record written for the joiner (deliveries: %d)", len(deliveryWrites))
+	}
+	tags, _ := nodeDelivery.Descriptor["tags"].(map[string]any)
+	if got, want := descriptorString(tags, "contextId"), networkID+"/"+memberRecordID; got != want {
+		t.Fatalf("delivery contextId = %q, want %q", got, want)
+	}
+	payload, err := dwncrypto.DecryptDeliveryRecord(node.EncryptionPrivateKey, protocols.MeshProtocolURI, "network/member/node", nodeDelivery.Encryption, deliveryData)
+	if err != nil {
+		t.Fatalf("joiner cannot decrypt its delivery record: %v", err)
+	}
+	if payload.RolePath != "network/member/node" || payload.KeyMaterial.PrivateKeyJwk.D == "" {
+		t.Fatalf("delivery payload incomplete: %+v", payload)
 	}
 }
 

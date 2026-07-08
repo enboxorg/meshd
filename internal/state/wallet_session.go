@@ -30,6 +30,21 @@ type WalletSession struct {
 	NodeMultiPartyProtocols     []string          `json:"nodeMultiPartyProtocols,omitempty"`
 	DelegateDecryptionKeys      []json.RawMessage `json:"delegateDecryptionKeys,omitempty"`
 	DelegateMultiPartyProtocols []string          `json:"delegateMultiPartyProtocols,omitempty"`
+
+	// ConnectServerURL is the enbox connect relay the session was established
+	// through (enbox connect sessions only).
+	ConnectServerURL string `json:"connectServerUrl,omitempty"`
+	// SessionRevocations map each session grant to the pre-issued revocation
+	// grant that lets the delegate self-revoke on disconnect (enbox connect
+	// sessions only).
+	SessionRevocations []SessionRevocation `json:"sessionRevocations,omitempty"`
+}
+
+// SessionRevocation pairs a session grant with its pre-issued revocation
+// grant, as returned by the enbox connect flow.
+type SessionRevocation struct {
+	GrantID           string `json:"grantId"`
+	RevocationGrantID string `json:"revocationGrantId"`
 }
 
 func (s *WalletSession) NormalizeOwnerDID() {

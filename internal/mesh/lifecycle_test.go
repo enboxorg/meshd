@@ -52,7 +52,6 @@ func TestE2EFullMeshLifecycle(t *testing.T) {
 	protocolDef, err := dwncrypto.InjectEncryptionDirectives(
 		protocols.MeshProtocolJSON,
 		anchor.DID.EncryptionPrivateKey,
-		anchor.DID.EncryptionKeyID(),
 	)
 	if err != nil {
 		t.Fatalf("injecting encryption directives: %v", err)
@@ -414,7 +413,6 @@ func TestE2ERecipientBasedOwnerNodeWrite(t *testing.T) {
 	protocolDef, err := dwncrypto.InjectEncryptionDirectives(
 		protocols.MeshProtocolJSON,
 		anchor.DID.EncryptionPrivateKey,
-		anchor.DID.EncryptionKeyID(),
 	)
 	if err != nil {
 		t.Fatalf("InjectEncryptionDirectives: %v", err)
@@ -577,7 +575,6 @@ func TestE2EACLPolicyRoundTrip(t *testing.T) {
 	protocolDef, err := dwncrypto.InjectEncryptionDirectives(
 		protocols.MeshProtocolJSON,
 		anchor.DID.EncryptionPrivateKey,
-		anchor.DID.EncryptionKeyID(),
 	)
 	if err != nil {
 		t.Fatalf("InjectEncryptionDirectives: %v", err)
@@ -761,7 +758,6 @@ func TestE2ELoadStateNonAnchor(t *testing.T) {
 	protocolDef, err := dwncrypto.InjectEncryptionDirectives(
 		protocols.MeshProtocolJSON,
 		anchor.DID.EncryptionPrivateKey,
-		anchor.DID.EncryptionKeyID(),
 	)
 	if err != nil {
 		t.Fatalf("InjectEncryptionDirectives: %v", err)
@@ -817,6 +813,44 @@ func TestE2ELoadStateNonAnchor(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("registering node B: %v", err)
+	}
+
+	// Under the sealed model a role holder decrypts records via the
+	// role-audience key, which reaches it as an `$encryption/delivery`
+	// record wrapped to the role-path key the recipient publishes in its
+	// OWN installed protocol definition. Install the protocol on node B's
+	// tenant (as real joiners must), then run the production owner-side
+	// delivery. The audience tuple contextId for the depth-1 network/node
+	// role is the network record ID.
+	nodeBDef, err := dwncrypto.InjectEncryptionDirectives(
+		protocols.MeshProtocolJSON,
+		nodeB.DID.EncryptionPrivateKey,
+	)
+	if err != nil {
+		t.Fatalf("injecting node B encryption keys: %v", err)
+	}
+	status, err = nodeB.API.ConfigureProtocol(ctx, nodeB.DID.URI, nodeBDef)
+	if err != nil || (status.Code >= 300 && status.Code != 409) {
+		t.Fatalf("installing protocol on node B tenant: err=%v, status=%v", err, status)
+	}
+
+	t.Log("Owner delivers the network/node audience key to node B")
+	ownerAudienceSrc := control.NewSealedAudienceSource(control.SealedAudienceSourceConfig{
+		Client:             dwn.NewClient(endpoint, anchor.Signer),
+		Tenant:             anchor.DID.URI,
+		ProtocolDefinition: protocolDef,
+		SealKeys:           control.OwnerRolePathKeys{Manager: anchor.EncMgr},
+	})
+	if err := mesh.DeliverAudienceKey(ctx, mesh.DeliverAudienceKeyParams{
+		AnchorEndpoint: endpoint,
+		AnchorDID:      anchor.DID.URI,
+		Signer:         anchor.Signer,
+		AudienceSource: ownerAudienceSrc,
+		RecipientDID:   nodeB.DID.URI,
+		RolePath:       "network/node",
+		ContextID:      networkRecordID,
+	}); err != nil {
+		t.Fatalf("delivering audience key: %v", err)
 	}
 
 	// Node B runs LoadState with the network/node role.

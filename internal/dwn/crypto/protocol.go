@@ -7,20 +7,22 @@ import (
 )
 
 // InjectEncryptionDirectives walks a protocol definition's "structure" and
-// injects derived X25519 public keys into each `$keyAgreement` block.
+// injects derived X25519 public keys into each `$keyAgreement` block, plus a
+// top-level `$keyAgreement` holding the protocol-level key.
 //
-// This must be called before ProtocolsConfigure. For each protocol path
-// level that has (or should have) a `$keyAgreement` directive (the
-// encryption-v1 rule-set directive, renamed from `$encryption`), it:
-//  1. Derives the X25519 private key for that path level via HKDF-SHA256
-//  2. Computes the corresponding X25519 public key
-//  3. Populates the `$keyAgreement` block with rootKeyId and publicKeyJwk
+// This must be called before ProtocolsConfigure. It is the Go counterpart of
+// the SDK's Protocols.deriveAndInjectPublicEncryptionKeys: for each protocol
+// path level it (1) derives the X25519 private key for that path via
+// HKDF-SHA256, (2) computes the corresponding public key and (3) sets
+// `$keyAgreement` to exactly `{"publicKeyJwk": {...}}` — the server rejects
+// additional members. `$ref` nodes (cross-protocol attachment points) are
+// skipped but their children are still processed.
 //
-// The rootPrivateKey is the DWN owner's root X25519 private key (32 bytes),
-// identified by rootKeyID (e.g., "did:dht:abc...#enc").
+// The rootPrivateKey is the DWN owner's root X25519 private key (32 bytes).
 //
-// The protocol definition is modified in-place. Returns the modified definition.
-func InjectEncryptionDirectives(definition json.RawMessage, rootPrivateKey []byte, rootKeyID string) (json.RawMessage, error) {
+// The protocol definition is modified in-place. Returns the modified
+// definition.
+func InjectEncryptionDirectives(definition json.RawMessage, rootPrivateKey []byte) (json.RawMessage, error) {
 	var defMap map[string]any
 	if err := json.Unmarshal(definition, &defMap); err != nil {
 		return nil, fmt.Errorf("parsing protocol definition: %w", err)
@@ -46,8 +48,15 @@ func InjectEncryptionDirectives(definition json.RawMessage, rootPrivateKey []byt
 	}
 	defer clear(protocolLevelKey) // Zero intermediate derivation key.
 
+	// Top-level $keyAgreement carries the protocol-level public key.
+	protocolLevelPub, err := X25519PublicKey(protocolLevelKey)
+	if err != nil {
+		return nil, fmt.Errorf("computing protocol-level public key: %w", err)
+	}
+	defMap["$keyAgreement"] = keyAgreementDirective(protocolLevelPub)
+
 	// Recursively walk the structure and inject $keyAgreement at each level.
-	if err := injectEncryptionRecursive(structure, protocolLevelKey, rootKeyID); err != nil {
+	if err := injectEncryptionRecursive(structure, protocolLevelKey); err != nil {
 		return nil, err
 	}
 
@@ -59,9 +68,25 @@ func InjectEncryptionDirectives(definition json.RawMessage, rootPrivateKey []byt
 	return result, nil
 }
 
+// keyAgreementDirective builds the `$keyAgreement` block for a derived public
+// key. The wire shape is exactly {"publicKeyJwk": {...}} (server-side
+// additionalProperties:false).
+func keyAgreementDirective(publicKey []byte) map[string]any {
+	return map[string]any{
+		"publicKeyJwk": map[string]any{
+			"kty": "OKP",
+			"crv": "X25519",
+			"x":   base64.RawURLEncoding.EncodeToString(publicKey),
+		},
+	}
+}
+
 // injectEncryptionRecursive walks the protocol structure tree and injects
-// $keyAgreement directives at each non-$-prefixed child.
-func injectEncryptionRecursive(ruleSet map[string]any, parentKey []byte, rootKeyID string) error {
+// $keyAgreement directives at each non-$-prefixed child. Rule sets with a
+// $ref member are attachment points governed by the referenced protocol's
+// keys; they get no $keyAgreement of their own, but their children (which
+// belong to the composing protocol) are still processed.
+func injectEncryptionRecursive(ruleSet map[string]any, parentKey []byte) error {
 	for key, value := range ruleSet {
 		// Skip special $ directives — they are not type names.
 		if len(key) > 0 && key[0] == '$' {
@@ -79,21 +104,12 @@ func injectEncryptionRecursive(ruleSet map[string]any, parentKey []byte, rootKey
 			return fmt.Errorf("deriving key for path segment %q: %w", key, err)
 		}
 
-		// Build the publicKeyJwk for this level.
-		publicKeyJwk := map[string]any{
-			"kty": "OKP",
-			"crv": "X25519",
-			"x":   base64.RawURLEncoding.EncodeToString(childPublicKey),
-		}
-
-		// Inject or update the $keyAgreement directive (encryption-v1).
-		childRuleSet["$keyAgreement"] = map[string]any{
-			"rootKeyId":    rootKeyID,
-			"publicKeyJwk": publicKeyJwk,
+		if _, isRef := childRuleSet["$ref"]; !isRef {
+			childRuleSet["$keyAgreement"] = keyAgreementDirective(childPublicKey)
 		}
 
 		// Recurse into children, then zero the child private key.
-		err = injectEncryptionRecursive(childRuleSet, childPrivateKey, rootKeyID)
+		err = injectEncryptionRecursive(childRuleSet, childPrivateKey)
 		clear(childPrivateKey) // Zero intermediate derivation key.
 		if err != nil {
 			return err
@@ -104,14 +120,16 @@ func injectEncryptionRecursive(ruleSet map[string]any, parentKey []byte, rootKey
 }
 
 // EncryptionKeyManager holds an identity's root X25519 encryption key and
-// derives the protocol-path keys used to encrypt and decrypt records.
+// derives the protocol-path keys used to decrypt records (and to open
+// audience seals via DeriveRolePathKey).
 //
 // It is the Go counterpart of the TypeScript SDK's EncryptionKeyDeriver, but a
 // concrete type that holds the private key material.
 type EncryptionKeyManager struct {
 	// RootPrivateKey is the identity's root X25519 private key (32 bytes).
 	// For the network owner this is the anchor #enc key; for a node it is the
-	// node identity's #enc key (used for role-audience decryption).
+	// node identity's #enc key (used to decrypt `$encryption/delivery`
+	// records addressed to it).
 	RootPrivateKey []byte
 
 	// RootKeyID is the fully qualified key ID (e.g., "did:dht:abc...#enc").
@@ -131,29 +149,6 @@ func (m *EncryptionKeyManager) Close() {
 // (i.e., this node can derive protocol-path keys).
 func (m *EncryptionKeyManager) IsOwner() bool {
 	return len(m.RootPrivateKey) > 0
-}
-
-// DeriveWriteEncryption derives the encryption inputs for a RecordsWrite at the
-// given protocol path using the protocolPath scheme.
-//
-// The protocolPath is slash-delimited (e.g., "network/node"). The returned
-// KeyEncryptionInput targets the derived PUBLIC key; the DWN owner re-derives
-// the matching PRIVATE key to decrypt.
-func (m *EncryptionKeyManager) DeriveWriteEncryption(protocolPath string) ([]KeyEncryptionInput, error) {
-	segments := splitProtocolPath(protocolPath)
-	fullPath := BuildProtocolPathDerivation(m.ProtocolURI, segments...)
-
-	_, derivedPublicKey, err := DerivePrivateKey(m.RootPrivateKey, fullPath)
-	if err != nil {
-		return nil, fmt.Errorf("deriving encryption key for path %q: %w", protocolPath, err)
-	}
-
-	return []KeyEncryptionInput{
-		{
-			PublicKey:        derivedPublicKey,
-			DerivationScheme: DerivationSchemeProtocolPath,
-		},
-	}, nil
 }
 
 // DeriveDecryptionKey derives the X25519 private key for decrypting a record at
