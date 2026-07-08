@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.3](https://github.com/enboxorg/meshd/compare/v0.14.2...v0.14.3) (2026-07-08)
+
+
+### Bug Fixes
+
+* **admin-dapp:** build service worker as classic iife ([#180](https://github.com/enboxorg/meshd/issues/180)) ([a62aea4](https://github.com/enboxorg/meshd/commit/a62aea40442c255f7697a4db446de726cb8c12ea))
+* **admin-dapp:** decrypt encrypted DWN query replies ([#181](https://github.com/enboxorg/meshd/issues/181)) ([ae75ab3](https://github.com/enboxorg/meshd/commit/ae75ab37cfbe02d952d19670c743ff73371d8beb))
+
 ## [0.14.2](https://github.com/enboxorg/meshd/compare/v0.14.1...v0.14.2) (2026-07-08)
 
 
