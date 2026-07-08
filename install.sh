@@ -130,6 +130,25 @@ add_to_path() {
   local shell_name
   shell_name="$(basename "${SHELL:-bash}")"
 
+  # fish does not use POSIX `export` syntax and does not source ~/.profile.
+  # Drop an auto-sourced conf.d snippet using fish's own idempotent helper.
+  if [ "$shell_name" = "fish" ]; then
+    local fish_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d"
+    local fish_file="${fish_dir}/meshd.fish"
+    local fish_line="fish_add_path ${INSTALL_DIR}"
+    if [ -f "$fish_file" ] && grep -Fxq "$fish_line" "$fish_file"; then
+      return
+    fi
+    if mkdir -p "$fish_dir" 2>/dev/null && [ -w "$fish_dir" ]; then
+      printf '# meshd\n%s\n' "$fish_line" >> "$fish_file"
+      printf 'Updated PATH in %s\n' "$fish_file"
+      return
+    fi
+    printf 'Add this to your fish config:\n'
+    printf '  %s\n' "$fish_line"
+    return
+  fi
+
   local line
   line="export PATH=${INSTALL_DIR}:\$PATH"
 
