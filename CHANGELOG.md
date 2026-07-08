@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.5](https://github.com/enboxorg/meshd/compare/v0.14.4...v0.14.5) (2026-07-08)
+
+
+### Bug Fixes
+
+* **release:** ad-hoc code-sign macOS binaries so they run on Apple Silicon ([#185](https://github.com/enboxorg/meshd/issues/185)) ([5ad3a19](https://github.com/enboxorg/meshd/commit/5ad3a19ea8e300e3c807d6f1eaefed6c012f242f))
+
 ## [0.14.4](https://github.com/enboxorg/meshd/compare/v0.14.3...v0.14.4) (2026-07-08)
 
 
