@@ -36,6 +36,14 @@ export default defineConfig({
       },
 
       injectManifest: {
+        // Build the worker as a classic IIFE, not an ES module. The default
+        // "es" format leaves `import.meta.url` (from a dependency's own
+        // registration helper) in the bundle; the injected registerSW.js
+        // registers sw.js as a *classic* worker, and `import.meta` in a
+        // classic script is a SyntaxError that aborts registration. iife
+        // strips import.meta and also gives the widest browser support
+        // (module service workers are unsupported in Firefox).
+        rollupFormat: "iife",
         maximumFileSizeToCacheInBytes: 5000000,
         globPatterns: ["**/*.{js,css,html,json,svg,png,ico}"]
       },
