@@ -17,8 +17,10 @@ export default defineConfig({
       strategies: "injectManifest",
       srcDir: "src",
       filename: "sw.ts",
-      registerType: "prompt",
-      injectRegister: "auto",
+      registerType: "autoUpdate",
+      // Inject a dedicated registration script into index.html so the service
+      // worker registers on every load independently of the app bundle.
+      injectRegister: "script",
 
       pwaAssets: {
         disabled: false,
