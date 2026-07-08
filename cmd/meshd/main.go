@@ -2004,12 +2004,8 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 		return err
 	}
 	// Determine protocol role for queries. Delegated sessions read as the
-	// owner (no role).
-	queryRole := ""
-	if ns.AnchorDID != identity.URI {
-		queryRole = "network/node"
-	}
-	queryRole = protocolRoleForAuth(readAuth, queryRole)
+	// owner (no role); member-associated nodes read as network/member.
+	queryRole := protocolRoleForAuth(readAuth, readProtocolRole(ns.AnchorDID, identity.URI, ns.MemberRecordID))
 	delegateSession := delegateSessionForCLIBestEffort(ctx, stateDir, meta, ns, operationIdentity, readAuth)
 	encMgr := newEncryptionKeyManager(identity)
 	if resp, err := loadControlStateForCLI(ctx, ns, identity, operationIdentity, encMgr, readAuth, delegateSession); err == nil {
@@ -2126,11 +2122,7 @@ func loadControlStateForCLI(ctx context.Context, ns *state.NetworkState, identit
 		signerIdentity = identity
 	}
 	selfNodeDID := networkNodeDID(ns, identity.URI)
-	protocolRole := ""
-	if ns.AnchorDID != selfNodeDID {
-		protocolRole = "network/node"
-	}
-	protocolRole = protocolRoleForAuth(readAuth, protocolRole)
+	protocolRole := protocolRoleForAuth(readAuth, readProtocolRole(ns.AnchorDID, selfNodeDID, ns.MemberRecordID))
 	signer := dwnSigner(signerIdentity)
 	opts := []control.Option{
 		control.WithEncryptionKeyManager(encMgr),
@@ -2507,10 +2499,7 @@ func cmdPeerRemove(ctx context.Context, args []string, flagProfile string) error
 	}
 	signer := dwnSigner(operationIdentity)
 	api := dwn.NewDwnAPI(dwn.NewSimpleAgent(ns.AnchorEndpoint, signer))
-	protocolRole := ""
-	if ns.AnchorDID != selfNodeDID {
-		protocolRole = "network/node"
-	}
+	protocolRole := readProtocolRole(ns.AnchorDID, selfNodeDID, ns.MemberRecordID)
 
 	candidates, err := queryPeerRemoveCandidates(ctx, api, ns, peerDID, readAuth, protocolRoleForAuth(readAuth, protocolRole))
 	if err != nil {
@@ -3880,13 +3869,10 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	}
 
 	// Determine the protocol role for DWN queries. The anchor reads as
-	// author (no role needed). Non-anchor nodes use their node role, except
+	// author (no role needed). Non-anchor nodes use their node role
+	// (network/member when member-associated, else network/node), except
 	// delegated sessions, which read as the owner via their grants.
-	protocolRole := ""
-	if ns.AnchorDID != nodeIdentity.URI {
-		protocolRole = "network/node"
-	}
-	protocolRole = protocolRoleForAuth(readAuth, protocolRole)
+	protocolRole := protocolRoleForAuth(readAuth, readProtocolRole(ns.AnchorDID, nodeIdentity.URI, ns.MemberRecordID))
 	discoRegistry := engine.NewInMemoryDiscoRegistry()
 
 	engCfg := engine.Config{
@@ -4867,6 +4853,30 @@ func protocolRoleForAuth(auth dwn.MessageAuth, role string) string {
 		return ""
 	}
 	return role
+}
+
+// readProtocolRole returns the DWN protocol role a node presents on
+// control-plane read/query operations.
+//
+//   - The anchor (network owner) reads as author of the network record — no role.
+//   - A member-associated node (joined via invite/preauth, so MemberRecordID is
+//     set) is the recipient of a network/member record for its own DID and holds
+//     the network/member role, which is granted read on the node/nodeInfo/endpoint
+//     records it needs. It does NOT hold a top-level network/node role, so it must
+//     present network/member, not network/node.
+//   - An owner-provisioned node (no MemberRecordID) holds a top-level network/node
+//     role and presents network/node.
+//
+// Delegated/enbox-connect sessions are zeroed separately by protocolRoleForAuth,
+// which callers apply on top of this value.
+func readProtocolRole(anchorDID, selfNodeDID, memberRecordID string) string {
+	if anchorDID == selfNodeDID {
+		return ""
+	}
+	if memberRecordID != "" {
+		return "network/member"
+	}
+	return "network/node"
 }
 
 func walletSessionGrantGranteeDID(session *state.WalletSession, meta identityMetadata) (string, bool) {
@@ -6034,11 +6044,8 @@ func cmdACLShow(ctx context.Context, args []string, flagProfile string) error {
 	encMgr := newEncryptionKeyManager(identity)
 
 	// Determine protocol role for queries. Delegated sessions read as the
-	// owner (no role).
-	aclQueryRole := ""
-	if ns.AnchorDID != identity.URI {
-		aclQueryRole = "network/node"
-	}
+	// owner (no role); member-associated nodes read as network/member.
+	aclQueryRole := readProtocolRole(ns.AnchorDID, identity.URI, ns.MemberRecordID)
 	readAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
 	if err != nil {
 		return err
