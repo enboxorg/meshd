@@ -59,7 +59,13 @@ jobs:
           go test ./internal/mesh/ -run TestE2E -v -count=1 -timeout 180s
           go test ./cmd/meshd/ -run TestCLIInviteJoinFlow -v -count=1 -timeout 180s
 
-      - name: Engine Connectivity Tests (with retry)
+      # The two-node WireGuard e2e (TestE2EEnboxConnectTwoNodeMesh) needs a
+      # dwn-server with the /connect relay plus bun + the enbox monorepo for
+      # the headless wallet approver — see docs/e2e-local.md. Until CI
+      # provisions that stack, this step reports the skip explicitly instead
+      # of matching zero tests and passing vacuously (the old TestTwoNode
+      # pattern matched nothing after the v1 encryption migration).
+      - name: Engine Connectivity E2E
         env:
           DWN_ENDPOINT: ${{ secrets.DWN_ENDPOINT }}
         run: |
@@ -67,13 +73,4 @@ jobs:
             echo "DWN_ENDPOINT not configured, skipping"
             exit 0
           fi
-          for attempt in 1 2 3; do
-            echo "==> Attempt $attempt/3"
-            if go test ./internal/engine/ -run TestTwoNode -v -count=1 -timeout 300s; then
-              exit 0
-            fi
-            echo "==> Attempt $attempt failed, retrying..."
-            sleep 5
-          done
-          echo "==> All 3 attempts failed"
-          exit 1
+          go test ./internal/engine/ -run TestE2EEnboxConnectTwoNodeMesh -v -count=1 -timeout 300s

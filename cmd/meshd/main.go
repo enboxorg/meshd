@@ -88,6 +88,16 @@ Up flags:
   --foreground      Run in the current terminal instead of background
   -v, --verbose     Enable debug logging
 
+Auth connect flags:
+  --wallet <url>    Wallet URL override
+  --connect-server <url>
+                    Enbox connect relay override (default: discovered from
+                    the wallet, or ENBOX_CONNECT_SERVER_URL)
+  --wallet-uri-out <file>
+                    Also write the wallet connect URI to a file
+  --legacy          Use the legacy meshd:// wallet-page flow
+  --response <file> Import a legacy wallet response JSON
+
 Admin flags:
   --owner <did>     Open the dashboard for a specific wallet/owner DID
   --network <id>    Preselect a network record in the dashboard
@@ -113,6 +123,8 @@ Environment:
   MESHD_VAULT_CACHE_TTL
                      Cache interactive vault unlocks for this duration (default: 5m, 0 disables)
   DWN_ENDPOINT       Default DWN endpoint URL override
+  ENBOX_CONNECT_SERVER_URL
+                     Enbox connect relay URL override for 'auth connect'
   MESHD_WALLET_RESPONSE_ENDPOINT
                      DWN endpoint for wallet approval handoff on headless devices
 `
@@ -410,6 +422,11 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	nodeDID := firstNonEmpty(meta.NodeDID, identity.URI)
 	ownerDID := firstNonEmpty(meta.OwnerDID, nodeDID)
 	if meta.AuthType == profile.AuthTypeWalletAuthorizedNode && ownerDID != nodeDID {
+		// Enbox connect sessions create the network directly with their
+		// delegated grants; legacy sessions go through the wallet page.
+		if handled, err := createNetworkAsDelegateCLI(ctx, stateDir, identity, meta, name, endpoint, opts); handled {
+			return err
+		}
 		return createWalletNetworkCreateRequest(ctx, flagProfile, stateDir, identity, name, endpoint, opts)
 	}
 
@@ -443,7 +460,6 @@ func cmdNetworkCreate(ctx context.Context, args []string, flagProfile string) er
 	protocolDef, err := dwncrypto.InjectEncryptionDirectives(
 		protocols.MeshProtocolJSON,
 		identity.EncryptionPrivateKey,
-		identity.EncryptionKeyID(),
 	)
 	if err != nil {
 		return fmt.Errorf("injecting encryption keys: %w", err)
@@ -1397,6 +1413,7 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 	if err := ensureDWNTenantRegistered(ctx, endpoint, identity); err != nil {
 		return err
 	}
+	ensureJoinerProtocolInstalled(ctx, endpoint, identity)
 
 	signer := &dwn.Signer{
 		DID:        identity.URI,
@@ -1555,12 +1572,12 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 
 	// Write nodeInfo if we have a node record (so the network sees our hostname/OS).
 	if nodeRecordID != "" {
-		nodeInfoGrantID, grantErr := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, nodeInfoProtocolPath(&state.NetworkState{MemberRecordID: memberRecordID}), networkID, false)
+		nodeInfoAuth, grantErr := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, nodeInfoProtocolPath(&state.NetworkState{MemberRecordID: memberRecordID}), networkID, false)
 		if grantErr != nil {
 			return grantErr
 		}
 		nodeInfoSigner := signer
-		if nodeInfoGrantID != "" {
+		if authHasGrant(nodeInfoAuth) {
 			operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, identity)
 			if err != nil {
 				return err
@@ -1575,7 +1592,8 @@ func cmdNetworkJoin(ctx context.Context, args []string, flagProfile string) erro
 			NodeRecordID:         nodeRecordID,
 			Signer:               nodeInfoSigner,
 			EncryptionKeyManager: encMgr,
-			PermissionGrantID:    nodeInfoGrantID,
+			PermissionGrantID:    nodeInfoAuth.PermissionGrantID,
+			DelegatedGrant:       nodeInfoAuth.DelegatedGrant,
 		}); err != nil {
 			fmt.Printf("  Warning: nodeInfo write failed: %v\n", err)
 		} else {
@@ -1781,9 +1799,15 @@ func cmdInviteCreate(ctx context.Context, args []string, flagProfile string) err
 	if err != nil {
 		return err
 	}
-	writeGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
+	writeAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
 	if err != nil {
 		return err
+	}
+	if len(writeAuth.DelegatedGrant) > 0 {
+		// CreatePreAuthKeyParams cannot invoke delegated grants yet, so enbox
+		// wallet sessions cannot write preAuthKey records. Devices join those
+		// networks directly: run 'meshd auth connect' and 'meshd up' there.
+		return fmt.Errorf("invite create is not yet supported for enbox wallet sessions; connect the new device with 'meshd auth connect' and run 'meshd up' instead")
 	}
 	expiresAt := time.Time{}
 	if expires > 0 {
@@ -1809,7 +1833,7 @@ func cmdInviteCreate(ctx context.Context, args []string, flagProfile string) err
 		ExpiresAt:            expiresAt,
 		Reusable:             reusable,
 		Ephemeral:            ephemeral,
-		PermissionGrantID:    writeGrantID,
+		PermissionGrantID:    writeAuth.PermissionGrantID,
 	})
 	if err != nil {
 		return err
@@ -1861,6 +1885,7 @@ func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
 			if err := ensureDWNTenantRegistered(ctx, payload.Endpoint, identity); err != nil {
 				return err
 			}
+			ensureJoinerProtocolInstalled(ctx, payload.Endpoint, identity)
 			refreshed, err := refreshPendingJoin(ctx, stateDir, ns, flagProfile, noStartHint)
 			if err != nil {
 				return err
@@ -1875,6 +1900,7 @@ func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
 	if err := ensureDWNTenantRegistered(ctx, payload.Endpoint, identity); err != nil {
 		return err
 	}
+	ensureJoinerProtocolInstalled(ctx, payload.Endpoint, identity)
 	meta := resolveIdentityMetadata(flagProfile, identity.URI)
 	nodeDID := firstNonEmpty(meta.NodeDID, identity.URI)
 	ownerDID := firstNonEmpty(requestedOwnerDID, meta.OwnerDID, nodeDID)
@@ -1973,17 +1999,20 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 	agent := dwn.NewSimpleAgent(ns.AnchorEndpoint, signer)
 	api := dwn.NewDwnAPI(agent)
 
-	// Determine protocol role for queries.
+	readAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
+	if err != nil {
+		return err
+	}
+	// Determine protocol role for queries. Delegated sessions read as the
+	// owner (no role).
 	queryRole := ""
 	if ns.AnchorDID != identity.URI {
 		queryRole = "network/node"
 	}
-	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
-	if err != nil {
-		return err
-	}
+	queryRole = protocolRoleForAuth(readAuth, queryRole)
+	delegateSession := delegateSessionForCLIBestEffort(ctx, stateDir, meta, ns, operationIdentity, readAuth)
 	encMgr := newEncryptionKeyManager(identity)
-	if resp, err := loadControlStateForCLI(ctx, ns, identity, operationIdentity, encMgr, readGrantID); err == nil {
+	if resp, err := loadControlStateForCLI(ctx, ns, identity, operationIdentity, encMgr, readAuth, delegateSession); err == nil {
 		if refreshed, _, saveErr := refreshLocalMembershipMetadataFromMap(stateDir, ns, resp); saveErr == nil && refreshed != nil {
 			ns = refreshed
 			selfOwnerDID = networkOwnerDID(ns, firstNonEmpty(meta.OwnerDID, identity.URI))
@@ -2000,7 +2029,8 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 			ContextID:    ns.NetworkRecordID,
 		},
 		DateSort:          "createdAscending",
-		PermissionGrantID: readGrantID,
+		PermissionGrantID: readAuth.PermissionGrantID,
+		DelegatedGrant:    readAuth.DelegatedGrant,
 	}, queryRole)
 	if err != nil {
 		return fmt.Errorf("querying peers: %w", err)
@@ -2019,7 +2049,8 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 			ContextID:    ns.NetworkRecordID,
 		},
 		DateSort:          "createdAscending",
-		PermissionGrantID: readGrantID,
+		PermissionGrantID: readAuth.PermissionGrantID,
+		DelegatedGrant:    readAuth.DelegatedGrant,
 	}, queryRole)
 	if mErr == nil && mStatus.Code == 200 {
 		for _, memberRecord := range memberRecords {
@@ -2030,7 +2061,8 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 					ContextID:    ns.NetworkRecordID + "/" + memberRecord.ID,
 				},
 				DateSort:          "createdAscending",
-				PermissionGrantID: readGrantID,
+				PermissionGrantID: readAuth.PermissionGrantID,
+				DelegatedGrant:    readAuth.DelegatedGrant,
 			}, queryRole)
 			if mnErr == nil && mnStatus.Code == 200 {
 				records = append(records, memberNodeRecords...)
@@ -2086,7 +2118,7 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 	return nil
 }
 
-func loadControlStateForCLI(ctx context.Context, ns *state.NetworkState, identity *did.DID, signerIdentity *did.DID, encMgr *dwncrypto.EncryptionKeyManager, readGrantID string) (*control.MapResponse, error) {
+func loadControlStateForCLI(ctx context.Context, ns *state.NetworkState, identity *did.DID, signerIdentity *did.DID, encMgr *dwncrypto.EncryptionKeyManager, readAuth dwn.MessageAuth, delegateSession *mesh.DelegateSession) (*control.MapResponse, error) {
 	if ns == nil || identity == nil {
 		return nil, fmt.Errorf("network state and identity are required")
 	}
@@ -2098,16 +2130,30 @@ func loadControlStateForCLI(ctx context.Context, ns *state.NetworkState, identit
 	if ns.AnchorDID != selfNodeDID {
 		protocolRole = "network/node"
 	}
+	protocolRole = protocolRoleForAuth(readAuth, protocolRole)
 	signer := dwnSigner(signerIdentity)
+	opts := []control.Option{
+		control.WithEncryptionKeyManager(encMgr),
+		control.WithProtocolRole(protocolRole),
+	}
+	if len(readAuth.DelegatedGrant) > 0 {
+		opts = append(opts, control.WithDelegatedGrant(readAuth.DelegatedGrant))
+	} else {
+		opts = append(opts, control.WithPermissionGrantID(readAuth.PermissionGrantID))
+	}
+	if delegateSession != nil {
+		opts = append(opts,
+			control.WithGrantKeys(delegateSession.GrantKeys),
+			control.WithAudienceSource(delegateSession.AudienceSource),
+		)
+	}
 	client := control.NewDWNClient(
 		ns.AnchorEndpoint,
 		ns.AnchorDID,
 		ns.NetworkRecordID,
 		selfNodeDID,
 		signer,
-		control.WithEncryptionKeyManager(encMgr),
-		control.WithProtocolRole(protocolRole),
-		control.WithPermissionGrantID(readGrantID),
+		opts...,
 	)
 	return client.LoadState(ctx)
 }
@@ -2316,7 +2362,7 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 	if err != nil {
 		return err
 	}
-	writeGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
+	writeAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
 	if err != nil {
 		return err
 	}
@@ -2346,7 +2392,8 @@ func cmdPeerAdd(ctx context.Context, args []string, flagProfile string) error {
 		MeshIP:               peerMeshIP.String(),
 		Label:                opts.label,
 		OwnerDID:             opts.ownerDID,
-		PermissionGrantID:    writeGrantID,
+		PermissionGrantID:    writeAuth.PermissionGrantID,
+		DelegatedGrant:       writeAuth.DelegatedGrant,
 	})
 	if err != nil {
 		return fmt.Errorf("creating node record: %w", err)
@@ -2445,11 +2492,11 @@ func cmdPeerRemove(ctx context.Context, args []string, flagProfile string) error
 	if err != nil {
 		return err
 	}
-	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
+	readAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
 	if err != nil {
 		return err
 	}
-	deleteGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsDelete, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
+	deleteAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsDelete, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
 	if err != nil {
 		return err
 	}
@@ -2465,7 +2512,7 @@ func cmdPeerRemove(ctx context.Context, args []string, flagProfile string) error
 		protocolRole = "network/node"
 	}
 
-	candidates, err := queryPeerRemoveCandidates(ctx, api, ns, peerDID, readGrantID, protocolRole)
+	candidates, err := queryPeerRemoveCandidates(ctx, api, ns, peerDID, readAuth, protocolRoleForAuth(readAuth, protocolRole))
 	if err != nil {
 		return err
 	}
@@ -2475,7 +2522,12 @@ func cmdPeerRemove(ctx context.Context, args []string, flagProfile string) error
 
 	fmt.Printf("Removing peer %s from %q...\n", peerDID, ns.NetworkName)
 	for _, candidate := range candidates {
-		status, err := api.Delete(ctx, ns.AnchorDID, candidate.RecordID, true, protocolRole, deleteGrantID)
+		status, err := api.DeleteWithParams(ctx, ns.AnchorDID, dwn.DeleteParams{
+			RecordID:          candidate.RecordID,
+			Prune:             true,
+			PermissionGrantID: deleteAuth.PermissionGrantID,
+			DelegatedGrant:    deleteAuth.DelegatedGrant,
+		}, protocolRoleForAuth(deleteAuth, protocolRole))
 		if err != nil {
 			return fmt.Errorf("deleting %s record %s: %w", candidate.Path, candidate.RecordID, err)
 		}
@@ -2515,7 +2567,7 @@ type peerRemoveCandidate struct {
 	MemberRecordID string
 }
 
-func queryPeerRemoveCandidates(ctx context.Context, api *dwn.DwnAPI, ns *state.NetworkState, peerDID, readGrantID, protocolRole string) ([]peerRemoveCandidate, error) {
+func queryPeerRemoveCandidates(ctx context.Context, api *dwn.DwnAPI, ns *state.NetworkState, peerDID string, readAuth dwn.MessageAuth, protocolRole string) ([]peerRemoveCandidate, error) {
 	if api == nil || ns == nil || peerDID == "" {
 		return nil, nil
 	}
@@ -2529,7 +2581,8 @@ func queryPeerRemoveCandidates(ctx context.Context, api *dwn.DwnAPI, ns *state.N
 			Recipient:    peerDID,
 		},
 		DateSort:          "createdAscending",
-		PermissionGrantID: readGrantID,
+		PermissionGrantID: readAuth.PermissionGrantID,
+		DelegatedGrant:    readAuth.DelegatedGrant,
 	}, protocolRole)
 	if err != nil {
 		return nil, fmt.Errorf("querying owner node records: %w", err)
@@ -2546,7 +2599,8 @@ func queryPeerRemoveCandidates(ctx context.Context, api *dwn.DwnAPI, ns *state.N
 			ContextID:    ns.NetworkRecordID,
 		},
 		DateSort:          "createdAscending",
-		PermissionGrantID: readGrantID,
+		PermissionGrantID: readAuth.PermissionGrantID,
+		DelegatedGrant:    readAuth.DelegatedGrant,
 	}, protocolRole)
 	if err != nil {
 		return nil, fmt.Errorf("querying member records: %w", err)
@@ -2566,7 +2620,8 @@ func queryPeerRemoveCandidates(ctx context.Context, api *dwn.DwnAPI, ns *state.N
 				Recipient:    peerDID,
 			},
 			DateSort:          "createdAscending",
-			PermissionGrantID: readGrantID,
+			PermissionGrantID: readAuth.PermissionGrantID,
+			DelegatedGrant:    readAuth.DelegatedGrant,
 		}, protocolRole)
 		if mnErr != nil {
 			return nil, fmt.Errorf("querying member node records for %s: %w", memberRecord.ID, mnErr)
@@ -3146,7 +3201,7 @@ func peerRouteDoctorChecks(ctx context.Context, stateDir string, ns *state.Netwo
 }
 
 func doctorPeerRouteTarget(ctx context.Context, stateDir string, ns *state.NetworkState, identity *did.DID, meta identityMetadata, selfNodeDID string) (string, int, error) {
-	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
+	readAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
 	if err != nil {
 		return "", 0, err
 	}
@@ -3154,8 +3209,9 @@ func doctorPeerRouteTarget(ctx context.Context, stateDir string, ns *state.Netwo
 	if err != nil {
 		return "", 0, err
 	}
+	delegateSession := delegateSessionForCLIBestEffort(ctx, stateDir, meta, ns, operationIdentity, readAuth)
 	encMgr := newEncryptionKeyManager(identity)
-	resp, err := loadControlStateForCLI(ctx, ns, identity, operationIdentity, encMgr, readGrantID)
+	resp, err := loadControlStateForCLI(ctx, ns, identity, operationIdentity, encMgr, readAuth, delegateSession)
 	if err != nil {
 		return "", 0, err
 	}
@@ -3732,11 +3788,35 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		return fmt.Errorf("deriving WireGuard keys from identity: %w", err)
 	}
 
-	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
+	readAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
 	if err != nil {
 		return err
 	}
-	if resp, refreshErr := loadControlStateForCLI(ctx, ns, nodeIdentity, operationIdentity, encMgr, readGrantID); refreshErr == nil {
+	endpointWriteAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, endpointProtocolPath(ns), ns.NetworkRecordID, false)
+	if err != nil {
+		return err
+	}
+	ownerWriteAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
+	if err != nil {
+		return err
+	}
+	deleteAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsDelete, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
+	if err != nil {
+		return err
+	}
+
+	// Enbox connect sessions act through the wallet delegate. Resolve the
+	// full delegate session once (installed definition, delivered grant keys,
+	// sealed audience source) and thread it through every runtime operation.
+	var delegateSession *mesh.DelegateSession
+	if len(readAuth.DelegatedGrant) > 0 || len(endpointWriteAuth.DelegatedGrant) > 0 {
+		delegateSession, err = newDelegateSessionForCLI(ctx, stateDir, meta, ns, operationIdentity, logger)
+		if err != nil {
+			return fmt.Errorf("initializing wallet delegate session: %w", err)
+		}
+	}
+
+	if resp, refreshErr := loadControlStateForCLI(ctx, ns, nodeIdentity, operationIdentity, encMgr, readAuth, delegateSession); refreshErr == nil {
 		if refreshed, changed, saveErr := refreshLocalMembershipMetadataFromMap(stateDir, ns, resp); saveErr != nil {
 			logger.Debug("membership metadata refresh save failed", slog.Any("error", saveErr))
 		} else if changed {
@@ -3747,19 +3827,9 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		logger.Debug("membership metadata refresh skipped", slog.Any("error", refreshErr))
 	}
 	networkOwner := isNetworkOwnerProfile(meta, identity.URI, ns)
-	endpointWriteGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, endpointProtocolPath(ns), ns.NetworkRecordID, false)
-	if err != nil {
-		return err
-	}
-	ownerWriteGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
-	if err != nil {
-		return err
-	}
-	deleteGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsDelete, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
-	if err != nil {
-		return err
-	}
-	ownerAutomation := ownerAutomationEnabled(ns, nodeIdentity.URI, networkOwner, readGrantID, ownerWriteGrantID, deleteGrantID)
+	// Owner automation (preauth invite approval) still requires plain grants:
+	// the preauth approval params cannot invoke delegated grants yet.
+	ownerAutomation := ownerAutomationEnabled(ns, nodeIdentity.URI, networkOwner, readAuth.PermissionGrantID, ownerWriteAuth.PermissionGrantID, deleteAuth.PermissionGrantID)
 
 	fmt.Printf("Starting meshd...\n")
 	fmt.Printf("  Network: %s\n", ns.NetworkName)
@@ -3786,7 +3856,13 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 			EncryptionKeyManager: encMgr,
 			LocalEndpoints:       localEndpoints,
 			NATType:              "unknown",
-			PermissionGrantID:    endpointWriteGrantID,
+			PermissionGrantID:    endpointWriteAuth.PermissionGrantID,
+			DelegatedGrant:       endpointWriteAuth.DelegatedGrant,
+		}
+		if delegateSession != nil {
+			wpParams.DelegatedGrant = delegateSession.WriteGrant
+			wpParams.ProtocolDefinition = delegateSession.ProtocolDefinition
+			wpParams.AudienceSource = delegateSession.AudienceSource
 		}
 		err = mesh.WriteEndpoint(ctx, wpParams)
 		if err != nil {
@@ -3800,18 +3876,20 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		fmt.Printf("  Owner automation: disabled (use the wallet admin panel for approvals)\n")
 	}
 	if ownerAutomation {
-		approvePreAuthRequests(ctx, ns, signer, encMgr, logger, readGrantID, ownerWriteGrantID, deleteGrantID)
+		approvePreAuthRequests(ctx, ns, signer, encMgr, logger, readAuth.PermissionGrantID, ownerWriteAuth.PermissionGrantID, deleteAuth.PermissionGrantID)
 	}
 
 	// Determine the protocol role for DWN queries. The anchor reads as
-	// author (no role needed). Non-anchor nodes use their node role.
+	// author (no role needed). Non-anchor nodes use their node role, except
+	// delegated sessions, which read as the owner via their grants.
 	protocolRole := ""
 	if ns.AnchorDID != nodeIdentity.URI {
 		protocolRole = "network/node"
 	}
+	protocolRole = protocolRoleForAuth(readAuth, protocolRole)
 	discoRegistry := engine.NewInMemoryDiscoRegistry()
 
-	eng, err := engine.New(engine.Config{
+	engCfg := engine.Config{
 		AnchorEndpoint:         ns.AnchorEndpoint,
 		AnchorTenant:           ns.AnchorDID,
 		NetworkRecordID:        ns.NetworkRecordID,
@@ -3822,8 +3900,8 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		NodeRecordID:           ns.NodeRecordID,
 		MemberRecordID:         ns.MemberRecordID,
 		ProtocolRole:           protocolRole,
-		PermissionGrantID:      readGrantID,
-		WritePermissionGrantID: endpointWriteGrantID,
+		PermissionGrantID:      readAuth.PermissionGrantID,
+		WritePermissionGrantID: endpointWriteAuth.PermissionGrantID,
 		WireGuardPrivateKey:    wgKeys.PrivateKey,
 		DiscoKeyRegistry:       discoRegistry,
 		TUNName:                f.tunName,
@@ -3831,7 +3909,15 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		ListenPort:             f.listenPort,
 		PollInterval:           f.pollInterval,
 		Logger:                 logger,
-	})
+	}
+	if delegateSession != nil {
+		engCfg.DelegatedGrant = delegateSession.ReadGrant
+		engCfg.WriteDelegatedGrant = delegateSession.WriteGrant
+		engCfg.GrantKeys = delegateSession.GrantKeys
+		engCfg.AudienceSource = delegateSession.AudienceSource
+		engCfg.ProtocolDefinition = delegateSession.ProtocolDefinition
+	}
+	eng, err := engine.New(engCfg)
 	if err != nil {
 		return fmt.Errorf("creating engine: %w", err)
 	}
@@ -3865,7 +3951,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		if interval == 0 {
 			interval = 30 * time.Second
 		}
-		go runPreAuthApprovalLoop(ctx, stopPreAuthApproval, interval, ns, signer, encMgr, logger, readGrantID, ownerWriteGrantID, deleteGrantID)
+		go runPreAuthApprovalLoop(ctx, stopPreAuthApproval, interval, ns, signer, encMgr, logger, readAuth.PermissionGrantID, ownerWriteAuth.PermissionGrantID, deleteAuth.PermissionGrantID)
 		defer close(stopPreAuthApproval)
 	}
 
@@ -3989,8 +4075,16 @@ func ensureNetwork(ctx context.Context, f upFlags, stateDir string, identity *di
 	case f.anchorDID != "" && f.networkID != "":
 		return setupJoinNetwork(ctx, f, stateDir, identity, flagProfile)
 	case f.ownerDID != "":
+		// Enbox connect sessions join the wallet owner's network directly
+		// with their delegated grants; other owners use the approval request.
+		if ns, handled, err := setupDelegateJoin(ctx, f, stateDir, identity, flagProfile); handled {
+			return ns, err
+		}
 		return setupOwnerNodeRequest(ctx, f, stateDir, identity, nil)
 	default:
+		if ns, handled, err := setupDelegateJoin(ctx, f, stateDir, identity, flagProfile); handled {
+			return ns, err
+		}
 		return setupInteractive(ctx, f, stateDir, identity, flagProfile)
 	}
 }
@@ -4679,58 +4773,100 @@ func prepareNetworkCommandEncryption(identity *did.DID) (*dwncrypto.EncryptionKe
 	return newEncryptionKeyManager(identity), nil
 }
 
-func walletGrantIDForDWNOperation(stateDir string, meta identityMetadata, messageType dwn.DwnInterface, protocolURI, protocolPath, contextID string, required bool) (string, error) {
+// walletDWNAuthForOperation resolves the DWN authorization a wallet-connected
+// profile must invoke for an operation. Enbox connect sessions hold delegated
+// grants (invoked by embedding the full grant message), so those are tried
+// first; legacy meshd:// sessions fall back to plain permission grant IDs.
+// Non-wallet profiles resolve to an empty auth.
+func walletDWNAuthForOperation(stateDir string, meta identityMetadata, messageType dwn.DwnInterface, protocolURI, protocolPath, contextID string, required bool) (dwn.MessageAuth, error) {
 	if meta.AuthType != profile.AuthTypeWalletAuthorizedNode {
-		return "", nil
+		return dwn.MessageAuth{}, nil
 	}
 	if !state.WalletSessionExists(stateDir) {
 		if required {
-			return "", fmt.Errorf("wallet-connected profile is missing an imported wallet session; run 'meshd auth connect --response <file>'")
+			return dwn.MessageAuth{}, fmt.Errorf("wallet-connected profile is missing an imported wallet session; run 'meshd auth connect'")
 		}
-		return "", nil
+		return dwn.MessageAuth{}, nil
 	}
 	password, err := vaultPasswordForUnlock(stateDir)
 	if err != nil {
-		return "", err
+		return dwn.MessageAuth{}, err
 	}
 	session, err := state.LoadWalletSession(stateDir, password)
 	if err != nil {
-		return "", err
+		return dwn.MessageAuth{}, err
 	}
 	if session == nil {
 		if required {
-			return "", fmt.Errorf("wallet-connected profile is missing an imported wallet session; run 'meshd auth connect --response <file>'")
+			return dwn.MessageAuth{}, fmt.Errorf("wallet-connected profile is missing an imported wallet session; run 'meshd auth connect'")
 		}
-		return "", nil
+		return dwn.MessageAuth{}, nil
 	}
 	sessionOwnerDID := session.EffectiveOwnerDID()
 	if sessionOwnerDID != "" && meta.OwnerDID != "" && sessionOwnerDID != meta.OwnerDID {
-		return "", fmt.Errorf("wallet session owner DID %s does not match profile owner DID %s", sessionOwnerDID, meta.OwnerDID)
+		return dwn.MessageAuth{}, fmt.Errorf("wallet session owner DID %s does not match profile owner DID %s", sessionOwnerDID, meta.OwnerDID)
 	}
 	if session.NodeDID != "" && meta.NodeDID != "" && session.NodeDID != meta.NodeDID {
-		return "", fmt.Errorf("wallet session node DID %s does not match profile node DID %s", session.NodeDID, meta.NodeDID)
+		return dwn.MessageAuth{}, fmt.Errorf("wallet session node DID %s does not match profile node DID %s", session.NodeDID, meta.NodeDID)
+	}
+	auth, err := walletSessionAuth(session, meta, messageType, protocolURI, protocolPath, contextID)
+	if err != nil {
+		return dwn.MessageAuth{}, err
+	}
+	if !authHasGrant(auth) && required {
+		target := protocolURI
+		if protocolPath != "" {
+			target += " " + protocolPath
+		}
+		return dwn.MessageAuth{}, fmt.Errorf("wallet session has no permission grant for %s %s; run 'meshd auth connect --admin' to approve admin control", messageType, target)
+	}
+	return auth, nil
+}
+
+// walletSessionAuth resolves a wallet-session grant into the message auth to
+// invoke: a delegated grant (embedded verbatim) when the session is an enbox
+// connect session, otherwise a plain permission grant ID.
+func walletSessionAuth(session *state.WalletSession, meta identityMetadata, messageType dwn.DwnInterface, protocolURI, protocolPath, contextID string) (dwn.MessageAuth, error) {
+	if session == nil {
+		return dwn.MessageAuth{}, nil
 	}
 	granteeDID, _ := walletSessionGrantGranteeDID(session, meta)
-	grantID, err := dwn.FindPermissionGrantID(session.Grants, dwn.PermissionGrantMatch{
-		Grantor:      firstNonEmpty(sessionOwnerDID, meta.OwnerDID),
+	match := dwn.PermissionGrantMatch{
+		Grantor:      firstNonEmpty(session.EffectiveOwnerDID(), meta.OwnerDID),
 		Grantee:      granteeDID,
 		MessageType:  messageType,
 		Protocol:     protocolURI,
 		ProtocolPath: protocolPath,
 		ContextID:    contextID,
 		Now:          time.Now().UTC(),
-	})
+	}
+	delegated, _, err := dwn.FindDelegatedGrant(session.Grants, match)
 	if err != nil {
-		return "", err
+		return dwn.MessageAuth{}, err
 	}
-	if grantID == "" && required {
-		target := protocolURI
-		if protocolPath != "" {
-			target += " " + protocolPath
-		}
-		return "", fmt.Errorf("wallet session has no permission grant for %s %s; run 'meshd auth connect --admin' to approve admin control", messageType, target)
+	if len(delegated) > 0 {
+		return dwn.MessageAuth{DelegatedGrant: delegated}, nil
 	}
-	return grantID, nil
+	grantID, err := dwn.FindPermissionGrantID(session.Grants, match)
+	if err != nil {
+		return dwn.MessageAuth{}, err
+	}
+	return dwn.MessageAuth{PermissionGrantID: grantID}, nil
+}
+
+// authHasGrant reports whether the auth invokes a grant (plain or delegated).
+func authHasGrant(auth dwn.MessageAuth) bool {
+	return auth.PermissionGrantID != "" || len(auth.DelegatedGrant) > 0
+}
+
+// protocolRoleForAuth returns the protocol role to use alongside a resolved
+// wallet auth. Delegated-grant invocations act as the grantor (the network
+// owner) and must not also invoke a role.
+func protocolRoleForAuth(auth dwn.MessageAuth, role string) string {
+	if len(auth.DelegatedGrant) > 0 {
+		return ""
+	}
+	return role
 }
 
 func walletSessionGrantGranteeDID(session *state.WalletSession, meta identityMetadata) (string, bool) {
@@ -4807,20 +4943,15 @@ func walletSessionHasAdminControlGrants(session *state.WalletSession, meta ident
 		walletSessionHasGrant(session, meta, dwn.InterfaceRecordsDelete, protocols.MeshProtocolURI, "")
 }
 
+// walletSessionHasGrant reports whether the session can authorize the given
+// operation with either kind of grant: delegated (enbox connect sessions) or
+// plain permission grant (legacy sessions).
 func walletSessionHasGrant(session *state.WalletSession, meta identityMetadata, messageType dwn.DwnInterface, protocolURI, protocolPath string) bool {
 	if session == nil {
 		return false
 	}
-	granteeDID, _ := walletSessionGrantGranteeDID(session, meta)
-	grantID, err := dwn.FindPermissionGrantID(session.Grants, dwn.PermissionGrantMatch{
-		Grantor:      firstNonEmpty(session.EffectiveOwnerDID(), meta.OwnerDID),
-		Grantee:      granteeDID,
-		MessageType:  messageType,
-		Protocol:     protocolURI,
-		ProtocolPath: protocolPath,
-		Now:          time.Now().UTC(),
-	})
-	return err == nil && grantID != ""
+	auth, err := walletSessionAuth(session, meta, messageType, protocolURI, protocolPath, "")
+	return err == nil && authHasGrant(auth)
 }
 
 func printWalletSessionStatus(stateDir string, meta identityMetadata) error {
@@ -5404,19 +5535,36 @@ func cmdAuthLogin(ctx context.Context, args []string) error {
 }
 
 type authConnectOptions struct {
-	profileName string
-	requestOut  string
-	responseIn  string
-	walletURL   string
-	noWait      bool
-	admin       bool
+	profileName      string
+	requestOut       string
+	responseIn       string
+	walletURL        string
+	walletURLSet     bool
+	connectServerURL string
+	walletURIOut     string
+	noWait           bool
+	admin            bool
+	legacy           bool
 }
 
-// cmdAuthConnect creates or imports a wallet connection for a CLI profile.
+// useLegacyFlow reports whether the legacy meshd:// wallet-page flow should
+// run: explicitly via --legacy, or implicitly when a legacy-only flag is
+// used, so existing scripts keep working unchanged.
+func (o authConnectOptions) useLegacyFlow() bool {
+	return o.legacy || o.requestOut != "" || o.noWait || o.admin
+}
+
+// cmdAuthConnect connects a CLI profile to an Enbox wallet.
+//
+// The default flow pushes an enbox connect permission request to the wallet's
+// connect relay and stores the returned delegated grants. The legacy meshd://
+// wallet-page flow remains available behind --legacy (and its legacy-only
+// flags --request-out/--no-wait/--admin/--response).
 //
 // Usage:
 //
-//	meshd auth connect [name] [--admin] [--request-out <file>] [--wallet <url>] [--no-wait]
+//	meshd auth connect [name] [--wallet <url>] [--connect-server <url>] [--wallet-uri-out <file>]
+//	meshd auth connect [name] --legacy [--admin] [--request-out <file>] [--no-wait]
 //	meshd auth connect [name] --response <file>
 func cmdAuthConnect(ctx context.Context, args []string, flagProfile string) error {
 	opts, err := parseAuthConnectArgs(args)
@@ -5428,13 +5576,14 @@ func cmdAuthConnect(ctx context.Context, args []string, flagProfile string) erro
 	if opts.responseIn != "" {
 		return importAuthConnectResponse(ctx, profileFlag, opts.responseIn)
 	}
-	return createAuthConnectRequest(ctx, profileFlag, opts)
+	if opts.useLegacyFlow() {
+		return createAuthConnectRequest(ctx, profileFlag, opts)
+	}
+	return runEnboxAuthConnect(ctx, profileFlag, opts)
 }
 
 func parseAuthConnectArgs(args []string) (authConnectOptions, error) {
-	opts := authConnectOptions{
-		walletURL: "https://wallet.enbox.id",
-	}
+	var opts authConnectOptions
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--request-out":
@@ -5454,11 +5603,26 @@ func parseAuthConnectArgs(args []string) (authConnectOptions, error) {
 				return opts, fmt.Errorf("--wallet requires a URL")
 			}
 			opts.walletURL = args[i+1]
+			opts.walletURLSet = true
+			i++
+		case "--connect-server":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--connect-server requires a URL")
+			}
+			opts.connectServerURL = args[i+1]
+			i++
+		case "--wallet-uri-out":
+			if i+1 >= len(args) {
+				return opts, fmt.Errorf("--wallet-uri-out requires a path")
+			}
+			opts.walletURIOut = args[i+1]
 			i++
 		case "--no-wait":
 			opts.noWait = true
 		case "--admin":
 			opts.admin = true
+		case "--legacy":
+			opts.legacy = true
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return opts, fmt.Errorf("unknown auth connect flag %q", args[i])
@@ -5474,6 +5638,11 @@ func parseAuthConnectArgs(args []string) (authConnectOptions, error) {
 }
 
 func createAuthConnectRequest(ctx context.Context, profileFlag string, opts authConnectOptions) error {
+	// Preserve the legacy default wallet URL; an explicit --wallet "" still
+	// disables wallet URL printing.
+	if !opts.walletURLSet && opts.walletURL == "" {
+		opts.walletURL = "https://wallet.enbox.id"
+	}
 	stateDir, identity, err := ensureIdentityForCommand(ctx, profileFlag, "")
 	if err != nil {
 		return err
@@ -5813,7 +5982,7 @@ func cmdACLSet(ctx context.Context, args []string, flagProfile string) error {
 	if err != nil {
 		return err
 	}
-	writeGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
+	writeAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsWrite, protocols.MeshProtocolURI, "", ns.NetworkRecordID, useContextEncryption)
 	if err != nil {
 		return err
 	}
@@ -5824,7 +5993,8 @@ func cmdACLSet(ctx context.Context, args []string, flagProfile string) error {
 		NetworkRecordID:      ns.NetworkRecordID,
 		Signer:               signer,
 		EncryptionKeyManager: encMgr,
-		PermissionGrantID:    writeGrantID,
+		PermissionGrantID:    writeAuth.PermissionGrantID,
+		DelegatedGrant:       writeAuth.DelegatedGrant,
 		PolicyData:           policyBytes,
 	}); err != nil {
 		return err
@@ -5863,14 +6033,24 @@ func cmdACLShow(ctx context.Context, args []string, flagProfile string) error {
 	signer := dwnSigner(operationIdentity)
 	encMgr := newEncryptionKeyManager(identity)
 
-	// Determine protocol role for queries.
+	// Determine protocol role for queries. Delegated sessions read as the
+	// owner (no role).
 	aclQueryRole := ""
 	if ns.AnchorDID != identity.URI {
 		aclQueryRole = "network/node"
 	}
-	readGrantID, err := walletGrantIDForDWNOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
+	readAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
 	if err != nil {
 		return err
+	}
+	aclOpts := []control.Option{
+		control.WithEncryptionKeyManager(encMgr),
+		control.WithProtocolRole(protocolRoleForAuth(readAuth, aclQueryRole)),
+	}
+	if len(readAuth.DelegatedGrant) > 0 {
+		aclOpts = append(aclOpts, control.WithDelegatedGrant(readAuth.DelegatedGrant))
+	} else {
+		aclOpts = append(aclOpts, control.WithPermissionGrantID(readAuth.PermissionGrantID))
 	}
 
 	client := control.NewDWNClient(
@@ -5879,9 +6059,7 @@ func cmdACLShow(ctx context.Context, args []string, flagProfile string) error {
 		ns.NetworkRecordID,
 		identity.URI,
 		signer,
-		control.WithEncryptionKeyManager(encMgr),
-		control.WithProtocolRole(aclQueryRole),
-		control.WithPermissionGrantID(readGrantID),
+		aclOpts...,
 	)
 
 	// Load state (which now includes ACL policy).
@@ -5943,4 +6121,29 @@ func appendUniqueStrings(values []string, next ...string) []string {
 		}
 	}
 	return values
+}
+
+// ensureJoinerProtocolInstalled installs the wireguard-mesh protocol (with
+// the joiner's own injected $keyAgreement keys) on the joiner's OWN tenant.
+// Under the sealed encryption model the anchor wraps `$encryption/delivery`
+// records to the role-path key the joiner publishes there — without it the
+// joiner cannot receive its role-audience keys. Best-effort: the anchor's
+// approval loop keeps the request pending and retries delivery, so a failed
+// install here only delays the join.
+func ensureJoinerProtocolInstalled(ctx context.Context, endpoint string, identity *did.DID) {
+	def, err := dwncrypto.InjectEncryptionDirectives(protocols.MeshProtocolJSON, identity.EncryptionPrivateKey)
+	if err != nil {
+		fmt.Printf("  Warning: preparing mesh protocol for this device failed: %v\n", err)
+		return
+	}
+	signer := &dwn.Signer{DID: identity.URI, PrivateKey: identity.SigningKey}
+	api := dwn.NewDwnAPI(dwn.NewSimpleAgent(endpoint, signer))
+	status, err := api.ConfigureProtocol(ctx, identity.URI, def)
+	if err != nil {
+		fmt.Printf("  Warning: installing mesh protocol on this device's tenant failed: %v\n", err)
+		return
+	}
+	if status.Code >= 300 && status.Code != 409 {
+		fmt.Printf("  Warning: installing mesh protocol on this device's tenant failed: %d %s\n", status.Code, status.Detail)
+	}
 }

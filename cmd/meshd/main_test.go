@@ -1309,7 +1309,7 @@ func TestIsNetworkOwnerProfile(t *testing.T) {
 	}
 }
 
-func TestWalletGrantIDForDWNOperation(t *testing.T) {
+func TestWalletDWNAuthForOperationDelegatedSession(t *testing.T) {
 	resetVaultPasswordCache(t)
 
 	stateDir := t.TempDir()
@@ -1334,72 +1334,114 @@ func TestWalletGrantIDForDWNOperation(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StoreWalletSession: %v", err)
 	}
-
-	grantID, err := walletGrantIDForDWNOperation(stateDir, identityMetadata{
+	meta := identityMetadata{
 		AuthType: profile.AuthTypeWalletAuthorizedNode,
 		OwnerDID: "did:jwk:wallet",
 		NodeDID:  "did:jwk:node",
-	}, dwn.InterfaceRecordsQuery, "https://enbox.id/protocols/wireguard-mesh", "", "", true)
+	}
+
+	auth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsQuery, "https://enbox.id/protocols/wireguard-mesh", "", "", true)
 	if err != nil {
-		t.Fatalf("walletGrantIDForDWNOperation: %v", err)
+		t.Fatalf("walletDWNAuthForOperation: %v", err)
 	}
-	if grantID != "grant-read" {
-		t.Fatalf("grantID = %q, want grant-read", grantID)
+	if auth.PermissionGrantID != "" {
+		t.Fatalf("delegated session returned plain grant ID %q", auth.PermissionGrantID)
+	}
+	if got := testGrantRecordID(t, auth.DelegatedGrant); got != "grant-read" {
+		t.Fatalf("delegated grant = %q, want grant-read", got)
 	}
 
-	grantID, err = walletGrantIDForDWNOperation(stateDir, identityMetadata{
-		AuthType: profile.AuthTypeWalletAuthorizedNode,
-		OwnerDID: "did:jwk:wallet",
-		NodeDID:  "did:jwk:node",
-	}, dwn.InterfaceRecordsWrite, "https://enbox.id/protocols/wireguard-mesh", "network/member/node/endpoint", "network-1", true)
+	auth, err = walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsWrite, "https://enbox.id/protocols/wireguard-mesh", "network/member/node/endpoint", "network-1", true)
 	if err != nil {
-		t.Fatalf("endpoint walletGrantIDForDWNOperation: %v", err)
+		t.Fatalf("endpoint walletDWNAuthForOperation: %v", err)
 	}
-	if grantID != "grant-endpoint" {
-		t.Fatalf("endpoint grantID = %q, want grant-endpoint", grantID)
+	if got := testGrantRecordID(t, auth.DelegatedGrant); got != "grant-endpoint" {
+		t.Fatalf("endpoint delegated grant = %q, want grant-endpoint", got)
 	}
 
-	grantID, err = walletGrantIDForDWNOperation(stateDir, identityMetadata{
-		AuthType: profile.AuthTypeWalletAuthorizedNode,
-		OwnerDID: "did:jwk:wallet",
-		NodeDID:  "did:jwk:node",
-	}, dwn.InterfaceRecordsWrite, "https://enbox.id/protocols/wireguard-mesh", "network/preAuthKey", "network-1", false)
+	auth, err = walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsWrite, "https://enbox.id/protocols/wireguard-mesh", "network/preAuthKey", "network-1", false)
 	if err != nil {
-		t.Fatalf("preAuthKey walletGrantIDForDWNOperation: %v", err)
+		t.Fatalf("preAuthKey walletDWNAuthForOperation: %v", err)
 	}
-	if grantID != "" {
-		t.Fatalf("preAuthKey grantID = %q, want none", grantID)
+	if authHasGrant(auth) {
+		t.Fatalf("preAuthKey auth = %+v, want none", auth)
 	}
 
-	_, err = walletGrantIDForDWNOperation(stateDir, identityMetadata{
-		AuthType: profile.AuthTypeWalletAuthorizedNode,
-		OwnerDID: "did:jwk:wallet",
-		NodeDID:  "did:jwk:node",
-	}, dwn.InterfaceRecordsWrite, "https://enbox.id/protocols/wireguard-mesh", "network/preAuthKey", "network-1", true)
+	_, err = walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsWrite, "https://enbox.id/protocols/wireguard-mesh", "network/preAuthKey", "network-1", true)
 	if err == nil || !strings.Contains(err.Error(), "meshd auth connect --admin") {
 		t.Fatalf("missing admin grant error = %v, want --admin guidance", err)
 	}
+}
 
-	delegateReadGrant := testWalletPermissionGrant(t, "delegate-grant-read", "did:jwk:wallet", "did:jwk:delegate", map[string]any{
+func TestWalletDWNAuthForOperationPlainSession(t *testing.T) {
+	resetVaultPasswordCache(t)
+
+	stateDir := t.TempDir()
+	t.Setenv(vaultPasswordEnv, "test-password")
+
+	readGrant := testWalletGrantMessage(t, "plain-grant-read", "did:jwk:wallet", "did:jwk:node", false, map[string]any{
 		"interface": "Records",
 		"method":    "Read",
 		"protocol":  "https://enbox.id/protocols/wireguard-mesh",
 	})
 	if err := state.StoreWalletSession(stateDir, "test-password", &state.WalletSession{
-		Version:     1,
-		OwnerDID:    "did:jwk:wallet",
-		NodeDID:     "did:jwk:node",
-		DelegateDID: "did:jwk:delegate",
-		Grants:      []json.RawMessage{readGrant},
+		Version:  1,
+		OwnerDID: "did:jwk:wallet",
+		NodeDID:  "did:jwk:node",
+		Grants:   []json.RawMessage{readGrant},
 	}); err != nil {
-		t.Fatalf("StoreWalletSession delegate with node grant: %v", err)
+		t.Fatalf("StoreWalletSession: %v", err)
 	}
-	_, err = walletGrantIDForDWNOperation(stateDir, identityMetadata{
+
+	auth, err := walletDWNAuthForOperation(stateDir, identityMetadata{
+		AuthType: profile.AuthTypeWalletAuthorizedNode,
+		OwnerDID: "did:jwk:wallet",
+		NodeDID:  "did:jwk:node",
+	}, dwn.InterfaceRecordsQuery, "https://enbox.id/protocols/wireguard-mesh", "", "", true)
+	if err != nil {
+		t.Fatalf("walletDWNAuthForOperation: %v", err)
+	}
+	if auth.PermissionGrantID != "plain-grant-read" {
+		t.Fatalf("grantID = %q, want plain-grant-read", auth.PermissionGrantID)
+	}
+	if len(auth.DelegatedGrant) != 0 {
+		t.Fatalf("plain session returned delegated grant %s", auth.DelegatedGrant)
+	}
+}
+
+func TestWalletDWNAuthForOperationDelegateGrantee(t *testing.T) {
+	resetVaultPasswordCache(t)
+
+	stateDir := t.TempDir()
+	t.Setenv(vaultPasswordEnv, "test-password")
+
+	nodeReadGrant := testWalletPermissionGrant(t, "grant-read", "did:jwk:wallet", "did:jwk:node", map[string]any{
+		"interface": "Records",
+		"method":    "Read",
+		"protocol":  "https://enbox.id/protocols/wireguard-mesh",
+	})
+	delegateReadGrant := testWalletPermissionGrant(t, "delegate-grant-read", "did:jwk:wallet", "did:jwk:delegate", map[string]any{
+		"interface": "Records",
+		"method":    "Read",
+		"protocol":  "https://enbox.id/protocols/wireguard-mesh",
+	})
+	meta := identityMetadata{
 		AuthType:    profile.AuthTypeWalletAuthorizedNode,
 		OwnerDID:    "did:jwk:wallet",
 		NodeDID:     "did:jwk:node",
 		DelegateDID: "did:jwk:delegate",
-	}, dwn.InterfaceRecordsQuery, "https://enbox.id/protocols/wireguard-mesh", "", "", true)
+	}
+
+	if err := state.StoreWalletSession(stateDir, "test-password", &state.WalletSession{
+		Version:     1,
+		OwnerDID:    "did:jwk:wallet",
+		NodeDID:     "did:jwk:node",
+		DelegateDID: "did:jwk:delegate",
+		Grants:      []json.RawMessage{nodeReadGrant},
+	}); err != nil {
+		t.Fatalf("StoreWalletSession delegate with node grant: %v", err)
+	}
+	_, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsQuery, "https://enbox.id/protocols/wireguard-mesh", "", "", true)
 	if err == nil || !strings.Contains(err.Error(), "no permission grant") {
 		t.Fatalf("delegate session used node-DID grant or returned wrong error: %v", err)
 	}
@@ -1413,21 +1455,40 @@ func TestWalletGrantIDForDWNOperation(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("StoreWalletSession delegate grant: %v", err)
 	}
-	grantID, err = walletGrantIDForDWNOperation(stateDir, identityMetadata{
-		AuthType:    profile.AuthTypeWalletAuthorizedNode,
-		OwnerDID:    "did:jwk:wallet",
-		NodeDID:     "did:jwk:node",
-		DelegateDID: "did:jwk:delegate",
-	}, dwn.InterfaceRecordsQuery, "https://enbox.id/protocols/wireguard-mesh", "", "", true)
+	auth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsQuery, "https://enbox.id/protocols/wireguard-mesh", "", "", true)
 	if err != nil {
-		t.Fatalf("delegate walletGrantIDForDWNOperation: %v", err)
+		t.Fatalf("delegate walletDWNAuthForOperation: %v", err)
 	}
-	if grantID != "delegate-grant-read" {
-		t.Fatalf("delegate grantID = %q, want delegate-grant-read", grantID)
+	if got := testGrantRecordID(t, auth.DelegatedGrant); got != "delegate-grant-read" {
+		t.Fatalf("delegate grant = %q, want delegate-grant-read", got)
 	}
 }
 
+// testGrantRecordID extracts the recordId of a raw grant message.
+func testGrantRecordID(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+	if len(raw) == 0 {
+		t.Fatal("expected a delegated grant, got none")
+	}
+	var msg struct {
+		RecordID string `json:"recordId"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("parsing grant message: %v", err)
+	}
+	return msg.RecordID
+}
+
+// testWalletPermissionGrant fabricates a DELEGATED grant message (the shape
+// enbox connect sessions store).
 func testWalletPermissionGrant(t *testing.T, id string, grantor string, grantee string, scope map[string]any) json.RawMessage {
+	t.Helper()
+	return testWalletGrantMessage(t, id, grantor, grantee, true, scope)
+}
+
+// testWalletGrantMessage fabricates a grant RecordsWrite message with the
+// fields the CLI's grant matching reads.
+func testWalletGrantMessage(t *testing.T, id string, grantor string, grantee string, delegated bool, scope map[string]any) json.RawMessage {
 	t.Helper()
 	header, err := json.Marshal(map[string]string{
 		"alg": "EdDSA",
@@ -1436,11 +1497,14 @@ func testWalletPermissionGrant(t *testing.T, id string, grantor string, grantee 
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := json.Marshal(map[string]any{
+	grantData := map[string]any{
 		"dateExpires": "2999-01-01T00:00:00Z",
-		"delegated":   true,
 		"scope":       scope,
-	})
+	}
+	if delegated {
+		grantData["delegated"] = true
+	}
+	data, err := json.Marshal(grantData)
 	if err != nil {
 		t.Fatal(err)
 	}

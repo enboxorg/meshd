@@ -12,6 +12,7 @@
 
 # Output
 *.out
+.e2e-approver/
 
 # Go workspace
 go.work

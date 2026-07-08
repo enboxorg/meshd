@@ -1,0 +1,576 @@
+{
+  "description": "genuine Enbox Connect REQUEST JWE, built exactly the client way (wallet-connect-client initClient flow) with EnboxConnectProtocol.createConnectRequest + signJwt + encryptRequest at monorepo HEAD. 5-part compact JWE: protected header (exact bytes in protectedHeaderJson) . empty . 24-byte nonce . ciphertext . 16-byte tag; XChaCha20-Poly1305 with the random 32-byte encryptionKey (dir), AAD = the UTF-8 bytes of protectedHeaderJson. The JWT is EdDSA-signed by the ephemeral client did:jwk. Go verifies both directions: decrypt requestJwe with encryptionKey_b64u -> expectedRequestJwt -> expectedRequestPayload; and rebuild the JWE from expectedRequestJwt + encryptionKey + the nonce embedded in requestJwe for a byte-exact match.",
+  "generatedAt": "2026-07-08T00:51:20.611Z",
+  "sdkCommit": "6b5b9786ee931f8d80d84e5f2865166c39568eb6",
+  "generator": "scripts/gen-crypto-fixtures/generate.ts",
+  "clientDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IkV0ZDlNSHJIODk5QkNBbjk4R1Uxd1NmOEJ4Y1lpaVZiTVJLOHpLRHpsSkEiLCJraWQiOiI2MVcydEZuNXVEZzJaZk51UmJXLVVpRGEyakRtRE5fVUR4RExCWU16cFNZIiwiYWxnIjoiRWREU0EifQ",
+  "clientKeyId": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IkV0ZDlNSHJIODk5QkNBbjk4R1Uxd1NmOEJ4Y1lpaVZiTVJLOHpLRHpsSkEiLCJraWQiOiI2MVcydEZuNXVEZzJaZk51UmJXLVVpRGEyakRtRE5fVUR4RExCWU16cFNZIiwiYWxnIjoiRWREU0EifQ#0",
+  "clientEdPrivateKeyJwk": {
+    "crv": "Ed25519",
+    "d": "LvD7f5Y1oNTkvhY-Uu_WNEJJP8yf6oT_epDUmNn064o",
+    "kty": "OKP",
+    "x": "Etd9MHrH899BCAn98GU1wSf8BxcYiiVbMRK8zKDzlJA",
+    "kid": "61W2tFn5uDg2ZfNuRbW-UiDa2jDmDN_UDxDLBYMzpSY",
+    "alg": "EdDSA"
+  },
+  "delegateDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IlVWUVlGLXlGaHhIb3RsVzNrNlR5c2hnNlU1U2dDUjIzZ1d3bmlfdFVvemsiLCJraWQiOiJvT2RHRFVhZ0hwcl9XS2tUUW9XSDZVNkxpeWJtc0EzOGFhbjVzU1NrV1hNIiwiYWxnIjoiRWREU0EifQ",
+  "connectServerUrl": "https://relay.example.com/connect",
+  "encryptionKey_b64u": "btTo8_ISg5caisZXDFgcI3OyHwCcfXA4Rmi4Nt7QbvA",
+  "protectedHeaderJson": "{\"alg\":\"dir\",\"cty\":\"JWT\",\"enc\":\"XC20P\",\"typ\":\"JWT\"}",
+  "requestJwe": "eyJhbGciOiJkaXIiLCJjdHkiOiJKV1QiLCJlbmMiOiJYQzIwUCIsInR5cCI6IkpXVCJ9..zxwWR0jtlkOfFCNe1SsRCjhG8R5Fhx2D.sQuirRfeY4_BTM1dgtlQKcvTo3vWD5I3u5ZwDaE8WHCvCINNtHnKsUGld1Ps0pdqRP2VFvaaSL6Q5rX2h6aOQLgJvBhMk0keIlcQcWtioawzZipWR4hD7YPXOmQuzClxh9_dTyjSCjZFhqcbXteg3YJIxncZlPPCYbZfDS8Zwzj2NhI7HdiaGBF95hOiuwJAl7Q42UFYR7BmFOQUFt21H-fxJCz5cdyCUzFDzJgYjg-RAYiA_T2EB7p6rbj9zkbBhipSXQscMJYdF-GOScGGJYOna7C411rK2QL53Lv22zwxsx7evQi4DEQIjFBmeJjBx4ltgTONH9dKdA1dgu3t8QTbfrMsC__XV0B-ZZUzWmlK7iiylzYi7dht5VAA0v3opsrv5RRDPLkmA4WyonM0pMX_4E2qbSuTWA7tNfhhd9DGkBncnx3NOmspBxibtZTDUdgA6VyGS8Qc1XFSM71A3mEsA09g90hI77Mavr3IzcS4r02iG444uKtAXyCGf3mGYJZbsEeImkGRtzbEyrylL8EyUope8B0OnBMb531Lv5fChTrkmlM7G7czQW6QN9t1nsIMSjgmd577xS4Mvqr3Fr9VYljtH6AVsw-1EgIzwxmXNnxxIEGRQ9w3bjcRmGgGxWtzrokytTIucvsntbPWlMuPc0DwBNRCgBRa-G9W9A2zpf-ntKuubi4f27H-Wc6Kz62bPHUcmBqqzVF-G_RJHId7vSCQxdpOukjP-ICmBFaE_GY3JxM259K0dyH_aGAhvO5UXYcj-nO2sa7O9vTzVhf1VKMdOX0dKAzE1cilMcxKr1c2qCaK6T2pt8i6ivekf4DO1FmfrNN2QafA98FGq_mR5hXHFm4g-S1z7W3MZA_VOaUdBC_cfM8X7RCUeiyAXsVIafAF4vW85ZJjPoXFUhpi6sMv23O2GWjSPLtUkTbCHKQVPebE5VmDIzPvPAorOc1ygg7-pcbxWkHpUGZrtcviovZizuIbtagGBOZ-sqluX71vj4LjoR9eKVv8Vh2BY1tmAD4MYCel7V2GMS1mQRh4WYIgrFUBTcfVHQImSKPkei89NuLYimi9WnH5r2_6M7wS4I3zoL5jVRWN1O9IsXFX8UvNMhz-exPawUA25_pE-BNZrWMghInan2dpKB_7EfjI_dtMYKEawd88kDV7ds4fsLDcQnXGZWbBciMqAV3OTUUKS4WREfN7KjRJMWx-2Utt1_Ql_bXklcaiBI08GLgHEvN0vwzAzdlbLvgqldH0IRQPBU2GzMymEQyu-2AwMZyh3HkhZ6l52DinP3xFuct5c-M2lsf12O9IfWhRja7aDf3aAZlChDayOjCLCvPlecVjZo-Dvql_NVFgtrgqCZFkEkG94mHAB3kRVkukXhB0wWke9nNNt2gdyIMJi2qiFXajkbdLCajsTcc4y8_iiXaWkUSGds9NY6_fPOwyJSOw9MP8mwyJGqVUFCv3eM5Xssu6vuRpyFdjWQVxqqJoGPrw7f1kUzFrP4jBno2rOa0Qi3OKq7REoXfOgsey6KT1FLVjKxt3CB_91_mak9f-OKmf438nBHVskPrHf0HDCBXrpQQakOtkm2iCIJzlV53tsIUlVqUI3S9JkgrVj6SA0drg-6JqGt0Mi9G1yLmWk0TxHAxRGh_EKXbt3YdV8nIUc-Gy7RLupBOJ48y6ja_0VcUNxb6AupcTzSSTnw0_yrdqLcwibws1Dl0s5mrojEDln5QXtxvYhVkVTuj0H4a_N6UuKkLhucJgWdbY1zbZaRA_F8iwH0OIQVljfBmf58f41t1SA7KuGJZapTe4qT94OAq_D4FrGrneOVhu72bMutNH3iar1cYUSmnuralXx7J-QL306QloAeKgkMXZaxYbZc1MchcovnViRqd8HpnjxwFdlOjxKIE3GOcl39byTPrK2OmFTVjZvM4YZ8wpU9blYj9smkcxt9sD92PbLm7HeU9IBVqKDCpIqBOG1OcPtGthNy-ud4GEAVz1CLiUnfh9bySpmghNT_Q0MN5mxiiHCefAIWSC5d945OpjhZc9wQFkx86q-u0LO32sfnv24vwSlslwjy5BPHwhUIoe6ifEnOY3l4jZcgnU6MM7MDAMRfT6ehI1EF4kpQfWiksK6vjatMlsp98s3BUoGLniMYQun_Ru7_1Syzqj7utnBQUzI36SglPalC-hQSQrQ-5MCMpOIiJrpu0Owb7zz86AckTPatC5EiTOXc_k57kWeEC-PnWSqJ7S0in4IAKf5joBXozNV1fmD98ECTQfI8O6xUNwbfzxSdzkwwDd4fgKEkh2bekBfc7xW-uN75b2ACGzwwpuj-KzipQkbQUepxmzPWzaNMUhbYF0Xv9oZ3WXNDwWkArwM2w-4ILmgTliFVo8Znm11Hqhf_CmBxo4btJtSWxGXC8Lc8US_hc9YrI1Yh6DidjleudiFxxPJTpaORERKqCYDdavTd4KPVBlC3bDVCezv7SSAS44XSex1iJVDKyxGi-GfULOt4D9X1rq_dVfJZwqD9wlJ9F3y1-IgNyEOjxBPt8AfEpG9KBAispAzCdHpd1rsVA3tDxjIQlcGRAKrdR6tUGPxpUAfPUwT29il2ohJMz8AKHMtd3sVAF4-0YKg5rdrDZcZB03yyKENAbDI2Guu2_O5056_qNNeHNJ9RRiwfe3Tyvk6HYifLVjOSWZH7jTIWuEuhCLNBkmZgtizSE7E6su1Rvc9HhmH9RqITZwuGcqdYlbDVJH5exbkxUH5wnh1ZTqYgjCBwR7_hGBGIS22E7hriZLDb1ucPsBlbudAOWpSmMThRUyByTya-YbFEdjg931K8RID-J_Y4qhRTO5VAcwibum1t-8o_WohPdhtiBDVd0CJvT5IAa6nRFUy9D-zaZAft1n9rT6QNgZE7-_7iQScqPGc2zbpRuvenD1Z9rcXDmdmTz0hSH2pU7o39uxrboSpZSzBRkYkvbVps-0CXbFHhKbaJt9DggC2GoGjxxyAx44XN6clfMaLG0nzCrliPTt1leyXNwSx9CmNt1oe103as7Y11GRu6gn_ofuzY2vwwnAyuz1mb8v-tQ0n7ALBZzlgtuFHswqnCQLwKe_rnbowHuZrG8rRJ6fkWRwV459_09Vc6K0IMXdWAugxP0EKFSbrMwra7OF__-yl7hnihT3pOchTLPrnP-oDl9UeanA0jxAWMh6HSCAH76dnDuh6fJZ5IypamuHaeT_vwKcvpZNJTrQcLtSpxY0AfKhvSTKnx9TJBKrAsy_W7SXuTiUo9g-nAX_GcGf_bH66CwLkBaKx1GpRg0lDjlbENGYHL-ut-sxkdPDgntKRFRZT-JUqzh6Lh2sWm670WoYs7yAY1aIKzOTrvYkM-vj-q4pPH7FkBI5VCb4k2LljJiIu9Ka_X3GXILIzdVgv-xB6rsoUcSjRssxX7-umbD7_BADePLcf8Ue2MSc2-MfcNwgLjQA2B48k-Okcp-GFnpOD6999mlHke66YjvYAtg4dxFD8BORx878ZvqqpG3iaYKC-SrijNuhL0Wpg7Z9GEfDrwbvCjbtJttMyYgPq52II67IhvgzG_gD5qbX4SopLNiegqFAvXm6QOaQmwYvWRjGqjUBM_RRxuO2r1PAA9-xB4JGg0FWo8RNiwANeFD3CWl5aRx3-DK9A8JowjLg9vO2uHuHqxHXpk1mO3om9hgfMCZAsGpmGyNGOGpL87MQkddDMcM4YpVbf7VqgiEGwBztQhIdarPRHSy41v4OD80G8se3zHAlYod-gw-dU1HOop8W2-TFWZbFQqNCrJZS4SUdznNeOmKOIqSbtKJ6JApAKIDD4Ap_UWVbvWBvindZJXu3Ra3bCdnvbEGipe3oKeFd6SFP3wjRWsrHCaxEtprSSvPstOs_Ny4dK5jqIa4KHp9CorrtVuS-VCSshnBKxGN7Oa0PCsyKozNnthIMObYPjVOvNPlkfqwTPRKTnYPBbov1XgmpUuv5OckxfnU3JBw3gE0KdaX2viHpY8t1NBFsBHuvoMJSbJsDz0hvqI7L7Qd9YF8FW6Ckeg3SKKv9GWAIXbAP7GxPftZ9OGQIRVqWoV4kEQbA3zH-zAm5e3Hv3Xt-oxQa5ndecITHhcMHhdi4kK3xcvSaKJuv4KgdG-wYmRFondt4Iyxk7GZ59scw5WrAY1AYoDWM8eshMadizEKkkw96nUXlMtRGoK8dnMP7-i521R8eSd8s3Wr1VE91BMMAnghgmQSrz2G-zjkwkN6nwr98EJ77cQaTusv4lRZATTpGkIwLH9slSQCtiMlZIyj2NutYhTsNcod6zLrY9X_S0LLIuHNv_uzM_q8FeC1ISeuGWE4ItIGIJ6bgN84mqkf2n3MmRE9SOkRNPDw4NJbZxXEXspw_wkjaNaQwktOjtZCiUc15mlxRZnRiOWiJpvHEnkHKQDau_Gm-i4Smp2BkLdpOKvUn_uYKoK6P88Zj42ZF91fP4cgmzrEiyx0Txcxw6tCPymY_FIu9BnS5cEnkWCD9rv-PSOpC7dxkNftnHI5Mi739uLoj_ce93XQno1sIK7dXGLbVnSo3dshRKbj4ZnFI62eZ2ZcfOMBM9uMCfVk5SLEqiLv5UzOBiEbn5O3LbNwC4EbC1MePdJ7-ghSRJzOjYyNikb2bX5CafI99XZy27CNONT94DJu8vm5liY2DT9d1Qge9-7QvUK3-I_fKGj-LgAlShQi2_C0M6hOl40X1Ektg2hCoXI1dgtW9br8rQwfJe7rq43eHArts1RuNz0CIc3dyPfI0YJ1gForadGPBt1sLK4Eg-7oLOh-iK1LiAWeynW9uQDYEYSNbO7b-7bLZ2DP4wTRCHpkgJF96fy4cU1X_3iZL30Ljaeiqc6f8QIQ-i0PI40yBcKuywjxjdkk3_8xIu4CgiUIdY1-BjQ8Bbggrxk-lA5zZKeEjzswCsKCa2RaA69jk034IVoP3vJXnR7o-dhdaBnPd9BUxrQiBOm6_eiCAD4atJNt394r1xkQIoAoCQzPKIFbR2phYsHmejf94ljuFWp2F1qvy5B3o8b-qsVrOTkE4fOMd_OE4ElcqooCPufehbs4hJOnc7sKgmDyYT4OVHxec4535pTyfH3_khfpgNMoV7gT5Bk_QodC3K5mx-9hWZYG3wpjmu_ccf11cb3Z5g08ZARlDIztNV3PMeTXZODC-H3gUz50y1JrlhCuxekiBQMWvbg1-vpqi0-58huOA6jpckFbHs60NCLs-4YIlvp1eEuSwrk1vcTah7jdu9VTDzqNzoEKF3J3cxGRP-ZH1Fyw35N1GmDSPPxidJBvgbcBhq52lfSQUE3ohgzPoY74bADhaFhW3qjjebohb1xqbwdZTPgt-xJA3PN8SSkM42eUKSGSNLDWRscvGfmpaX-B--r9YNPSlr3D-87K97lcqx6OJjoKvwxysZ7YtwJk15IMa7lzLDPmnaISw8xkUqxCQoFA1mpYNpsVkqGOoE9HDRvbg6QNOQhk9PVALLRugIMs_2ybD-8hJ5x3pwacMN27YojEdkEpF6Cwt_Au-f9Q0RHiS2BUvxrJhAk5OPOx3RfE-6HPqKqNqgb663C3HQpTYWQM9MAeQ8JbmJt6oZuqY0ITiJJSnXDjPviN14OytxEs-9zX9gr0I_Rbu9r6wgSYj8yXaNFYuvCnZEZPtBux--CEQOyrljOSzQVDwJteZg6fvVW_IUJfmm34dlDMmTfeLir_-pI7mn1K5V5Lws-a4oIJcj3mXWFXlYBNY4D3quIjGPUPArydAl-d6K3xejeEE1qaN2ZWfXlb8ougNmw5q3_CNhWOcivmye1-Hf7bRs85rrAzwz4eJx0nOgV1J39eeo4ErLDnF5l4AuKRfdmKd73yGIGjl0eV7l8C-rSVba8tHJ1PQGO9344dn4UwsCP-SWX8wloWrv9ndQCHCBGJoBayIQA3jlZLeRXgJc8ZZpNHPP8jPDQr4Gi_RPmkbXTxpW9qcl2xmDxYQwAFapa_DmLi-UqQuoRVKucj8oQkZb63_GK48wrTC7gRZWp_FjXJOmDCpjvF_wE2eJ2khk8VbZhKXYNlBsE7nEOBCdWjEISAbQkSEPzJuEyXaPqM_E6SYf8k54GlCJw6FTQbBATGQ27SeaVnNJ1FxS0-yw-xzaOWZzJ3Z5bVcqB-fW5ZcxSgRVUWZUHYDeQ3LY35mIaY0hXDRKSdqNW3CJsKPBIkDZ2SW2jOlpcHWocRvBlKDteWK3yJnQVof4zCtdYhr37QcZYZlday0Sq9ib_w5gErZINue-h-xjKZaHF3t9-qWbgn2r79LvFCR0l8dYiaeQWBx6JmJNh4-wDCGkH9bgoqFqSm8f3hTr3xOXPbvZa_TsjbUMQFHeozuI0yrT_ZzK8cV0zSrY9Fzx052tLXrX2MuTV-z6WfxASNWMCbxVxhFB9DLlWCWoKttGmzue6Y4Fat8VLyI_GHlwfPUC8o2FGGiB8P4f1lM5FifLLhUyCxbcJ5f49JOmh9GPNQAlVDbbZa0V_IlUxWA1hGlEa_c2paAcU2UZoZCv8QA4GZAmt_uQ6pQn-FQxjOoUqV72RjA-MCQtYZqq_Gs_HGzTD1unt4HL4XvvH4XY6b-tq-cDiQc8Y5tuUOoVho7X4mIq01Aq9y8I-1Fvlv_B2Rn0ZE0Mu6x1EYxRmcGxSC3m75ZQAFh1I2CFfofMDsC4XtrWP4vVG617vjy9IvE7ifjwqigH1qe3iL5rMt8fV1ji59hCSSa1ax0FhRDTxpc2GYvqvKn2wvt7OcNcNEmFJG-HBl3GcDu1KFQ_zTDyzJD5SPeu0xxue7kuRDfe0CLCjaU9MsxAwa2uBm6PvAwu8aBEAm3hkJDs6A4cflhNPunD87liOczQdNPns7R0NzMbt3aSLzZnlSPxQbqRKn4Y5IygRAD8DxkqbPAE0j67N-kAYdm0RIJNKFN014uxRSHO2Eq695xDl4RhADGCRBV6O6_kVh1NrZ9DwSNXVTgi4uVXNb68WiEOcpVsrdDyTSC8KnGX6roRVk1T-NGwHUgLa32P_I7p3QIZSXirdMY-isGw6Q3GoC6roH1LWHSkttSzD1wt43Oa7zuAOcV1EJnMs7bTdu1jL-qfK2IXnWlt0awKCBMoMHg4sBuY-VV6ZtCcNixUvG6CPgwtYQkzMq_SFDUh2O0u73DrsHfVg3npqsZXj1siFGnlg7okeboq-wZS-MGcve5VylVC3jlKFgwBY4JfiGMKLsoMM7Xqe8VBhR6M9Nv5uINC8bMD5uQ_2dxCaTV06g2a37QXmD84vGFqkBUxIW2ZJ-bpakG_0Kbs6jllIKsgr3tmjHmUhhalyXpMZlp8JSlNWfscSQV-ZX5Pgv1NDSWVI-6NroQ71rX1pStOJ6IYhKzH7Ejm9Hm1ZTYRN84R4jEEQRD7SBJ67wn_u6zIL2QHE7zpPCf4QM0NBZ7qaGetbdTk6bM9Uwo73UQuxe0Bn4zP7EkS8vsNBVoJaiHMb49EnV1ZFbNDt4RcDaIUImYjZW6yW7ofP4x6L_cgsQaBjaJpndqCzUc9rGauBDdPlI46w39AkNOw156OLPcHOUH1Zy7u6YQQo41LwkjRsy9RzrBdp-qkyq7I6-ONe1okAE2CJt9iUEUZvBBuXN9HyETbC5LhzNqZQbecMpyZd_iqrroJ4LgFXmXdT8Up9F-C6f08WeZaAxRETez3hEp5BKNVtlAO7hHppFpXoptLaBev6P1_J11nXjkZUQDrg-levwHPGGiBW26f_f483ifgdTEgGdTmJH0JqIJ3MRfEetb9naKOLU6hGAAUGDAZzzSpgGOrIbMq8mUiBlNAsZhW-_x_s2hrHbC8JHkSda80i2ZfDKm7j-IW0tQiiuztdzTiFhdVRZd0vzwAwM2I2l7RRIJWqsN1uoki2yPbTLEMTh7myO9TzBuAbam-2I3GkTh_1Ncqpj957UQKA0q4nW_WMn-J_A1rqaAljHojCdI9u-5JORGijrcBBPM2lafa1qTE9gVkJJdz-IgBatpccVFpryo4rm4WpRSQl5fP7MgJuza-qDyoovDqeFepHCv5Xqw9WZ94uVk8MTouZdvLkqVzE75AXnoxU90oDMsfmWgB7rOQ-WKL1HuSKGf_BzM93NVdybIIQQu_6cZ9GPjVEe0QTv5ussG6AhIg9VX43Op1AF-r89mRKJAzg3bxLEmmPGQZ-pqAncdUT_TsRELttI0gdWxp2XwEkblqM8jspZMWLW2kRt5GMge5oMR65ydsoIsX_1Z1gXSMnEtc6qC8n6fdikP7YlSCw_Mg0d5BJMKo4_D-m3K86-Qni3-aJRPUGibZRMjafNil2srD1awFuyMXfrZv99IVOOTDAszOwQWTW9YSHqYk4xP4aHL0WBLd8yNOyiEqtvx1R7Zrq82ZCu4xlExiFD0C9ni6aYoeYsNJrlxO4jFSGeB1cCHv0HHucNyv7W3VBIh4htbfNiy4yA-J9gomZrz8So_gLBF2XOwp4Kc-uU4AcY3srWGjZxPWfqaFaT6ddwc_GbjkLxbk_dTYN7_jlBIIXqZW22JCmQKbi51ojd3cM6fl_uPKnc01o_v3hmLr_hsEfQg5J32gnT4o6NQv4Z_HOzz6Ds6HVtMSKTrRsaTxJsMQ1RLzi2jA4-bhlkH9XOcRSVGSc3XWbwMSwcDodOif4w1TS2-Sm8KF9iFiDVewrLldwfK0s-zn_olemiNKkPq9gRAKuhiwMFUXcBieLMjsoFXTzymeGRBlrFjBY6IIoPT03WVSGTrCE6PxXyKf-0fwXMIvIqHo8Xgk536l76Os5rLJEkow6n6WfggQLzGo8jL6KDCx7bF2rjTyCXYMA7DdnjCeeVeu5CVVCQqxgMOADBQPFAvono45ZhnhJh23LX4JW2dbt-hEsmByAN230a4td8DouZsh2QZKOMTCTEdwxt4EgRL-TBXa5swxkIORI8l5-U4o5sbIBI6tgnuUReHNKEtKXpXDDH1DLX1AexIbsRwjVl2SyceP5liOddOMnbwqipd8GyYyibif2d6s48RjWeXNBhwCFi7RsyLQghxZslGovqRKVf-Y6MrHaGu20B0Gv1plxkUYQbUCCpOBMLzSPm3lKbQIUqy_uNn22s9lUoO-HlcisXqp2DF8I6hr7thfTYDQntpYEkP7wZY2l8eYg9dkGvm5WS76oTh5Eahrp1n1KIPS_m_1r9Wo3akJIzQJW-vD7YTUi_Lz82-maDtamQ73ySYj7D3cy8Wy2XzT98vOj6XAV2bkP15rbi2Y4Ts2yPuNLr9rqtIfU9qYa7Q1TaKko01lUHzEKcRixq6GI0Ic2ypspFJyMOkyZNwRxR-pgGiNCAT9Shrgquj4_LxDNNSUrppCL8CnDbMY-vi4wOusY2ud_NC-z0MsblwYWbjfVJUZcy8E6KkQESV07a2StyIRx6CAyV4d8EybGXhO_qXPkdf89fReJ1bPWRP7n_kwDZ_T64KUfiLVMGt7eiiLAtYcSbX404opR6wD3Q5WXNNreHqnIL8PpTO5Ym5kNgT5ytJ9iMzx66OQLK5jaZmZh1gv12wM9DXO2FJVcwJJ_O1GgCugQECbImv6e2_p024WcZZKYQiGKj0AP_Q3KvewlG0EJg1lM-mx9H1BFU6Gu3neZL45NPx0oflO8yTKXTxNX626nsU5eZ9oaAL-nULiDoOOf0AhxsVEtZRn-shWFGneLX3ZZUn-wX9eF4vMi0GBwp_pbbd-mtifXuzrSWfCZZTDacX0Zh6MA5fdcVUvHnavqeKvexYGKNHmQ_diorLqSjd7KamYOQWyiNJQQTjDiOymkiI9BOzhR7oNnxu2idGolgWRlniIVfuI_R35UBKYNUhTRO-td0MWiTUNu5oA1R1I9hH5ZMPDWb2pgKuurvNRIFxed3STMLtYwtA-Is0NhSTY7UqVWeklNP44o5Uk9HJopAPLyw7NMlWZ0NqviTu2RSEed5gn6OqTq13NLKagO-sLvcXiQC2lxc8qnCnCRfzR4C8bIYg6trZ4JbPPDe0JqRrZ3DmhLqf5oceVEY1h26f1OkJENaK4kA9FLIqKCyghZ0GIgPRYE21EuTT61Jbp3tZ1ADSAqBgI3q8Jdb6ZVdgvy2kK8yoklqImR87pbadTRQ4_pxYDTKJdq2PdNGGAFocfeacnnoOdxHrpBbRQfaSk_fY-gQS9VVxVf3vpbSgXM947PcOoas8pPu26iSA3lpvtkdAaarc_Xc_fGu7nErqpM3kza1SGSD39nY7AmK7d1BXyffojTnYTI3N2Lgjoc-VtU-3Azn9G3gJQ06NC5AGUeAp32XocQjyUtKX-_9L4Nc1OoQanObvGoC9TfMQEQqqmarZ_1hi1FV8VMif-d-bBtcVtthrqlIHMXR9QxVRX_5AYCo9AteojzGeVW0gHktuM42iv4rtdh59wo7SjSKsBOCVhQeyTOX6c9soCyblVTj7a4nV6okffuaoTINu8ySFBzixt99QjZf5WGR1ENSB2MKpM4M4CWOCVOjPkiYfQmEvSSm418lwC6Bq1tVkR-S6fOp6mpfOOr1ptYkrKvL3gjprI0w293y1U90UC5gLXW9stu2BMqaJD9guiNqK6k-TBBNeFOV14b65Zp7ImN_oDQx4iAuxBa9g1HBIfQnMgr8NsGttcarScsyETFb3dBQvj0uGEZiLtE1h4zNyEGtmEjsPk91fR3SnPsquHDIDUDgmNzTJQXPwYB3BSKgg-z-ctpSWf5a9OfK-CdsoPAX5yL-u6Jom0Vp9eBA4jC2Rlno_6nEbBDJN18f39jGlvA7deKjhajAVywvfBd0mHFCSAvtmu2uHNIMgi2FYor0tDk7XT84X6Jr_6DINxCb4tflVMOQ1Nx0-T6HzSKFkBHyPZxbzZVnlnWGRdF7269eV7sD_XKUDVXjTLpzGXZInAHl8ekbHKQcNZbpSYqQvaO3dmScPbnbZu6EdjxDU8K7wR6zaSh3UAggKLMTZ-M406HzSS7zaytQnT59vutvCtdg_JOyY_oEdldfxdUmyqNPB-8LHh2RdIFVwYix-JayXDmS5QJ2TR_yBKaMP3BKxaTrjMGyJUyXkx2EvLnqJI5_jfVQ5N8K53QDa0GXbGMtDcS75uHv-oRRkqPDmj0pcEcuCYQOt9QH1Gg_1AeTUaI8NIAAg2rED82AtIG2tqqSGz4BzSZvHK2-HnlGpf0hXH90qNDadcDzTBEd0kEmkaHMP2P-mR4puLdM0wF9UkjvsfGoGHz5aQRFNL1Kju7yQmC0cTyO0aR1sDwP0er9zuIg2AqQEtfSj7tvA7Lv5Ni2ZioBr1Wmo5OAJz5ZIoADyP7UoiCUQdKjtnrlsl0TV98I.C2xSNSkj1UoGYohJnYsKmA",
+  "expectedRequestJwt": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDpqd2s6ZXlKamNuWWlPaUpGWkRJMU5URTVJaXdpYTNSNUlqb2lUMHRRSWl3aWVDSTZJa1YwWkRsTlNISklPRGs1UWtOQmJqazRSMVV4ZDFObU9FSjRZMWxwYVZaaVRWSkxPSHBMUkhwc1NrRWlMQ0pyYVdRaU9pSTJNVmN5ZEVadU5YVkVaekphWms1MVVtSlhMVlZwUkdFeWFrUnRSRTVmVlVSNFJFeENXVTE2Y0ZOWklpd2lZV3huSWpvaVJXUkVVMEVpZlEjMCIsInR5cCI6IkpXVCJ9.eyJjbGllbnREaWQiOiJkaWQ6andrOmV5SmpjbllpT2lKRlpESTFOVEU1SWl3aWEzUjVJam9pVDB0UUlpd2llQ0k2SWtWMFpEbE5TSEpJT0RrNVFrTkJiams0UjFVeGQxTm1PRUo0WTFscGFWWmlUVkpMT0hwTFJIcHNTa0VpTENKcmFXUWlPaUkyTVZjeWRFWnVOWFZFWnpKYVprNTFVbUpYTFZWcFJHRXlha1J0UkU1ZlZVUjRSRXhDV1UxNmNGTlpJaXdpWVd4bklqb2lSV1JFVTBFaWZRIiwiY2FsbGJhY2tVcmwiOiJodHRwczovL3JlbGF5LmV4YW1wbGUuY29tL2Nvbm5lY3QvY2FsbGJhY2siLCJwZXJtaXNzaW9uUmVxdWVzdHMiOlt7InByb3RvY29sRGVmaW5pdGlvbiI6eyJwcm90b2NvbCI6Imh0dHBzOi8vZW5ib3guaWQvcHJvdG9jb2xzL3dpcmVndWFyZC1tZXNoIiwicHVibGlzaGVkIjp0cnVlLCJ0eXBlcyI6eyJuZXR3b3JrIjp7InNjaGVtYSI6Imh0dHBzOi8vZW5ib3guaWQvc2NoZW1hcy93aXJlZ3VhcmQtbWVzaC9uZXR3b3JrIiwiZGF0YUZvcm1hdHMiOlsiYXBwbGljYXRpb24vanNvbiJdfSwibWVtYmVyIjp7InNjaGVtYSI6Imh0dHBzOi8vZW5ib3guaWQvc2NoZW1hcy93aXJlZ3VhcmQtbWVzaC9tZW1iZXIiLCJkYXRhRm9ybWF0cyI6WyJhcHBsaWNhdGlvbi9qc29uIl19LCJub2RlUmVxdWVzdCI6eyJzY2hlbWEiOiJodHRwczovL2VuYm94LmlkL3NjaGVtYXMvd2lyZWd1YXJkLW1lc2gvbm9kZS1yZXF1ZXN0IiwiZGF0YUZvcm1hdHMiOlsiYXBwbGljYXRpb24vanNvbiJdfSwibm9kZUFwcHJvdmFsIjp7InNjaGVtYSI6Imh0dHBzOi8vZW5ib3guaWQvc2NoZW1hcy93aXJlZ3VhcmQtbWVzaC9ub2RlLWFwcHJvdmFsIiwiZGF0YUZvcm1hdHMiOlsiYXBwbGljYXRpb24vanNvbiJdfSwibm9kZSI6eyJzY2hlbWEiOiJodHRwczovL2VuYm94LmlkL3NjaGVtYXMvd2lyZWd1YXJkLW1lc2gvbm9kZSIsImRhdGFGb3JtYXRzIjpbImFwcGxpY2F0aW9uL2pzb24iXSwiZW5jcnlwdGlvblJlcXVpcmVkIjp0cnVlfSwibm9kZUluZm8iOnsic2NoZW1hIjoiaHR0cHM6Ly9lbmJveC5pZC9zY2hlbWFzL3dpcmVndWFyZC1tZXNoL25vZGUtaW5mbyIsImRhdGFGb3JtYXRzIjpbImFwcGxpY2F0aW9uL2pzb24iXSwiZW5jcnlwdGlvblJlcXVpcmVkIjp0cnVlfSwiZW5kcG9pbnQiOnsic2NoZW1hIjoiaHR0cHM6Ly9lbmJveC5pZC9zY2hlbWFzL3dpcmVndWFyZC1tZXNoL2VuZHBvaW50IiwiZGF0YUZvcm1hdHMiOlsiYXBwbGljYXRpb24vanNvbiJdLCJlbmNyeXB0aW9uUmVxdWlyZWQiOnRydWV9LCJhY2xQb2xpY3kiOnsic2NoZW1hIjoiaHR0cHM6Ly9lbmJveC5pZC9zY2hlbWFzL3dpcmVndWFyZC1tZXNoL2FjbC1wb2xpY3kiLCJkYXRhRm9ybWF0cyI6WyJhcHBsaWNhdGlvbi9qc29uIl0sImVuY3J5cHRpb25SZXF1aXJlZCI6dHJ1ZX0sInJlbGF5Ijp7InNjaGVtYSI6Imh0dHBzOi8vZW5ib3guaWQvc2NoZW1hcy93aXJlZ3VhcmQtbWVzaC9yZWxheSIsImRhdGFGb3JtYXRzIjpbImFwcGxpY2F0aW9uL2pzb24iXSwiZW5jcnlwdGlvblJlcXVpcmVkIjp0cnVlfSwicHJlQXV0aEtleSI6eyJzY2hlbWEiOiJodHRwczovL2VuYm94LmlkL3NjaGVtYXMvd2lyZWd1YXJkLW1lc2gvcHJlLWF1dGgta2V5IiwiZGF0YUZvcm1hdHMiOlsiYXBwbGljYXRpb24vanNvbiJdLCJlbmNyeXB0aW9uUmVxdWlyZWQiOnRydWV9fSwic3RydWN0dXJlIjp7Im5vZGVSZXF1ZXN0Ijp7IiRzaXplIjp7Im1heCI6MzAwMH0sIiRhY3Rpb25zIjpbeyJ3aG8iOiJhbnlvbmUiLCJjYW4iOlsiY3JlYXRlIl19LHsid2hvIjoicmVjaXBpZW50Iiwib2YiOiJub2RlUmVxdWVzdCIsImNhbiI6WyJjcmVhdGUiLCJyZWFkIiwiZGVsZXRlIl19LHsid2hvIjoiYXV0aG9yIiwib2YiOiJub2RlUmVxdWVzdCIsImNhbiI6WyJjcmVhdGUiLCJyZWFkIiwiZGVsZXRlIl19XX0sIm5vZGVBcHByb3ZhbCI6eyIkc2l6ZSI6eyJtYXgiOjMwMDB9LCIkYWN0aW9ucyI6W3sid2hvIjoicmVjaXBpZW50Iiwib2YiOiJub2RlQXBwcm92YWwiLCJjYW4iOlsicmVhZCJdfSx7IndobyI6ImF1dGhvciIsIm9mIjoibm9kZUFwcHJvdmFsIiwiY2FuIjpbImNyZWF0ZSIsInJlYWQiLCJkZWxldGUiXX1dfSwibmV0d29yayI6eyIka2V5QWdyZWVtZW50Ijp7InJvb3RLZXlJZCI6IiNkd24tZW5jIiwicHVibGljS2V5SndrIjp7fX0sIiRhY3Rpb25zIjpbeyJ3aG8iOiJhbnlvbmUiLCJjYW4iOlsicmVhZCJdfV0sIm1lbWJlciI6eyIkcm9sZSI6dHJ1ZSwiJGtleUFncmVlbWVudCI6eyJyb290S2V5SWQiOiIjZHduLWVuYyIsInB1YmxpY0tleUp3ayI6e319LCIkYWN0aW9ucyI6W3sid2hvIjoiYXV0aG9yIiwib2YiOiJuZXR3b3JrIiwiY2FuIjpbImNyZWF0ZSIsInVwZGF0ZSIsImNvLWRlbGV0ZSIsImNvLXBydW5lIl19LHsicm9sZSI6Im5ldHdvcmsvbWVtYmVyIiwiY2FuIjpbInJlYWQiXX0seyJyb2xlIjoibmV0d29yay9ub2RlIiwiY2FuIjpbInJlYWQiXX1dLCJub2RlUmVxdWVzdCI6eyIkc2l6ZSI6eyJtYXgiOjIwMDB9LCIkYWN0aW9ucyI6W3sid2hvIjoicmVjaXBpZW50Iiwib2YiOiJuZXR3b3JrL21lbWJlciIsImNhbiI6WyJjcmVhdGUiLCJkZWxldGUiXX0seyJ3aG8iOiJhdXRob3IiLCJvZiI6Im5ldHdvcmsiLCJjYW4iOlsicmVhZCIsImNvLWRlbGV0ZSJdfSx7InJvbGUiOiJuZXR3b3JrL21lbWJlciIsImNhbiI6WyJyZWFkIl19XX0sIm5vZGUiOnsiJHJvbGUiOnRydWUsIiRzcXVhc2giOnRydWUsIiRzaXplIjp7Im1heCI6MTAwMDB9LCIka2V5QWdyZWVtZW50Ijp7InJvb3RLZXlJZCI6IiNkd24tZW5jIiwicHVibGljS2V5SndrIjp7fX0sIiRhY3Rpb25zIjpbeyJ3aG8iOiJhdXRob3IiLCJvZiI6Im5ldHdvcmsiLCJjYW4iOlsiY3JlYXRlIiwidXBkYXRlIiwiZGVsZXRlIl19LHsicm9sZSI6Im5ldHdvcmsvbWVtYmVyIiwiY2FuIjpbInJlYWQiXX0seyJyb2xlIjoibmV0d29yay9ub2RlIiwiY2FuIjpbInJlYWQiXX1dLCJub2RlSW5mbyI6eyIkc3F1YXNoIjp0cnVlLCIkc2l6ZSI6eyJtYXgiOjUwMDB9LCIka2V5QWdyZWVtZW50Ijp7InJvb3RLZXlJZCI6IiNkd24tZW5jIiwicHVibGljS2V5SndrIjp7fX0sIiRhY3Rpb25zIjpbeyJ3aG8iOiJyZWNpcGllbnQiLCJvZiI6Im5ldHdvcmsvbWVtYmVyL25vZGUiLCJjYW4iOlsiY3JlYXRlIiwidXBkYXRlIl19LHsicm9sZSI6Im5ldHdvcmsvbWVtYmVyIiwiY2FuIjpbInJlYWQiXX0seyJyb2xlIjoibmV0d29yay9ub2RlIiwiY2FuIjpbInJlYWQiXX1dfSwiZW5kcG9pbnQiOnsiJHNxdWFzaCI6dHJ1ZSwiJHNpemUiOnsibWF4IjoyMDAwfSwiJGtleUFncmVlbWVudCI6eyJyb290S2V5SWQiOiIjZHduLWVuYyIsInB1YmxpY0tleUp3ayI6e319LCIkYWN0aW9ucyI6W3sid2hvIjoicmVjaXBpZW50Iiwib2YiOiJuZXR3b3JrL21lbWJlci9ub2RlIiwiY2FuIjpbImNyZWF0ZSIsInVwZGF0ZSJdfSx7InJvbGUiOiJuZXR3b3JrL21lbWJlciIsImNhbiI6WyJyZWFkIl19LHsicm9sZSI6Im5ldHdvcmsvbm9kZSIsImNhbiI6WyJyZWFkIl19XX19fSwibm9kZVJlcXVlc3QiOnsiJHNpemUiOnsibWF4IjoyMDAwfSwiJGFjdGlvbnMiOlt7IndobyI6ImFueW9uZSIsImNhbiI6WyJjcmVhdGUiXX0seyJ3aG8iOiJhdXRob3IiLCJvZiI6Im5ldHdvcmsiLCJjYW4iOlsiY3JlYXRlIiwicmVhZCIsImRlbGV0ZSIsImNvLWRlbGV0ZSJdfV19LCJub2RlIjp7IiRyb2xlIjp0cnVlLCIkc3F1YXNoIjp0cnVlLCIkc2l6ZSI6eyJtYXgiOjEwMDAwfSwiJGtleUFncmVlbWVudCI6eyJyb290S2V5SWQiOiIjZHduLWVuYyIsInB1YmxpY0tleUp3ayI6e319LCIkYWN0aW9ucyI6W3sid2hvIjoiYXV0aG9yIiwib2YiOiJuZXR3b3JrIiwiY2FuIjpbImNyZWF0ZSIsInVwZGF0ZSIsImRlbGV0ZSJdfSx7InJvbGUiOiJuZXR3b3JrL21lbWJlciIsImNhbiI6WyJyZWFkIl19LHsicm9sZSI6Im5ldHdvcmsvbm9kZSIsImNhbiI6WyJyZWFkIl19XSwibm9kZUluZm8iOnsiJHNxdWFzaCI6dHJ1ZSwiJHNpemUiOnsibWF4Ijo1MDAwfSwiJGtleUFncmVlbWVudCI6eyJyb290S2V5SWQiOiIjZHduLWVuYyIsInB1YmxpY0tleUp3ayI6e319LCIkYWN0aW9ucyI6W3sid2hvIjoicmVjaXBpZW50Iiwib2YiOiJuZXR3b3JrL25vZGUiLCJjYW4iOlsiY3JlYXRlIiwidXBkYXRlIl19LHsicm9sZSI6Im5ldHdvcmsvbWVtYmVyIiwiY2FuIjpbInJlYWQiXX0seyJyb2xlIjoibmV0d29yay9ub2RlIiwiY2FuIjpbInJlYWQiXX1dfSwiZW5kcG9pbnQiOnsiJHNxdWFzaCI6dHJ1ZSwiJHNpemUiOnsibWF4IjoyMDAwfSwiJGtleUFncmVlbWVudCI6eyJyb290S2V5SWQiOiIjZHduLWVuYyIsInB1YmxpY0tleUp3ayI6e319LCIkYWN0aW9ucyI6W3sid2hvIjoicmVjaXBpZW50Iiwib2YiOiJuZXR3b3JrL25vZGUiLCJjYW4iOlsiY3JlYXRlIiwidXBkYXRlIl19LHsicm9sZSI6Im5ldHdvcmsvbWVtYmVyIiwiY2FuIjpbInJlYWQiXX0seyJyb2xlIjoibmV0d29yay9ub2RlIiwiY2FuIjpbInJlYWQiXX1dfX0sImFjbFBvbGljeSI6eyIkc3F1YXNoIjp0cnVlLCIkc2l6ZSI6eyJtYXgiOjEwMDAwMH0sIiRrZXlBZ3JlZW1lbnQiOnsicm9vdEtleUlkIjoiI2R3bi1lbmMiLCJwdWJsaWNLZXlKd2siOnt9fSwiJGFjdGlvbnMiOlt7IndobyI6ImF1dGhvciIsIm9mIjoibmV0d29yayIsImNhbiI6WyJjcmVhdGUiLCJ1cGRhdGUiXX0seyJyb2xlIjoibmV0d29yay9tZW1iZXIiLCJjYW4iOlsicmVhZCJdfSx7InJvbGUiOiJuZXR3b3JrL25vZGUiLCJjYW4iOlsicmVhZCJdfV19LCJyZWxheSI6eyIka2V5QWdyZWVtZW50Ijp7InJvb3RLZXlJZCI6IiNkd24tZW5jIiwicHVibGljS2V5SndrIjp7fX0sIiRhY3Rpb25zIjpbeyJ3aG8iOiJhdXRob3IiLCJvZiI6Im5ldHdvcmsiLCJjYW4iOlsiY3JlYXRlIiwidXBkYXRlIiwiZGVsZXRlIl19LHsicm9sZSI6Im5ldHdvcmsvbWVtYmVyIiwiY2FuIjpbInJlYWQiXX0seyJyb2xlIjoibmV0d29yay9ub2RlIiwiY2FuIjpbInJlYWQiXX1dfSwicHJlQXV0aEtleSI6eyIka2V5QWdyZWVtZW50Ijp7InJvb3RLZXlJZCI6IiNkd24tZW5jIiwicHVibGljS2V5SndrIjp7fX0sIiRyZWNvcmRMaW1pdCI6eyJtYXgiOjEwMCwic3RyYXRlZ3kiOiJyZWplY3QifSwiJGFjdGlvbnMiOlt7IndobyI6ImF1dGhvciIsIm9mIjoibmV0d29yayIsImNhbiI6WyJjcmVhdGUiLCJkZWxldGUiLCJyZWFkIl19XX19fX0sInBlcm1pc3Npb25TY29wZXMiOlt7InByb3RvY29sIjoiaHR0cHM6Ly9lbmJveC5pZC9wcm90b2NvbHMvd2lyZWd1YXJkLW1lc2giLCJpbnRlcmZhY2UiOiJQcm90b2NvbHMiLCJtZXRob2QiOiJRdWVyeSJ9LHsicHJvdG9jb2wiOiJodHRwczovL2VuYm94LmlkL3Byb3RvY29scy93aXJlZ3VhcmQtbWVzaCIsImludGVyZmFjZSI6Ik1lc3NhZ2VzIiwibWV0aG9kIjoiUmVhZCJ9LHsicHJvdG9jb2wiOiJodHRwczovL2VuYm94LmlkL3Byb3RvY29scy93aXJlZ3VhcmQtbWVzaCIsImludGVyZmFjZSI6IlJlY29yZHMiLCJtZXRob2QiOiJXcml0ZSJ9LHsicHJvdG9jb2wiOiJodHRwczovL2VuYm94LmlkL3Byb3RvY29scy93aXJlZ3VhcmQtbWVzaCIsImludGVyZmFjZSI6IlJlY29yZHMiLCJtZXRob2QiOiJSZWFkIn0seyJwcm90b2NvbCI6Imh0dHBzOi8vZW5ib3guaWQvcHJvdG9jb2xzL3dpcmVndWFyZC1tZXNoIiwiaW50ZXJmYWNlIjoiUmVjb3JkcyIsIm1ldGhvZCI6IkRlbGV0ZSJ9XX1dLCJhcHBOYW1lIjoibWVzaGQiLCJyZXF1ZXN0ZWRTZXNzaW9uVHRsU2Vjb25kcyI6ODY0MDAsImRlbGVnYXRlRGlkIjoiZGlkOmp3azpleUpqY25ZaU9pSkZaREkxTlRFNUlpd2lhM1I1SWpvaVQwdFFJaXdpZUNJNklsVldVVmxHTFhsR2FIaEliM1JzVnpOck5sUjVjMmhuTmxVMVUyZERVakl6WjFkM2JtbGZkRlZ2ZW1zaUxDSnJhV1FpT2lKdlQyUkhSRlZoWjBod2NsOVhTMnRVVVc5WFNEWlZOa3hwZVdKdGMwRXpPR0ZoYmpWelUxTnJWMWhOSWl3aVlXeG5Jam9pUldSRVUwRWlmUSIsIm5vbmNlIjoiY3dVYW5tWkJpbXY4QjlSMFRWLWV3ZyIsInJlc3BvbnNlTW9kZSI6ImRpcmVjdF9wb3N0Iiwic3RhdGUiOiJ6OHhlZG5CUmxlYmhzUndCcXk0eHpRIiwic3VwcG9ydGVkRGlkTWV0aG9kcyI6WyJkaWQ6ZGh0IiwiZGlkOmp3ayJdfQ.6mG3cju3WZTVmFj1X8S8SgzyOGs7jMyZw7yzbVCxEaUApprBqXcRH364u9qjzBGD4cziThRmL6lTvNt_xGt5CA",
+  "expectedRequestPayload": {
+    "clientDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IkV0ZDlNSHJIODk5QkNBbjk4R1Uxd1NmOEJ4Y1lpaVZiTVJLOHpLRHpsSkEiLCJraWQiOiI2MVcydEZuNXVEZzJaZk51UmJXLVVpRGEyakRtRE5fVUR4RExCWU16cFNZIiwiYWxnIjoiRWREU0EifQ",
+    "callbackUrl": "https://relay.example.com/connect/callback",
+    "permissionRequests": [
+      {
+        "protocolDefinition": {
+          "protocol": "https://enbox.id/protocols/wireguard-mesh",
+          "published": true,
+          "types": {
+            "network": {
+              "schema": "https://enbox.id/schemas/wireguard-mesh/network",
+              "dataFormats": [
+                "application/json"
+              ]
+            },
+            "member": {
+              "schema": "https://enbox.id/schemas/wireguard-mesh/member",
+              "dataFormats": [
+                "application/json"
+              ]
+            },
+            "nodeRequest": {
+              "schema": "https://enbox.id/schemas/wireguard-mesh/node-request",
+              "dataFormats": [
+                "application/json"
+              ]
+            },
+            "nodeApproval": {
+              "schema": "https://enbox.id/schemas/wireguard-mesh/node-approval",
+              "dataFormats": [
+                "application/json"
+              ]
+            },
+            "node": {
+              "schema": "https://enbox.id/schemas/wireguard-mesh/node",
+              "dataFormats": [
+                "application/json"
+              ],
+              "encryptionRequired": true
+            },
+            "nodeInfo": {
+              "schema": "https://enbox.id/schemas/wireguard-mesh/node-info",
+              "dataFormats": [
+                "application/json"
+              ],
+              "encryptionRequired": true
+            },
+            "endpoint": {
+              "schema": "https://enbox.id/schemas/wireguard-mesh/endpoint",
+              "dataFormats": [
+                "application/json"
+              ],
+              "encryptionRequired": true
+            },
+            "aclPolicy": {
+              "schema": "https://enbox.id/schemas/wireguard-mesh/acl-policy",
+              "dataFormats": [
+                "application/json"
+              ],
+              "encryptionRequired": true
+            },
+            "relay": {
+              "schema": "https://enbox.id/schemas/wireguard-mesh/relay",
+              "dataFormats": [
+                "application/json"
+              ],
+              "encryptionRequired": true
+            },
+            "preAuthKey": {
+              "schema": "https://enbox.id/schemas/wireguard-mesh/pre-auth-key",
+              "dataFormats": [
+                "application/json"
+              ],
+              "encryptionRequired": true
+            }
+          },
+          "structure": {
+            "nodeRequest": {
+              "$size": {
+                "max": 3000
+              },
+              "$actions": [
+                {
+                  "who": "anyone",
+                  "can": [
+                    "create"
+                  ]
+                },
+                {
+                  "who": "recipient",
+                  "of": "nodeRequest",
+                  "can": [
+                    "create",
+                    "read",
+                    "delete"
+                  ]
+                },
+                {
+                  "who": "author",
+                  "of": "nodeRequest",
+                  "can": [
+                    "create",
+                    "read",
+                    "delete"
+                  ]
+                }
+              ]
+            },
+            "nodeApproval": {
+              "$size": {
+                "max": 3000
+              },
+              "$actions": [
+                {
+                  "who": "recipient",
+                  "of": "nodeApproval",
+                  "can": [
+                    "read"
+                  ]
+                },
+                {
+                  "who": "author",
+                  "of": "nodeApproval",
+                  "can": [
+                    "create",
+                    "read",
+                    "delete"
+                  ]
+                }
+              ]
+            },
+            "network": {
+              "$keyAgreement": {
+                "rootKeyId": "#dwn-enc",
+                "publicKeyJwk": {}
+              },
+              "$actions": [
+                {
+                  "who": "anyone",
+                  "can": [
+                    "read"
+                  ]
+                }
+              ],
+              "member": {
+                "$role": true,
+                "$keyAgreement": {
+                  "rootKeyId": "#dwn-enc",
+                  "publicKeyJwk": {}
+                },
+                "$actions": [
+                  {
+                    "who": "author",
+                    "of": "network",
+                    "can": [
+                      "create",
+                      "update",
+                      "co-delete",
+                      "co-prune"
+                    ]
+                  },
+                  {
+                    "role": "network/member",
+                    "can": [
+                      "read"
+                    ]
+                  },
+                  {
+                    "role": "network/node",
+                    "can": [
+                      "read"
+                    ]
+                  }
+                ],
+                "nodeRequest": {
+                  "$size": {
+                    "max": 2000
+                  },
+                  "$actions": [
+                    {
+                      "who": "recipient",
+                      "of": "network/member",
+                      "can": [
+                        "create",
+                        "delete"
+                      ]
+                    },
+                    {
+                      "who": "author",
+                      "of": "network",
+                      "can": [
+                        "read",
+                        "co-delete"
+                      ]
+                    },
+                    {
+                      "role": "network/member",
+                      "can": [
+                        "read"
+                      ]
+                    }
+                  ]
+                },
+                "node": {
+                  "$role": true,
+                  "$squash": true,
+                  "$size": {
+                    "max": 10000
+                  },
+                  "$keyAgreement": {
+                    "rootKeyId": "#dwn-enc",
+                    "publicKeyJwk": {}
+                  },
+                  "$actions": [
+                    {
+                      "who": "author",
+                      "of": "network",
+                      "can": [
+                        "create",
+                        "update",
+                        "delete"
+                      ]
+                    },
+                    {
+                      "role": "network/member",
+                      "can": [
+                        "read"
+                      ]
+                    },
+                    {
+                      "role": "network/node",
+                      "can": [
+                        "read"
+                      ]
+                    }
+                  ],
+                  "nodeInfo": {
+                    "$squash": true,
+                    "$size": {
+                      "max": 5000
+                    },
+                    "$keyAgreement": {
+                      "rootKeyId": "#dwn-enc",
+                      "publicKeyJwk": {}
+                    },
+                    "$actions": [
+                      {
+                        "who": "recipient",
+                        "of": "network/member/node",
+                        "can": [
+                          "create",
+                          "update"
+                        ]
+                      },
+                      {
+                        "role": "network/member",
+                        "can": [
+                          "read"
+                        ]
+                      },
+                      {
+                        "role": "network/node",
+                        "can": [
+                          "read"
+                        ]
+                      }
+                    ]
+                  },
+                  "endpoint": {
+                    "$squash": true,
+                    "$size": {
+                      "max": 2000
+                    },
+                    "$keyAgreement": {
+                      "rootKeyId": "#dwn-enc",
+                      "publicKeyJwk": {}
+                    },
+                    "$actions": [
+                      {
+                        "who": "recipient",
+                        "of": "network/member/node",
+                        "can": [
+                          "create",
+                          "update"
+                        ]
+                      },
+                      {
+                        "role": "network/member",
+                        "can": [
+                          "read"
+                        ]
+                      },
+                      {
+                        "role": "network/node",
+                        "can": [
+                          "read"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              },
+              "nodeRequest": {
+                "$size": {
+                  "max": 2000
+                },
+                "$actions": [
+                  {
+                    "who": "anyone",
+                    "can": [
+                      "create"
+                    ]
+                  },
+                  {
+                    "who": "author",
+                    "of": "network",
+                    "can": [
+                      "create",
+                      "read",
+                      "delete",
+                      "co-delete"
+                    ]
+                  }
+                ]
+              },
+              "node": {
+                "$role": true,
+                "$squash": true,
+                "$size": {
+                  "max": 10000
+                },
+                "$keyAgreement": {
+                  "rootKeyId": "#dwn-enc",
+                  "publicKeyJwk": {}
+                },
+                "$actions": [
+                  {
+                    "who": "author",
+                    "of": "network",
+                    "can": [
+                      "create",
+                      "update",
+                      "delete"
+                    ]
+                  },
+                  {
+                    "role": "network/member",
+                    "can": [
+                      "read"
+                    ]
+                  },
+                  {
+                    "role": "network/node",
+                    "can": [
+                      "read"
+                    ]
+                  }
+                ],
+                "nodeInfo": {
+                  "$squash": true,
+                  "$size": {
+                    "max": 5000
+                  },
+                  "$keyAgreement": {
+                    "rootKeyId": "#dwn-enc",
+                    "publicKeyJwk": {}
+                  },
+                  "$actions": [
+                    {
+                      "who": "recipient",
+                      "of": "network/node",
+                      "can": [
+                        "create",
+                        "update"
+                      ]
+                    },
+                    {
+                      "role": "network/member",
+                      "can": [
+                        "read"
+                      ]
+                    },
+                    {
+                      "role": "network/node",
+                      "can": [
+                        "read"
+                      ]
+                    }
+                  ]
+                },
+                "endpoint": {
+                  "$squash": true,
+                  "$size": {
+                    "max": 2000
+                  },
+                  "$keyAgreement": {
+                    "rootKeyId": "#dwn-enc",
+                    "publicKeyJwk": {}
+                  },
+                  "$actions": [
+                    {
+                      "who": "recipient",
+                      "of": "network/node",
+                      "can": [
+                        "create",
+                        "update"
+                      ]
+                    },
+                    {
+                      "role": "network/member",
+                      "can": [
+                        "read"
+                      ]
+                    },
+                    {
+                      "role": "network/node",
+                      "can": [
+                        "read"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "aclPolicy": {
+                "$squash": true,
+                "$size": {
+                  "max": 100000
+                },
+                "$keyAgreement": {
+                  "rootKeyId": "#dwn-enc",
+                  "publicKeyJwk": {}
+                },
+                "$actions": [
+                  {
+                    "who": "author",
+                    "of": "network",
+                    "can": [
+                      "create",
+                      "update"
+                    ]
+                  },
+                  {
+                    "role": "network/member",
+                    "can": [
+                      "read"
+                    ]
+                  },
+                  {
+                    "role": "network/node",
+                    "can": [
+                      "read"
+                    ]
+                  }
+                ]
+              },
+              "relay": {
+                "$keyAgreement": {
+                  "rootKeyId": "#dwn-enc",
+                  "publicKeyJwk": {}
+                },
+                "$actions": [
+                  {
+                    "who": "author",
+                    "of": "network",
+                    "can": [
+                      "create",
+                      "update",
+                      "delete"
+                    ]
+                  },
+                  {
+                    "role": "network/member",
+                    "can": [
+                      "read"
+                    ]
+                  },
+                  {
+                    "role": "network/node",
+                    "can": [
+                      "read"
+                    ]
+                  }
+                ]
+              },
+              "preAuthKey": {
+                "$keyAgreement": {
+                  "rootKeyId": "#dwn-enc",
+                  "publicKeyJwk": {}
+                },
+                "$recordLimit": {
+                  "max": 100,
+                  "strategy": "reject"
+                },
+                "$actions": [
+                  {
+                    "who": "author",
+                    "of": "network",
+                    "can": [
+                      "create",
+                      "delete",
+                      "read"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "permissionScopes": [
+          {
+            "protocol": "https://enbox.id/protocols/wireguard-mesh",
+            "interface": "Protocols",
+            "method": "Query"
+          },
+          {
+            "protocol": "https://enbox.id/protocols/wireguard-mesh",
+            "interface": "Messages",
+            "method": "Read"
+          },
+          {
+            "protocol": "https://enbox.id/protocols/wireguard-mesh",
+            "interface": "Records",
+            "method": "Write"
+          },
+          {
+            "protocol": "https://enbox.id/protocols/wireguard-mesh",
+            "interface": "Records",
+            "method": "Read"
+          },
+          {
+            "protocol": "https://enbox.id/protocols/wireguard-mesh",
+            "interface": "Records",
+            "method": "Delete"
+          }
+        ]
+      }
+    ],
+    "appName": "meshd",
+    "requestedSessionTtlSeconds": 86400,
+    "delegateDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IlVWUVlGLXlGaHhIb3RsVzNrNlR5c2hnNlU1U2dDUjIzZ1d3bmlfdFVvemsiLCJraWQiOiJvT2RHRFVhZ0hwcl9XS2tUUW9XSDZVNkxpeWJtc0EzOGFhbjVzU1NrV1hNIiwiYWxnIjoiRWREU0EifQ",
+    "nonce": "cwUanmZBimv8B9R0TV-ewg",
+    "responseMode": "direct_post",
+    "state": "z8xednBRlebhsRwBqy4xzQ",
+    "supportedDidMethods": [
+      "did:dht",
+      "did:jwk"
+    ]
+  },
+  "walletUriExample": "https://wallet.example.com/connect/app?request_uri=https%3A%2F%2Frelay.example.com%2Fconnect%2Fauthorize%2FREQUEST_ID.jwt&encryption_key=btTo8_ISg5caisZXDFgcI3OyHwCcfXA4Rmi4Nt7QbvA",
+  "_fields": {
+    "encryptionKey_b64u": "fresh random 32-byte symmetric key; travels to the wallet in the wallet URI query (encryption_key)",
+    "protectedHeaderJson": "EXACT UTF-8 bytes of the JWE protected header; also the AAD",
+    "expectedRequestPayload": "the EnboxConnectRequest JWT payload (nonce/state are random base64url(16 bytes))"
+  }
+}

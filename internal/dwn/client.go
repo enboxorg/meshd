@@ -113,7 +113,16 @@ type RecordsReadResult struct {
 
 // RecordsRead reads a single record from the target DWN.
 func (c *Client) RecordsRead(ctx context.Context, target string, filter RecordsFilter, protocolRole string, permissionGrantID ...string) (*RecordsReadResult, error) {
-	msg, err := BuildRecordsRead(c.signer, filter, protocolRole, optionalString(permissionGrantID))
+	return c.RecordsReadWithAuth(ctx, target, filter, MessageAuth{
+		ProtocolRole:      protocolRole,
+		PermissionGrantID: optionalString(permissionGrantID),
+	})
+}
+
+// RecordsReadWithAuth reads a single record with explicit authorization
+// options (protocol role, plain grant, or delegated grant).
+func (c *Client) RecordsReadWithAuth(ctx context.Context, target string, filter RecordsFilter, auth MessageAuth) (*RecordsReadResult, error) {
+	msg, err := BuildRecordsReadWithAuth(c.signer, filter, auth)
 	if err != nil {
 		return nil, fmt.Errorf("building RecordsRead: %w", err)
 	}
@@ -131,7 +140,16 @@ func (c *Client) RecordsRead(ctx context.Context, target string, filter RecordsF
 
 // RecordsQuery queries records on the target DWN.
 func (c *Client) RecordsQuery(ctx context.Context, target string, filter RecordsFilter, dateSort string, pagination *Pagination, protocolRole string, permissionGrantID ...string) (*DwnReply, error) {
-	msg, err := BuildRecordsQuery(c.signer, filter, dateSort, pagination, protocolRole, optionalString(permissionGrantID))
+	return c.RecordsQueryWithAuth(ctx, target, filter, dateSort, pagination, MessageAuth{
+		ProtocolRole:      protocolRole,
+		PermissionGrantID: optionalString(permissionGrantID),
+	})
+}
+
+// RecordsQueryWithAuth queries records with explicit authorization options
+// (protocol role, plain grant, or delegated grant).
+func (c *Client) RecordsQueryWithAuth(ctx context.Context, target string, filter RecordsFilter, dateSort string, pagination *Pagination, auth MessageAuth) (*DwnReply, error) {
+	msg, err := BuildRecordsQueryWithAuth(c.signer, filter, dateSort, pagination, auth)
 	if err != nil {
 		return nil, fmt.Errorf("building RecordsQuery: %w", err)
 	}
@@ -146,7 +164,16 @@ func (c *Client) RecordsQuery(ctx context.Context, target string, filter Records
 
 // RecordsDelete deletes a record on the target DWN.
 func (c *Client) RecordsDelete(ctx context.Context, target string, recordID string, prune bool, protocolRole string, permissionGrantID ...string) (*DwnReply, error) {
-	msg, err := BuildRecordsDelete(c.signer, recordID, prune, protocolRole, optionalString(permissionGrantID))
+	return c.RecordsDeleteWithAuth(ctx, target, recordID, prune, MessageAuth{
+		ProtocolRole:      protocolRole,
+		PermissionGrantID: optionalString(permissionGrantID),
+	})
+}
+
+// RecordsDeleteWithAuth deletes a record with explicit authorization options
+// (protocol role, plain grant, or delegated grant).
+func (c *Client) RecordsDeleteWithAuth(ctx context.Context, target string, recordID string, prune bool, auth MessageAuth) (*DwnReply, error) {
+	msg, err := BuildRecordsDeleteWithAuth(c.signer, recordID, prune, auth)
 	if err != nil {
 		return nil, fmt.Errorf("building RecordsDelete: %w", err)
 	}

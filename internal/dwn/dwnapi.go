@@ -96,12 +96,21 @@ func (api *DwnAPI) Write(ctx context.Context, target string, params WriteParams)
 //
 // Returns the Record with its data available via record.Data().
 func (api *DwnAPI) Read(ctx context.Context, target string, filter RecordsFilter, protocolRole string, permissionGrantID ...string) (*Record, *Status, error) {
+	return api.ReadWithParams(ctx, target, ReadParams{
+		Filter:            filter,
+		PermissionGrantID: optionalString(permissionGrantID),
+	}, protocolRole)
+}
+
+// ReadWithParams reads a single record using explicit ReadParams, allowing
+// plain-grant or delegated-grant authorization.
+func (api *DwnAPI) ReadWithParams(ctx context.Context, target string, params ReadParams, protocolRole string) (*Record, *Status, error) {
 	resp, err := api.agent.SendDwnRequest(ctx, DwnRequest{
 		Target:            target,
 		MessageType:       InterfaceRecordsRead,
-		MessageParams:     &ReadParams{Filter: filter},
+		MessageParams:     &params,
 		ProtocolRole:      protocolRole,
-		PermissionGrantID: optionalString(permissionGrantID),
+		PermissionGrantID: params.PermissionGrantID,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -160,15 +169,22 @@ func (api *DwnAPI) Query(ctx context.Context, target string, params QueryParams,
 
 // Delete deletes a record.
 func (api *DwnAPI) Delete(ctx context.Context, target string, recordID string, prune bool, protocolRole string, permissionGrantID ...string) (*Status, error) {
-	resp, err := api.agent.SendDwnRequest(ctx, DwnRequest{
-		Target:      target,
-		MessageType: InterfaceRecordsDelete,
-		MessageParams: &DeleteParams{
-			RecordID: recordID,
-			Prune:    prune,
-		},
-		ProtocolRole:      protocolRole,
+	return api.DeleteWithParams(ctx, target, DeleteParams{
+		RecordID:          recordID,
+		Prune:             prune,
 		PermissionGrantID: optionalString(permissionGrantID),
+	}, protocolRole)
+}
+
+// DeleteWithParams deletes a record using explicit DeleteParams, allowing
+// plain-grant or delegated-grant authorization.
+func (api *DwnAPI) DeleteWithParams(ctx context.Context, target string, params DeleteParams, protocolRole string) (*Status, error) {
+	resp, err := api.agent.SendDwnRequest(ctx, DwnRequest{
+		Target:            target,
+		MessageType:       InterfaceRecordsDelete,
+		MessageParams:     &params,
+		ProtocolRole:      protocolRole,
+		PermissionGrantID: params.PermissionGrantID,
 	})
 	if err != nil {
 		return nil, err

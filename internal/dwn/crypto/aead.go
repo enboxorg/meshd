@@ -7,8 +7,9 @@
 //     Encryption Key (CEK) per keyEncryption entry.
 //
 // Protocol-path keys are derived hierarchically via HKDF-SHA256. Role-audience
-// keys are random per epoch and delivered out of band via the EncryptionProtocol
-// audienceKey records.
+// keys are random X25519 pairs published as `$encryption/audience` control
+// records (sealed to the tenant role-path key) and delivered to role holders
+// via encrypted `$encryption/delivery` records.
 package crypto
 
 import (

@@ -75,9 +75,9 @@ func TestDeriveKeyBytesDeterministic(t *testing.T) {
 	}
 }
 
-func TestJWKThumbprintX25519MatchesFixture(t *testing.T) {
-	// From testdata/v1/protocolpath.json ephemeralPublicKey/keyId pairing is
-	// dynamic; use the reader public key whose thumbprint is the documented kid.
+func TestJWKThumbprintX25519MatchesKnownValue(t *testing.T) {
+	// Known-answer pairing generated with the @enbox SDK's
+	// computeJwkThumbprint (RFC 7638).
 	x := "bOFlq67TRRnDaJdDNh4GefffY5BtzaATOKbNkxnV6HU"
 	want := "GWQ0SrfSGBfA_gZ55aKto0SoOP-bH4Mi8LNqRUsCOUo"
 	if got := JWKThumbprintX25519(x); got != want {
@@ -85,7 +85,8 @@ func TestJWKThumbprintX25519MatchesFixture(t *testing.T) {
 	}
 }
 
-// EncryptData (protocolPath) round-trips through DecryptData.
+// EncryptData (protocolPath) round-trips through DecryptData with a key
+// derived at the record's protocol path.
 func TestEncryptDecryptProtocolPathRoundTrip(t *testing.T) {
 	root, _, err := GenerateX25519KeyPair()
 	if err != nil {
@@ -97,13 +98,17 @@ func TestEncryptDecryptProtocolPathRoundTrip(t *testing.T) {
 		ProtocolURI:    "https://example.com/proto",
 	}
 
-	recipients, err := mgr.DeriveWriteEncryption("network/node")
+	// The write side wraps to the derived leaf PUBLIC key (published as the
+	// rule set's $keyAgreement key).
+	_, leafPub, err := DerivePrivateKey(root, BuildProtocolPathDerivation(mgr.ProtocolURI, "network", "node"))
 	if err != nil {
-		t.Fatalf("DeriveWriteEncryption: %v", err)
+		t.Fatalf("DerivePrivateKey: %v", err)
 	}
 
 	plaintext := []byte(`{"secret":"v1 round trip","n":7}`)
-	ciphertext, enc, err := EncryptData(plaintext, recipients)
+	ciphertext, enc, err := EncryptData(plaintext, []KeyEncryptionInput{
+		{PublicKey: leafPub, DerivationScheme: DerivationSchemeProtocolPath},
+	})
 	if err != nil {
 		t.Fatalf("EncryptData: %v", err)
 	}
@@ -112,6 +117,9 @@ func TestEncryptDecryptProtocolPathRoundTrip(t *testing.T) {
 	}
 	if len(enc.KeyEncryption) != 1 || enc.KeyEncryption[0].DerivationScheme != DerivationSchemeProtocolPath {
 		t.Fatalf("unexpected keyEncryption: %+v", enc.KeyEncryption)
+	}
+	if enc.KeyEncryption[0].KeyID != thumbprintForPublicKey(leafPub) {
+		t.Fatalf("keyId = %q, want thumbprint of the wrap target", enc.KeyEncryption[0].KeyID)
 	}
 	if bytes.Equal(ciphertext, plaintext) {
 		t.Fatal("ciphertext equals plaintext")
@@ -160,8 +168,9 @@ func TestEncryptDataMultiRecipientSelectsByThumbprint(t *testing.T) {
 	}
 }
 
-// InjectEncryptionDirectives injects $keyAgreement (encryption-v1), not the
-// pre-v1 $encryption directive, and is deterministic for a fixed root.
+// InjectEncryptionDirectives injects the sealed-model $keyAgreement shape:
+// exactly {"publicKeyJwk": {...}} per rule set plus a top-level protocol-level
+// $keyAgreement, skipping $ref attachment points.
 func TestInjectEncryptionDirectivesUsesKeyAgreement(t *testing.T) {
 	root, _, err := GenerateX25519KeyPair()
 	if err != nil {
@@ -169,10 +178,13 @@ func TestInjectEncryptionDirectivesUsesKeyAgreement(t *testing.T) {
 	}
 	definition := json.RawMessage(`{
 		"protocol": "https://example.com/p",
-		"structure": { "network": { "node": {} } }
+		"structure": {
+			"network": { "node": {} },
+			"attachment": { "$ref": "other:thing", "child": {} }
+		}
 	}`)
 
-	out, err := InjectEncryptionDirectives(definition, root, "did:test#enc")
+	out, err := InjectEncryptionDirectives(definition, root)
 	if err != nil {
 		t.Fatalf("InjectEncryptionDirectives: %v", err)
 	}
@@ -181,6 +193,21 @@ func TestInjectEncryptionDirectivesUsesKeyAgreement(t *testing.T) {
 	if err := json.Unmarshal(out, &def); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
+
+	// Top-level $keyAgreement holds the protocol-level derived public key.
+	topKA, ok := def["$keyAgreement"].(map[string]any)
+	if !ok {
+		t.Fatalf("definition missing top-level $keyAgreement: %v", def)
+	}
+	protoPriv, protoPub, err := DerivePrivateKey(root, []string{"protocolPath", "https://example.com/p"})
+	if err != nil {
+		t.Fatalf("DerivePrivateKey: %v", err)
+	}
+	defer clear(protoPriv)
+	if got := topKA["publicKeyJwk"].(map[string]any)["x"]; got != base64URLEncode(protoPub) {
+		t.Fatalf("top-level $keyAgreement x = %v, want protocol-level derived key", got)
+	}
+
 	network := def["structure"].(map[string]any)["network"].(map[string]any)
 	ka, ok := network["$keyAgreement"].(map[string]any)
 	if !ok {
@@ -189,12 +216,36 @@ func TestInjectEncryptionDirectivesUsesKeyAgreement(t *testing.T) {
 	if _, bad := network["$encryption"]; bad {
 		t.Fatal("network should not contain the pre-v1 $encryption directive")
 	}
-	if ka["rootKeyId"] != "did:test#enc" {
-		t.Fatalf("rootKeyId = %v", ka["rootKeyId"])
+	// Exactly one member: publicKeyJwk (server enforces
+	// additionalProperties:false — rootKeyId must NOT be emitted).
+	if len(ka) != 1 {
+		t.Fatalf("$keyAgreement must contain only publicKeyJwk, got %v", ka)
 	}
 	pub := ka["publicKeyJwk"].(map[string]any)
 	if pub["crv"] != "X25519" || pub["kty"] != "OKP" || pub["x"] == "" {
 		t.Fatalf("publicKeyJwk = %v", pub)
+	}
+
+	// The injected key matches the deterministic derivation for the path.
+	nodePriv, nodePub, err := DerivePrivateKey(root, []string{"protocolPath", "https://example.com/p", "network", "node"})
+	if err != nil {
+		t.Fatalf("DerivePrivateKey: %v", err)
+	}
+	defer clear(nodePriv)
+	node := network["node"].(map[string]any)
+	nodeKA := node["$keyAgreement"].(map[string]any)["publicKeyJwk"].(map[string]any)
+	if nodeKA["x"] != base64URLEncode(nodePub) {
+		t.Fatalf("node $keyAgreement x = %v, want %v", nodeKA["x"], base64URLEncode(nodePub))
+	}
+
+	// $ref nodes get no $keyAgreement, but their children do.
+	attachment := def["structure"].(map[string]any)["attachment"].(map[string]any)
+	if _, bad := attachment["$keyAgreement"]; bad {
+		t.Fatal("$ref attachment point must not get a $keyAgreement directive")
+	}
+	child := attachment["child"].(map[string]any)
+	if _, ok := child["$keyAgreement"]; !ok {
+		t.Fatal("children of $ref attachment points must still get $keyAgreement")
 	}
 }
 

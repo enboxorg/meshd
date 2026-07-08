@@ -1,0 +1,226 @@
+{
+  "description": "delegated-grant invocation fixture. Each bundle contains a wallet-style delegated grant RecordsWrite message (with encodedData) plus a delegate-signed message that invokes it: authorization.authorDelegatedGrant = the FULL grant message (including encodedData) and the signature payload carries delegatedGrantId = the DAG-CBOR CID of the grant message COMPUTED WITHOUT encodedData. The delegate signs with its own did:jwk Ed25519 key (deterministic signatures, so Go can byte-verify its own construction against these messages given identical descriptor/payload bytes). Both invocations were accepted by a real DWN (write 202, query 200) with the logical author resolving to the grantor.",
+  "generatedAt": "2026-07-08T00:51:20.611Z",
+  "sdkCommit": "6b5b9786ee931f8d80d84e5f2865166c39568eb6",
+  "generator": "scripts/gen-crypto-fixtures/generate.ts",
+  "_encoding": "all binary values base64url.",
+  "protocol": "https://enbox.id/protocols/wireguard-mesh",
+  "ownerDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IjFXQ1lEVFlFVng3YVMyY0REYjVpWW5qcm5XSW1YbHE2TzVGYjcxMThmRGciLCJraWQiOiJGMHFLT0JvVjFuVkJqT1FNRlRIdm5ZS2sxZ3A1Z0dTeU16Nkp4VTNyY2J3IiwiYWxnIjoiRWREU0EifQ",
+  "delegate": {
+    "did": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IlBSVk94cTFFc3pWVVBZR01sYTlTbjFfaHdTSk1zRW9EaGtFM2JlTXp1MEEiLCJraWQiOiJlY2dKb0EwcmNJT0V6YVhFSUVNOV9NcDlDU2h1ZVNkWlNSVkI5SDVJU2ZZIiwiYWxnIjoiRWREU0EifQ",
+    "keyId": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IlBSVk94cTFFc3pWVVBZR01sYTlTbjFfaHdTSk1zRW9EaGtFM2JlTXp1MEEiLCJraWQiOiJlY2dKb0EwcmNJT0V6YVhFSUVNOV9NcDlDU2h1ZVNkWlNSVkI5SDVJU2ZZIiwiYWxnIjoiRWREU0EifQ#0",
+    "signingPrivateKeyJwk": {
+      "crv": "Ed25519",
+      "d": "6C6yXGmfNmRpVwgUzAShKQEYHMoNhjIohlgybpfrTk4",
+      "kty": "OKP",
+      "x": "PRVOxq1EszVUPYGMla9Sn1_hwSJMsEoDhkE3beMzu0A",
+      "kid": "ecgJoA0rcIOEzaXEIEM9_Mp9CShueSdZSRVB9H5ISfY",
+      "alg": "EdDSA"
+    }
+  },
+  "recordsWrite": {
+    "delegatedGrant": {
+      "recordId": "bafyreidf2hjbl7wbgkpphbgklzi3ol4zgcipg7scxlmbyeebujtmnvirwi",
+      "descriptor": {
+        "interface": "Records",
+        "method": "Write",
+        "protocol": "https://identity.foundation/dwn/permissions",
+        "protocolPath": "grant",
+        "recipient": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IlBSVk94cTFFc3pWVVBZR01sYTlTbjFfaHdTSk1zRW9EaGtFM2JlTXp1MEEiLCJraWQiOiJlY2dKb0EwcmNJT0V6YVhFSUVNOV9NcDlDU2h1ZVNkWlNSVkI5SDVJU2ZZIiwiYWxnIjoiRWREU0EifQ",
+        "tags": {
+          "protocol": "https://enbox.id/protocols/wireguard-mesh"
+        },
+        "dataCid": "bafkreietypcdh56sbtudg663fr7r2vqs4custxuslz6ly3czoao5qd7gni",
+        "dataSize": 214,
+        "dateCreated": "2026-07-08T00:51:20.904000Z",
+        "messageTimestamp": "2026-07-08T00:51:20.904000Z",
+        "dataFormat": "application/json"
+      },
+      "contextId": "bafyreidf2hjbl7wbgkpphbgklzi3ol4zgcipg7scxlmbyeebujtmnvirwi",
+      "authorization": {
+        "signature": {
+          "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWlkZjJoamJsN3diZ2twcGhiZ2tsemkzb2w0emdjaXBnN3NjeGxtYnllZWJ1anRtbnZpcndpIiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWloam90eXc0ang3emszaW0zbmtuZXN0M3RvM3kzaGx4aGw1aWE3czYzcDVud2ZndnFpZmxlIiwiY29udGV4dElkIjoiYmFmeXJlaWRmMmhqYmw3d2Jna3BwaGJna2x6aTNvbDR6Z2NpcGc3c2N4bG1ieWVlYnVqdG1udmlyd2kifQ",
+          "signatures": [
+            {
+              "protected": "eyJraWQiOiJkaWQ6andrOmV5SmpjbllpT2lKRlpESTFOVEU1SWl3aWEzUjVJam9pVDB0UUlpd2llQ0k2SWpGWFExbEVWRmxGVm5nM1lWTXlZMFJFWWpWcFdXNXFjbTVYU1cxWWJIRTJUelZHWWpjeE1UaG1SR2NpTENKcmFXUWlPaUpHTUhGTFQwSnZWakZ1VmtKcVQxRk5SbFJJZG01WlMyc3haM0ExWjBkVGVVMTZOa3A0VlROeVkySjNJaXdpWVd4bklqb2lSV1JFVTBFaWZRIzAiLCJhbGciOiJFZERTQSJ9",
+              "signature": "l22VmZo0VG3JLItGVjS5zam-MMNH0h6EqRROgj-qU4ed3Q7uqPOUim028TAmBYiudcwyzuTBT8OPFbR3rb0qDQ"
+            }
+          ]
+        }
+      },
+      "encodedData": "eyJkYXRlRXhwaXJlcyI6IjIwMjYtMTAtMDZUMDA6NTE6MjAuOTA0MDAwWiIsImRlc2NyaXB0aW9uIjoibWVzaGQgZGVsZWdhdGVkIFdyaXRlIChmaXh0dXJlKSIsImRlbGVnYXRlZCI6dHJ1ZSwic2NvcGUiOnsiaW50ZXJmYWNlIjoiUmVjb3JkcyIsIm1ldGhvZCI6IldyaXRlIiwicHJvdG9jb2wiOiJodHRwczovL2VuYm94LmlkL3Byb3RvY29scy93aXJlZ3VhcmQtbWVzaCJ9fQ"
+    },
+    "expectedDelegatedGrantId": "bafyreifxudaret4kenyx7lbbg6fyrrirfw5bzzhm727fkahdwrnsplg4yy",
+    "grantScope": {
+      "interface": "Records",
+      "method": "Write",
+      "protocol": "https://enbox.id/protocols/wireguard-mesh"
+    },
+    "invocation": {
+      "recordId": "bafyreiafif37insxm2343wnpoinutc5ofmzsse4kgvk6v77mgeyne7p6t4",
+      "descriptor": {
+        "interface": "Records",
+        "method": "Write",
+        "protocol": "https://enbox.id/protocols/wireguard-mesh",
+        "protocolPath": "nodeRequest",
+        "schema": "https://enbox.id/schemas/wireguard-mesh/node-request",
+        "dataCid": "bafkreicgydruv6tdmt7fbuz3dmrjpskytvetlb3hwqh7g4xxipl2pznpby",
+        "dataSize": 46,
+        "dateCreated": "2026-07-08T00:51:20.912000Z",
+        "messageTimestamp": "2026-07-08T00:51:20.912000Z",
+        "dataFormat": "application/json"
+      },
+      "contextId": "bafyreiafif37insxm2343wnpoinutc5ofmzsse4kgvk6v77mgeyne7p6t4",
+      "authorization": {
+        "signature": {
+          "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWlhZmlmMzdpbnN4bTIzNDN3bnBvaW51dGM1b2ZtenNzZTRrZ3ZrNnY3N21nZXluZTdwNnQ0IiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWlhMnRsd3BrdDduanczZ3JkMnl3d2w3bjVqdmF2cWQzYjRjM3Y1NGp4ZzJiaXp3Y2h3cjNhIiwiY29udGV4dElkIjoiYmFmeXJlaWFmaWYzN2luc3htMjM0M3ducG9pbnV0YzVvZm16c3NlNGtndms2djc3bWdleW5lN3A2dDQiLCJkZWxlZ2F0ZWRHcmFudElkIjoiYmFmeXJlaWZ4dWRhcmV0NGtlbnl4N2xiYmc2ZnlycmlyZnc1Ynp6aG03Mjdma2FoZHdybnNwbGc0eXkifQ",
+          "signatures": [
+            {
+              "protected": "eyJraWQiOiJkaWQ6andrOmV5SmpjbllpT2lKRlpESTFOVEU1SWl3aWEzUjVJam9pVDB0UUlpd2llQ0k2SWxCU1ZrOTRjVEZGYzNwV1ZWQlpSMDFzWVRsVGJqRmZhSGRUU2sxelJXOUVhR3RGTTJKbFRYcDFNRUVpTENKcmFXUWlPaUpsWTJkS2IwRXdjbU5KVDBWNllWaEZTVVZOT1Y5TmNEbERVMmgxWlZOa1dsTlNWa0k1U0RWSlUyWlpJaXdpWVd4bklqb2lSV1JFVTBFaWZRIzAiLCJhbGciOiJFZERTQSJ9",
+              "signature": "HwnwIqh9PG_cMYFPJ-jtQmEqFRkOxLPK2A7537emrt3doQV-uOJFuBvwzp-jGaKp-bd9d4E_3xNXxwoYBmdSDQ"
+            }
+          ]
+        },
+        "authorDelegatedGrant": {
+          "recordId": "bafyreidf2hjbl7wbgkpphbgklzi3ol4zgcipg7scxlmbyeebujtmnvirwi",
+          "descriptor": {
+            "interface": "Records",
+            "method": "Write",
+            "protocol": "https://identity.foundation/dwn/permissions",
+            "protocolPath": "grant",
+            "recipient": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IlBSVk94cTFFc3pWVVBZR01sYTlTbjFfaHdTSk1zRW9EaGtFM2JlTXp1MEEiLCJraWQiOiJlY2dKb0EwcmNJT0V6YVhFSUVNOV9NcDlDU2h1ZVNkWlNSVkI5SDVJU2ZZIiwiYWxnIjoiRWREU0EifQ",
+            "tags": {
+              "protocol": "https://enbox.id/protocols/wireguard-mesh"
+            },
+            "dataCid": "bafkreietypcdh56sbtudg663fr7r2vqs4custxuslz6ly3czoao5qd7gni",
+            "dataSize": 214,
+            "dateCreated": "2026-07-08T00:51:20.904000Z",
+            "messageTimestamp": "2026-07-08T00:51:20.904000Z",
+            "dataFormat": "application/json"
+          },
+          "contextId": "bafyreidf2hjbl7wbgkpphbgklzi3ol4zgcipg7scxlmbyeebujtmnvirwi",
+          "authorization": {
+            "signature": {
+              "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWlkZjJoamJsN3diZ2twcGhiZ2tsemkzb2w0emdjaXBnN3NjeGxtYnllZWJ1anRtbnZpcndpIiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWloam90eXc0ang3emszaW0zbmtuZXN0M3RvM3kzaGx4aGw1aWE3czYzcDVud2ZndnFpZmxlIiwiY29udGV4dElkIjoiYmFmeXJlaWRmMmhqYmw3d2Jna3BwaGJna2x6aTNvbDR6Z2NpcGc3c2N4bG1ieWVlYnVqdG1udmlyd2kifQ",
+              "signatures": [
+                {
+                  "protected": "eyJraWQiOiJkaWQ6andrOmV5SmpjbllpT2lKRlpESTFOVEU1SWl3aWEzUjVJam9pVDB0UUlpd2llQ0k2SWpGWFExbEVWRmxGVm5nM1lWTXlZMFJFWWpWcFdXNXFjbTVYU1cxWWJIRTJUelZHWWpjeE1UaG1SR2NpTENKcmFXUWlPaUpHTUhGTFQwSnZWakZ1VmtKcVQxRk5SbFJJZG01WlMyc3haM0ExWjBkVGVVMTZOa3A0VlROeVkySjNJaXdpWVd4bklqb2lSV1JFVTBFaWZRIzAiLCJhbGciOiJFZERTQSJ9",
+                  "signature": "l22VmZo0VG3JLItGVjS5zam-MMNH0h6EqRROgj-qU4ed3Q7uqPOUim028TAmBYiudcwyzuTBT8OPFbR3rb0qDQ"
+                }
+              ]
+            }
+          },
+          "encodedData": "eyJkYXRlRXhwaXJlcyI6IjIwMjYtMTAtMDZUMDA6NTE6MjAuOTA0MDAwWiIsImRlc2NyaXB0aW9uIjoibWVzaGQgZGVsZWdhdGVkIFdyaXRlIChmaXh0dXJlKSIsImRlbGVnYXRlZCI6dHJ1ZSwic2NvcGUiOnsiaW50ZXJmYWNlIjoiUmVjb3JkcyIsIm1ldGhvZCI6IldyaXRlIiwicHJvdG9jb2wiOiJodHRwczovL2VuYm94LmlkL3Byb3RvY29scy93aXJlZ3VhcmQtbWVzaCJ9fQ"
+        }
+      }
+    },
+    "decodedSignaturePayload": {
+      "recordId": "bafyreiafif37insxm2343wnpoinutc5ofmzsse4kgvk6v77mgeyne7p6t4",
+      "descriptorCid": "bafyreia2tlwpkt7njw3grd2ywwl7n5jvavqd3b4c3v54jxg2bizwchwr3a",
+      "contextId": "bafyreiafif37insxm2343wnpoinutc5ofmzsse4kgvk6v77mgeyne7p6t4",
+      "delegatedGrantId": "bafyreifxudaret4kenyx7lbbg6fyrrirfw5bzzhm727fkahdwrnsplg4yy"
+    },
+    "data_b64u": "eyJyZXF1ZXN0ZWRCeSI6ImZpeHR1cmUtbm9kZSIsInJlYXNvbiI6ImpvaW4ifQ"
+  },
+  "recordsQuery": {
+    "delegatedGrant": {
+      "recordId": "bafyreifw43copmznazbyqtyzsqypuknrcu7gwkhldp4xjbct3wrarkssmm",
+      "descriptor": {
+        "interface": "Records",
+        "method": "Write",
+        "protocol": "https://identity.foundation/dwn/permissions",
+        "protocolPath": "grant",
+        "recipient": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IlBSVk94cTFFc3pWVVBZR01sYTlTbjFfaHdTSk1zRW9EaGtFM2JlTXp1MEEiLCJraWQiOiJlY2dKb0EwcmNJT0V6YVhFSUVNOV9NcDlDU2h1ZVNkWlNSVkI5SDVJU2ZZIiwiYWxnIjoiRWREU0EifQ",
+        "tags": {
+          "protocol": "https://enbox.id/protocols/wireguard-mesh"
+        },
+        "dataCid": "bafkreihkr6twfy7d3h2a5dnmvyojqbt4o3iqbve5hleet3ytqkz7v7jzsa",
+        "dataSize": 212,
+        "dateCreated": "2026-07-08T00:51:20.908000Z",
+        "messageTimestamp": "2026-07-08T00:51:20.908000Z",
+        "dataFormat": "application/json"
+      },
+      "contextId": "bafyreifw43copmznazbyqtyzsqypuknrcu7gwkhldp4xjbct3wrarkssmm",
+      "authorization": {
+        "signature": {
+          "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWlmdzQzY29wbXpuYXpieXF0eXpzcXlwdWtucmN1N2d3a2hsZHA0eGpiY3Qzd3Jhcmtzc21tIiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWlmMzJ6bnhscGtqbGZ6b3Rwc3hjbTN1eHlxaGZwM3BiMzc0amp0cWY2b2ZycXZsdDZnYjJlIiwiY29udGV4dElkIjoiYmFmeXJlaWZ3NDNjb3Btem5hemJ5cXR5enNxeXB1a25yY3U3Z3draGxkcDR4amJjdDN3cmFya3NzbW0ifQ",
+          "signatures": [
+            {
+              "protected": "eyJraWQiOiJkaWQ6andrOmV5SmpjbllpT2lKRlpESTFOVEU1SWl3aWEzUjVJam9pVDB0UUlpd2llQ0k2SWpGWFExbEVWRmxGVm5nM1lWTXlZMFJFWWpWcFdXNXFjbTVYU1cxWWJIRTJUelZHWWpjeE1UaG1SR2NpTENKcmFXUWlPaUpHTUhGTFQwSnZWakZ1VmtKcVQxRk5SbFJJZG01WlMyc3haM0ExWjBkVGVVMTZOa3A0VlROeVkySjNJaXdpWVd4bklqb2lSV1JFVTBFaWZRIzAiLCJhbGciOiJFZERTQSJ9",
+              "signature": "lc26yD_DEVSWuHqQGAxELEW0_a3oXah0BwTSrZcP1rE75gQAyBuEjEc1GNRt-MVPKiX2cVisvQMUdPKtO8JXAw"
+            }
+          ]
+        }
+      },
+      "encodedData": "eyJkYXRlRXhwaXJlcyI6IjIwMjYtMTAtMDZUMDA6NTE6MjAuOTA0MDAwWiIsImRlc2NyaXB0aW9uIjoibWVzaGQgZGVsZWdhdGVkIFJlYWQgKGZpeHR1cmUpIiwiZGVsZWdhdGVkIjp0cnVlLCJzY29wZSI6eyJpbnRlcmZhY2UiOiJSZWNvcmRzIiwibWV0aG9kIjoiUmVhZCIsInByb3RvY29sIjoiaHR0cHM6Ly9lbmJveC5pZC9wcm90b2NvbHMvd2lyZWd1YXJkLW1lc2gifX0"
+    },
+    "expectedDelegatedGrantId": "bafyreic3iwbwiycwytsbfnki5lhdzv7xve27apl4msul736ujqrh7dgnci",
+    "grantScope": {
+      "interface": "Records",
+      "method": "Read",
+      "protocol": "https://enbox.id/protocols/wireguard-mesh"
+    },
+    "invocation": {
+      "descriptor": {
+        "interface": "Records",
+        "method": "Query",
+        "messageTimestamp": "2026-07-08T00:51:20.920000Z",
+        "filter": {
+          "protocol": "https://enbox.id/protocols/wireguard-mesh"
+        }
+      },
+      "authorization": {
+        "signature": {
+          "payload": "eyJkZXNjcmlwdG9yQ2lkIjoiYmFmeXJlaWE1b2FkcXpkZHFja3RpeWxldTRja2w0M2dnaWQzamF4NGFhNXN0NTQ0bnZ6Z3Vkbjcyd2EiLCJkZWxlZ2F0ZWRHcmFudElkIjoiYmFmeXJlaWMzaXdid2l5Y3d5dHNiZm5raTVsaGR6djd4dmUyN2FwbDRtc3VsNzM2dWpxcmg3ZGduY2kifQ",
+          "signatures": [
+            {
+              "protected": "eyJraWQiOiJkaWQ6andrOmV5SmpjbllpT2lKRlpESTFOVEU1SWl3aWEzUjVJam9pVDB0UUlpd2llQ0k2SWxCU1ZrOTRjVEZGYzNwV1ZWQlpSMDFzWVRsVGJqRmZhSGRUU2sxelJXOUVhR3RGTTJKbFRYcDFNRUVpTENKcmFXUWlPaUpsWTJkS2IwRXdjbU5KVDBWNllWaEZTVVZOT1Y5TmNEbERVMmgxWlZOa1dsTlNWa0k1U0RWSlUyWlpJaXdpWVd4bklqb2lSV1JFVTBFaWZRIzAiLCJhbGciOiJFZERTQSJ9",
+              "signature": "CtIDhZJ3TRI5nHh3_HJHKcTx7Q4OrQwz7Gu02pfixCc4ByQyXyR4d6FF6ldRAR7X9xyfdspKna-GtLCAW55LBw"
+            }
+          ]
+        },
+        "authorDelegatedGrant": {
+          "recordId": "bafyreifw43copmznazbyqtyzsqypuknrcu7gwkhldp4xjbct3wrarkssmm",
+          "descriptor": {
+            "interface": "Records",
+            "method": "Write",
+            "protocol": "https://identity.foundation/dwn/permissions",
+            "protocolPath": "grant",
+            "recipient": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6IlBSVk94cTFFc3pWVVBZR01sYTlTbjFfaHdTSk1zRW9EaGtFM2JlTXp1MEEiLCJraWQiOiJlY2dKb0EwcmNJT0V6YVhFSUVNOV9NcDlDU2h1ZVNkWlNSVkI5SDVJU2ZZIiwiYWxnIjoiRWREU0EifQ",
+            "tags": {
+              "protocol": "https://enbox.id/protocols/wireguard-mesh"
+            },
+            "dataCid": "bafkreihkr6twfy7d3h2a5dnmvyojqbt4o3iqbve5hleet3ytqkz7v7jzsa",
+            "dataSize": 212,
+            "dateCreated": "2026-07-08T00:51:20.908000Z",
+            "messageTimestamp": "2026-07-08T00:51:20.908000Z",
+            "dataFormat": "application/json"
+          },
+          "contextId": "bafyreifw43copmznazbyqtyzsqypuknrcu7gwkhldp4xjbct3wrarkssmm",
+          "authorization": {
+            "signature": {
+              "payload": "eyJyZWNvcmRJZCI6ImJhZnlyZWlmdzQzY29wbXpuYXpieXF0eXpzcXlwdWtucmN1N2d3a2hsZHA0eGpiY3Qzd3Jhcmtzc21tIiwiZGVzY3JpcHRvckNpZCI6ImJhZnlyZWlmMzJ6bnhscGtqbGZ6b3Rwc3hjbTN1eHlxaGZwM3BiMzc0amp0cWY2b2ZycXZsdDZnYjJlIiwiY29udGV4dElkIjoiYmFmeXJlaWZ3NDNjb3Btem5hemJ5cXR5enNxeXB1a25yY3U3Z3draGxkcDR4amJjdDN3cmFya3NzbW0ifQ",
+              "signatures": [
+                {
+                  "protected": "eyJraWQiOiJkaWQ6andrOmV5SmpjbllpT2lKRlpESTFOVEU1SWl3aWEzUjVJam9pVDB0UUlpd2llQ0k2SWpGWFExbEVWRmxGVm5nM1lWTXlZMFJFWWpWcFdXNXFjbTVYU1cxWWJIRTJUelZHWWpjeE1UaG1SR2NpTENKcmFXUWlPaUpHTUhGTFQwSnZWakZ1VmtKcVQxRk5SbFJJZG01WlMyc3haM0ExWjBkVGVVMTZOa3A0VlROeVkySjNJaXdpWVd4bklqb2lSV1JFVTBFaWZRIzAiLCJhbGciOiJFZERTQSJ9",
+                  "signature": "lc26yD_DEVSWuHqQGAxELEW0_a3oXah0BwTSrZcP1rE75gQAyBuEjEc1GNRt-MVPKiX2cVisvQMUdPKtO8JXAw"
+                }
+              ]
+            }
+          },
+          "encodedData": "eyJkYXRlRXhwaXJlcyI6IjIwMjYtMTAtMDZUMDA6NTE6MjAuOTA0MDAwWiIsImRlc2NyaXB0aW9uIjoibWVzaGQgZGVsZWdhdGVkIFJlYWQgKGZpeHR1cmUpIiwiZGVsZWdhdGVkIjp0cnVlLCJzY29wZSI6eyJpbnRlcmZhY2UiOiJSZWNvcmRzIiwibWV0aG9kIjoiUmVhZCIsInByb3RvY29sIjoiaHR0cHM6Ly9lbmJveC5pZC9wcm90b2NvbHMvd2lyZWd1YXJkLW1lc2gifX0"
+        }
+      }
+    },
+    "decodedSignaturePayload": {
+      "descriptorCid": "bafyreia5oadqzddqcktiyleu4ckl43ggid3jax4aa5st544nvzgudn72wa",
+      "delegatedGrantId": "bafyreic3iwbwiycwytsbfnki5lhdzv7xve27apl4msul736ujqrh7dgnci"
+    }
+  },
+  "_fields": {
+    "recordsWrite.invocation": "delegate-signed RecordsWrite accepted by the DWN (protocolPath nodeRequest)",
+    "recordsQuery.invocation": "delegate-signed RecordsQuery accepted by the DWN (filter.protocol)",
+    "recordsWrite.decodedSignaturePayload": "decoded JWS payload: { recordId, contextId, descriptorCid, delegatedGrantId }",
+    "recordsQuery.decodedSignaturePayload": "decoded JWS payload: { descriptorCid, delegatedGrantId }"
+  }
+}

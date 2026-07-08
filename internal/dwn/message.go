@@ -15,6 +15,12 @@ import (
 var (
 	ErrMissingProtocol = errors.New("protocol and protocolPath are required")
 	ErrMissingData     = errors.New("data and dataFormat are required")
+
+	// ErrGrantInvocationConflict is returned when both a permission grant ID
+	// and a delegated grant are supplied for the same message. A message may
+	// invoke a plain grant via permissionGrantId OR a delegated grant via
+	// authorization.authorDelegatedGrant, never both.
+	ErrGrantInvocationConflict = errors.New("permissionGrantId and delegatedGrant are mutually exclusive")
 )
 
 //
@@ -96,6 +102,45 @@ type Pagination struct {
 // Authorization wraps the JWS signature for message authentication.
 type Authorization struct {
 	Signature *GeneralJWS `json:"signature"`
+
+	// AuthorDelegatedGrant is the FULL delegated grant RecordsWrite message
+	// exactly as received (including encodedData). It is kept as raw JSON so
+	// the bytes are embedded verbatim — the server recomputes its CID and
+	// compares it against delegatedGrantId in the signature payload, so the
+	// grant must not be re-marshaled field by field.
+	AuthorDelegatedGrant json.RawMessage `json:"authorDelegatedGrant,omitempty"`
+}
+
+// MessageAuth bundles the authorization options shared by the Records
+// read/query/delete/subscribe builders.
+//
+// PermissionGrantID and DelegatedGrant are mutually exclusive: plain
+// (non-delegated) grants are invoked via permissionGrantId, while grants
+// issued with delegated:true MUST be invoked by embedding the full grant
+// message as authorization.authorDelegatedGrant.
+type MessageAuth struct {
+	// ProtocolRole is the protocol path of a role to invoke for role-based
+	// authorization (e.g. "network/node").
+	ProtocolRole string
+
+	// PermissionGrantID invokes a plain DWN permission grant. It is included
+	// in both the descriptor and the signed payload.
+	PermissionGrantID string
+
+	// DelegatedGrant is the full delegated grant RecordsWrite message as
+	// received (including encodedData). When set, the message is signed as an
+	// author-delegate: the grant is embedded verbatim as
+	// authorization.authorDelegatedGrant and its CID is included in the
+	// signed payload as delegatedGrantId.
+	DelegatedGrant json.RawMessage
+}
+
+// validate enforces mutual exclusion of the grant invocation modes.
+func (a MessageAuth) validate() error {
+	if a.PermissionGrantID != "" && len(a.DelegatedGrant) > 0 {
+		return ErrGrantInvocationConflict
+	}
+	return nil
 }
 
 // genericSignaturePayload is the JWS payload for non-RecordsWrite messages.
@@ -148,9 +193,19 @@ type RecordsWriteOptions struct {
 	DataFormat   string
 	Published    *bool
 
-	// PermissionGrantID invokes a DWN permission grant for delegated
-	// authorization. It is included in both the descriptor and signed payload.
+	// PermissionGrantID invokes a plain (non-delegated) DWN permission grant.
+	// It is included in both the descriptor and signed payload.
+	// Mutually exclusive with DelegatedGrant.
 	PermissionGrantID string
+
+	// DelegatedGrant is the full delegated grant RecordsWrite message as
+	// received (including encodedData). When set, the message is signed as an
+	// author-delegate: the grant is embedded verbatim as
+	// authorization.authorDelegatedGrant, its CID is included in the signed
+	// payload as delegatedGrantId, and the grantor becomes the logical author
+	// (used for the entry ID of initial writes).
+	// Mutually exclusive with PermissionGrantID.
+	DelegatedGrant json.RawMessage
 
 	// For updates: set RecordID to the existing record's ID.
 	// Leave empty for initial writes.
@@ -211,6 +266,26 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteR
 	}
 	if opts.DataFormat == "" {
 		return nil, ErrMissingData
+	}
+	if opts.PermissionGrantID != "" && len(opts.DelegatedGrant) > 0 {
+		return nil, ErrGrantInvocationConflict
+	}
+
+	// When a delegated grant is invoked, the grantor (the grant's signer) is
+	// the logical author of the message, not the local signer. The author
+	// feeds into the entry ID (recordId) computation for initial writes.
+	authorDID := s.DID
+	var delegatedGrantID string
+	if len(opts.DelegatedGrant) > 0 {
+		var err error
+		delegatedGrantID, err = ComputeDelegatedGrantID(opts.DelegatedGrant)
+		if err != nil {
+			return nil, err
+		}
+		authorDID, err = delegatedGrantAuthor(opts.DelegatedGrant)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	now := Now()
@@ -297,7 +372,7 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteR
 		for k, v := range desc {
 			entryIDInput[k] = v
 		}
-		entryIDInput["author"] = s.DID
+		entryIDInput["author"] = authorDID
 
 		recordID, err = ComputeCID(entryIDInput)
 		if err != nil {
@@ -327,6 +402,7 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteR
 		RecordID:          recordID,
 		ContextID:         contextID,
 		PermissionGrantID: opts.PermissionGrantID,
+		DelegatedGrantID:  delegatedGrantID,
 		ProtocolRole:      opts.ProtocolRole,
 	}
 
@@ -349,14 +425,17 @@ func BuildRecordsWrite(s *Signer, opts RecordsWriteOptions) (*BuildRecordsWriteR
 		return nil, fmt.Errorf("signing: %w", err)
 	}
 
+	authz := &Authorization{Signature: jws}
+	if len(opts.DelegatedGrant) > 0 {
+		authz.AuthorDelegatedGrant = opts.DelegatedGrant
+	}
+
 	msg := &Message{
-		RecordID:   recordID,
-		ContextID:  contextID,
-		Descriptor: desc,
-		Encryption: encryption,
-		Authorization: &Authorization{
-			Signature: jws,
-		},
+		RecordID:      recordID,
+		ContextID:     contextID,
+		Descriptor:    desc,
+		Encryption:    encryption,
+		Authorization: authz,
 	}
 
 	// NOTE: encodedData is a read-side optimization — the server inlines small
@@ -385,31 +464,43 @@ func structToMap(v any) (map[string]any, error) {
 
 // BuildRecordsRead constructs and signs a RecordsRead message.
 func BuildRecordsRead(s *Signer, filter RecordsFilter, protocolRole string, permissionGrantID ...string) (*Message, error) {
-	grantID := optionalString(permissionGrantID)
+	return BuildRecordsReadWithAuth(s, filter, MessageAuth{
+		ProtocolRole:      protocolRole,
+		PermissionGrantID: optionalString(permissionGrantID),
+	})
+}
+
+// BuildRecordsReadWithAuth constructs and signs a RecordsRead message with
+// explicit authorization options (protocol role, plain grant, or delegated
+// grant).
+func BuildRecordsReadWithAuth(s *Signer, filter RecordsFilter, auth MessageAuth) (*Message, error) {
 	desc := map[string]any{
 		"interface":        "Records",
 		"method":           "Read",
 		"messageTimestamp": Now(),
 		"filter":           filterToMap(filter),
 	}
-	if grantID != "" {
-		desc["permissionGrantId"] = grantID
-	}
 
-	return signGenericMessage(s, desc, protocolRole, grantID)
+	return signGenericMessage(s, desc, auth)
 }
 
 // BuildRecordsQuery constructs and signs a RecordsQuery message.
 func BuildRecordsQuery(s *Signer, filter RecordsFilter, dateSort string, pagination *Pagination, protocolRole string, permissionGrantID ...string) (*Message, error) {
-	grantID := optionalString(permissionGrantID)
+	return BuildRecordsQueryWithAuth(s, filter, dateSort, pagination, MessageAuth{
+		ProtocolRole:      protocolRole,
+		PermissionGrantID: optionalString(permissionGrantID),
+	})
+}
+
+// BuildRecordsQueryWithAuth constructs and signs a RecordsQuery message with
+// explicit authorization options (protocol role, plain grant, or delegated
+// grant).
+func BuildRecordsQueryWithAuth(s *Signer, filter RecordsFilter, dateSort string, pagination *Pagination, auth MessageAuth) (*Message, error) {
 	desc := map[string]any{
 		"interface":        "Records",
 		"method":           "Query",
 		"messageTimestamp": Now(),
 		"filter":           filterToMap(filter),
-	}
-	if grantID != "" {
-		desc["permissionGrantId"] = grantID
 	}
 	if dateSort != "" {
 		desc["dateSort"] = dateSort
@@ -425,12 +516,21 @@ func BuildRecordsQuery(s *Signer, filter RecordsFilter, dateSort string, paginat
 		desc["pagination"] = p
 	}
 
-	return signGenericMessage(s, desc, protocolRole, grantID)
+	return signGenericMessage(s, desc, auth)
 }
 
 // BuildRecordsDelete constructs and signs a RecordsDelete message.
 func BuildRecordsDelete(s *Signer, recordID string, prune bool, protocolRole string, permissionGrantID ...string) (*Message, error) {
-	grantID := optionalString(permissionGrantID)
+	return BuildRecordsDeleteWithAuth(s, recordID, prune, MessageAuth{
+		ProtocolRole:      protocolRole,
+		PermissionGrantID: optionalString(permissionGrantID),
+	})
+}
+
+// BuildRecordsDeleteWithAuth constructs and signs a RecordsDelete message with
+// explicit authorization options (protocol role, plain grant, or delegated
+// grant).
+func BuildRecordsDeleteWithAuth(s *Signer, recordID string, prune bool, auth MessageAuth) (*Message, error) {
 	desc := map[string]any{
 		"interface":        "Records",
 		"method":           "Delete",
@@ -438,11 +538,8 @@ func BuildRecordsDelete(s *Signer, recordID string, prune bool, protocolRole str
 		"recordId":         recordID,
 		"prune":            prune, // required field per SDK
 	}
-	if grantID != "" {
-		desc["permissionGrantId"] = grantID
-	}
 
-	return signGenericMessage(s, desc, protocolRole, grantID)
+	return signGenericMessage(s, desc, auth)
 }
 
 // BuildProtocolsConfigure constructs and signs a ProtocolsConfigure message.
@@ -460,7 +557,7 @@ func BuildProtocolsConfigure(s *Signer, definition json.RawMessage) (*Message, e
 		"definition":       defMap,
 	}
 
-	return signGenericMessage(s, desc, "")
+	return signGenericMessage(s, desc, MessageAuth{})
 }
 
 // BuildProtocolsQuery constructs and signs a ProtocolsQuery message.
@@ -474,12 +571,34 @@ func BuildProtocolsQuery(s *Signer, protocolURI string) (*Message, error) {
 		desc["filter"] = map[string]any{"protocol": protocolURI}
 	}
 
-	return signGenericMessage(s, desc, "")
+	return signGenericMessage(s, desc, MessageAuth{})
 }
 
 // signGenericMessage signs a non-RecordsWrite message with the generic
 // signature payload (descriptorCid only, no recordId/contextId).
-func signGenericMessage(s *Signer, desc map[string]any, protocolRole string, permissionGrantID ...string) (*Message, error) {
+//
+// A plain permission grant ID is included in both the descriptor and the
+// signed payload (the server validates they match). A delegated grant is
+// embedded verbatim as authorization.authorDelegatedGrant with its CID in the
+// signed payload only — nothing is added to the descriptor.
+func signGenericMessage(s *Signer, desc map[string]any, auth MessageAuth) (*Message, error) {
+	if err := auth.validate(); err != nil {
+		return nil, err
+	}
+
+	if auth.PermissionGrantID != "" {
+		desc["permissionGrantId"] = auth.PermissionGrantID
+	}
+
+	var delegatedGrantID string
+	if len(auth.DelegatedGrant) > 0 {
+		var err error
+		delegatedGrantID, err = ComputeDelegatedGrantID(auth.DelegatedGrant)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	descriptorCID, err := ComputeCID(desc)
 	if err != nil {
 		return nil, fmt.Errorf("computing descriptor CID: %w", err)
@@ -487,8 +606,9 @@ func signGenericMessage(s *Signer, desc map[string]any, protocolRole string, per
 
 	sigPayload := genericSignaturePayload{
 		DescriptorCID:     descriptorCID,
-		PermissionGrantID: optionalString(permissionGrantID),
-		ProtocolRole:      protocolRole,
+		PermissionGrantID: auth.PermissionGrantID,
+		DelegatedGrantID:  delegatedGrantID,
+		ProtocolRole:      auth.ProtocolRole,
 	}
 
 	jws, err := SignJWS(sigPayload, s.KeyID(), s.PrivateKey)
@@ -496,11 +616,14 @@ func signGenericMessage(s *Signer, desc map[string]any, protocolRole string, per
 		return nil, fmt.Errorf("signing: %w", err)
 	}
 
+	authz := &Authorization{Signature: jws}
+	if len(auth.DelegatedGrant) > 0 {
+		authz.AuthorDelegatedGrant = auth.DelegatedGrant
+	}
+
 	return &Message{
-		Descriptor: desc,
-		Authorization: &Authorization{
-			Signature: jws,
-		},
+		Descriptor:    desc,
+		Authorization: authz,
 	}, nil
 }
 

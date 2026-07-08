@@ -16,9 +16,10 @@ const (
 	DerivationSchemeProtocolPath = "protocolPath"
 
 	// DerivationSchemeRoleAudience marks a keyEncryption entry that wraps the
-	// CEK to a per-epoch role audience key. The audience key is random (not
-	// HD-derived) and delivered to role holders via EncryptionProtocol
-	// audienceKey records.
+	// CEK to a role audience key. The audience key is random (not HD-derived),
+	// published as an `$encryption/audience` control record sealed to the
+	// tenant role-path key, and delivered to role holders via encrypted
+	// `$encryption/delivery` records.
 	DerivationSchemeRoleAudience = "roleAudience"
 )
 
