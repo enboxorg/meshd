@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.1](https://github.com/enboxorg/meshd/compare/v0.14.0...v0.14.1) (2026-07-08)
+
+
+### Bug Fixes
+
+* **admin:** migrate dashboard to the sealed encryption stack ([#172](https://github.com/enboxorg/meshd/issues/172)) ([20f24a2](https://github.com/enboxorg/meshd/commit/20f24a2a7b4345c0201695c59179ff8ec1e217c7))
+* **connect:** carry wallet URI request_uri + encryption_key in the fragment ([#174](https://github.com/enboxorg/meshd/issues/174)) ([a13f281](https://github.com/enboxorg/meshd/commit/a13f281f2339bac296244fa7c81b87922217222b)), closes [#173](https://github.com/enboxorg/meshd/issues/173)
+
 ## [0.14.0](https://github.com/enboxorg/meshd/compare/v0.13.0...v0.14.0) (2026-07-08)
 
 
