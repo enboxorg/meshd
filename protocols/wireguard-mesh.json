@@ -4,228 +4,454 @@
   "types": {
     "network": {
       "schema": "https://enbox.id/schemas/wireguard-mesh/network",
-      "dataFormats": ["application/json"]
+      "dataFormats": [
+        "application/json"
+      ]
     },
     "member": {
       "schema": "https://enbox.id/schemas/wireguard-mesh/member",
-      "dataFormats": ["application/json"]
+      "dataFormats": [
+        "application/json"
+      ]
     },
     "nodeRequest": {
       "schema": "https://enbox.id/schemas/wireguard-mesh/node-request",
-      "dataFormats": ["application/json"]
+      "dataFormats": [
+        "application/json"
+      ]
     },
     "nodeApproval": {
       "schema": "https://enbox.id/schemas/wireguard-mesh/node-approval",
-      "dataFormats": ["application/json"]
+      "dataFormats": [
+        "application/json"
+      ]
     },
     "node": {
       "schema": "https://enbox.id/schemas/wireguard-mesh/node",
-      "dataFormats": ["application/json"],
+      "dataFormats": [
+        "application/json"
+      ],
       "encryptionRequired": true
     },
     "nodeInfo": {
       "schema": "https://enbox.id/schemas/wireguard-mesh/node-info",
-      "dataFormats": ["application/json"],
+      "dataFormats": [
+        "application/json"
+      ],
       "encryptionRequired": true
     },
     "endpoint": {
       "schema": "https://enbox.id/schemas/wireguard-mesh/endpoint",
-      "dataFormats": ["application/json"],
+      "dataFormats": [
+        "application/json"
+      ],
       "encryptionRequired": true
     },
     "aclPolicy": {
       "schema": "https://enbox.id/schemas/wireguard-mesh/acl-policy",
-      "dataFormats": ["application/json"],
+      "dataFormats": [
+        "application/json"
+      ],
       "encryptionRequired": true
     },
     "relay": {
       "schema": "https://enbox.id/schemas/wireguard-mesh/relay",
-      "dataFormats": ["application/json"],
+      "dataFormats": [
+        "application/json"
+      ],
       "encryptionRequired": true
     },
     "preAuthKey": {
       "schema": "https://enbox.id/schemas/wireguard-mesh/pre-auth-key",
-      "dataFormats": ["application/json"],
+      "dataFormats": [
+        "application/json"
+      ],
       "encryptionRequired": true
     }
   },
   "structure": {
     "nodeRequest": {
-      "$size": { "max": 3000 },
-      "$actions": [
-        { "who": "anyone", "can": ["create"] },
-        { "who": "recipient", "of": "nodeRequest", "can": ["create", "read", "delete"] },
-        { "who": "author", "of": "nodeRequest", "can": ["create", "read", "delete"] }
-      ]
-    },
-
-    "nodeApproval": {
-      "$size": { "max": 3000 },
-      "$actions": [
-        { "who": "recipient", "of": "nodeApproval", "can": ["read"] },
-        { "who": "author", "of": "nodeApproval", "can": ["create", "read", "delete"] }
-      ]
-    },
-
-    "network": {
-      "$keyAgreement": {
-        "rootKeyId": "#dwn-enc",
-        "publicKeyJwk": {}
+      "$size": {
+        "max": 3000
       },
       "$actions": [
-        { "who": "anyone", "can": ["read"] }
-      ],
-
-      "member": {
-        "$role": true,
-        "$keyAgreement": {
-          "rootKeyId": "#dwn-enc",
-          "publicKeyJwk": {}
-        },
-        "$actions": [
-          { "who": "author", "of": "network", "can": ["create", "update", "co-delete", "co-prune"] },
-          { "role": "network/member", "can": ["read"] },
-          { "role": "network/node", "can": ["read"] }
-        ],
-
-        "nodeRequest": {
-          "$size": { "max": 2000 },
-          "$actions": [
-            { "who": "recipient", "of": "network/member", "can": ["create", "delete"] },
-            { "who": "author", "of": "network", "can": ["read", "co-delete"] },
-            { "role": "network/member", "can": ["read"] }
+        {
+          "who": "anyone",
+          "can": [
+            "create"
           ]
         },
-
+        {
+          "who": "recipient",
+          "of": "nodeRequest",
+          "can": [
+            "create",
+            "read",
+            "delete"
+          ]
+        },
+        {
+          "who": "author",
+          "of": "nodeRequest",
+          "can": [
+            "create",
+            "read",
+            "delete"
+          ]
+        }
+      ]
+    },
+    "nodeApproval": {
+      "$size": {
+        "max": 3000
+      },
+      "$actions": [
+        {
+          "who": "recipient",
+          "of": "nodeApproval",
+          "can": [
+            "read"
+          ]
+        },
+        {
+          "who": "author",
+          "of": "nodeApproval",
+          "can": [
+            "create",
+            "read",
+            "delete"
+          ]
+        }
+      ]
+    },
+    "network": {
+      "$actions": [
+        {
+          "who": "anyone",
+          "can": [
+            "read"
+          ]
+        }
+      ],
+      "member": {
+        "$role": true,
+        "$actions": [
+          {
+            "who": "author",
+            "of": "network",
+            "can": [
+              "create",
+              "update",
+              "co-delete",
+              "co-prune"
+            ]
+          },
+          {
+            "role": "network/member",
+            "can": [
+              "read"
+            ]
+          },
+          {
+            "role": "network/node",
+            "can": [
+              "read"
+            ]
+          }
+        ],
+        "nodeRequest": {
+          "$size": {
+            "max": 2000
+          },
+          "$actions": [
+            {
+              "who": "recipient",
+              "of": "network/member",
+              "can": [
+                "create",
+                "delete"
+              ]
+            },
+            {
+              "who": "author",
+              "of": "network",
+              "can": [
+                "read",
+                "co-delete"
+              ]
+            },
+            {
+              "role": "network/member",
+              "can": [
+                "read"
+              ]
+            }
+          ]
+        },
         "node": {
           "$role": true,
           "$squash": true,
-          "$size": { "max": 10000 },
-          "$keyAgreement": {
-            "rootKeyId": "#dwn-enc",
-            "publicKeyJwk": {}
+          "$size": {
+            "max": 10000
           },
           "$actions": [
-            { "who": "author", "of": "network", "can": ["create", "update", "delete"] },
-            { "role": "network/member", "can": ["read"] },
-            { "role": "network/node", "can": ["read"] }
+            {
+              "who": "author",
+              "of": "network",
+              "can": [
+                "create",
+                "update",
+                "delete"
+              ]
+            },
+            {
+              "role": "network/member",
+              "can": [
+                "read"
+              ]
+            },
+            {
+              "role": "network/node",
+              "can": [
+                "read"
+              ]
+            }
           ],
-
           "nodeInfo": {
             "$squash": true,
-            "$size": { "max": 5000 },
-            "$keyAgreement": {
-              "rootKeyId": "#dwn-enc",
-              "publicKeyJwk": {}
+            "$size": {
+              "max": 5000
             },
             "$actions": [
-              { "who": "recipient", "of": "network/member/node", "can": ["create", "update"] },
-              { "role": "network/member", "can": ["read"] },
-              { "role": "network/node", "can": ["read"] }
+              {
+                "who": "recipient",
+                "of": "network/member/node",
+                "can": [
+                  "create",
+                  "update"
+                ]
+              },
+              {
+                "role": "network/member",
+                "can": [
+                  "read"
+                ]
+              },
+              {
+                "role": "network/node",
+                "can": [
+                  "read"
+                ]
+              }
             ]
           },
-
           "endpoint": {
             "$squash": true,
-            "$size": { "max": 2000 },
-            "$keyAgreement": {
-              "rootKeyId": "#dwn-enc",
-              "publicKeyJwk": {}
+            "$size": {
+              "max": 2000
             },
             "$actions": [
-              { "who": "recipient", "of": "network/member/node", "can": ["create", "update"] },
-              { "role": "network/member", "can": ["read"] },
-              { "role": "network/node", "can": ["read"] }
+              {
+                "who": "recipient",
+                "of": "network/member/node",
+                "can": [
+                  "create",
+                  "update"
+                ]
+              },
+              {
+                "role": "network/member",
+                "can": [
+                  "read"
+                ]
+              },
+              {
+                "role": "network/node",
+                "can": [
+                  "read"
+                ]
+              }
             ]
           }
         }
       },
-
       "nodeRequest": {
-        "$size": { "max": 2000 },
+        "$size": {
+          "max": 2000
+        },
         "$actions": [
-          { "who": "anyone", "can": ["create"] },
-          { "who": "author", "of": "network", "can": ["create", "read", "delete", "co-delete"] }
+          {
+            "who": "anyone",
+            "can": [
+              "create"
+            ]
+          },
+          {
+            "who": "author",
+            "of": "network",
+            "can": [
+              "create",
+              "read",
+              "delete",
+              "co-delete"
+            ]
+          }
         ]
       },
-
       "node": {
         "$role": true,
         "$squash": true,
-        "$size": { "max": 10000 },
-        "$keyAgreement": {
-          "rootKeyId": "#dwn-enc",
-          "publicKeyJwk": {}
+        "$size": {
+          "max": 10000
         },
         "$actions": [
-          { "who": "author", "of": "network", "can": ["create", "update", "delete"] },
-          { "role": "network/member", "can": ["read"] },
-          { "role": "network/node", "can": ["read"] }
+          {
+            "who": "author",
+            "of": "network",
+            "can": [
+              "create",
+              "update",
+              "delete"
+            ]
+          },
+          {
+            "role": "network/member",
+            "can": [
+              "read"
+            ]
+          },
+          {
+            "role": "network/node",
+            "can": [
+              "read"
+            ]
+          }
         ],
-
         "nodeInfo": {
           "$squash": true,
-          "$size": { "max": 5000 },
-          "$keyAgreement": {
-            "rootKeyId": "#dwn-enc",
-            "publicKeyJwk": {}
+          "$size": {
+            "max": 5000
           },
           "$actions": [
-            { "who": "recipient", "of": "network/node", "can": ["create", "update"] },
-            { "role": "network/member", "can": ["read"] },
-            { "role": "network/node", "can": ["read"] }
+            {
+              "who": "recipient",
+              "of": "network/node",
+              "can": [
+                "create",
+                "update"
+              ]
+            },
+            {
+              "role": "network/member",
+              "can": [
+                "read"
+              ]
+            },
+            {
+              "role": "network/node",
+              "can": [
+                "read"
+              ]
+            }
           ]
         },
-
         "endpoint": {
           "$squash": true,
-          "$size": { "max": 2000 },
-          "$keyAgreement": {
-            "rootKeyId": "#dwn-enc",
-            "publicKeyJwk": {}
+          "$size": {
+            "max": 2000
           },
           "$actions": [
-            { "who": "recipient", "of": "network/node", "can": ["create", "update"] },
-            { "role": "network/member", "can": ["read"] },
-            { "role": "network/node", "can": ["read"] }
+            {
+              "who": "recipient",
+              "of": "network/node",
+              "can": [
+                "create",
+                "update"
+              ]
+            },
+            {
+              "role": "network/member",
+              "can": [
+                "read"
+              ]
+            },
+            {
+              "role": "network/node",
+              "can": [
+                "read"
+              ]
+            }
           ]
         }
       },
-
       "aclPolicy": {
         "$squash": true,
-        "$size": { "max": 100000 },
-        "$keyAgreement": {
-          "rootKeyId": "#dwn-enc",
-          "publicKeyJwk": {}
+        "$size": {
+          "max": 100000
         },
         "$actions": [
-          { "who": "author", "of": "network", "can": ["create", "update"] },
-          { "role": "network/member", "can": ["read"] },
-          { "role": "network/node", "can": ["read"] }
+          {
+            "who": "author",
+            "of": "network",
+            "can": [
+              "create",
+              "update"
+            ]
+          },
+          {
+            "role": "network/member",
+            "can": [
+              "read"
+            ]
+          },
+          {
+            "role": "network/node",
+            "can": [
+              "read"
+            ]
+          }
         ]
       },
-
       "relay": {
-        "$keyAgreement": {
-          "rootKeyId": "#dwn-enc",
-          "publicKeyJwk": {}
-        },
         "$actions": [
-          { "who": "author", "of": "network", "can": ["create", "update", "delete"] },
-          { "role": "network/member", "can": ["read"] },
-          { "role": "network/node", "can": ["read"] }
+          {
+            "who": "author",
+            "of": "network",
+            "can": [
+              "create",
+              "update",
+              "delete"
+            ]
+          },
+          {
+            "role": "network/member",
+            "can": [
+              "read"
+            ]
+          },
+          {
+            "role": "network/node",
+            "can": [
+              "read"
+            ]
+          }
         ]
       },
-
       "preAuthKey": {
-        "$keyAgreement": {
-          "rootKeyId": "#dwn-enc",
-          "publicKeyJwk": {}
+        "$recordLimit": {
+          "max": 100,
+          "strategy": "reject"
         },
-        "$recordLimit": { "max": 100, "strategy": "reject" },
         "$actions": [
-          { "who": "author", "of": "network", "can": ["create", "delete", "read"] }
+          {
+            "who": "author",
+            "of": "network",
+            "can": [
+              "create",
+              "delete",
+              "read"
+            ]
+          }
         ]
       }
     }

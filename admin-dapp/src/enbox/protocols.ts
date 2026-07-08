@@ -5,7 +5,7 @@ import type { ConnectPermissionRequest } from "@enbox/agent";
 import {
   MESHD_PROTOCOL_URI,
   MeshProtocolDefinition,
-  stripKeyAgreementPlaceholders
+  withoutKeyAgreement
 } from "./config";
 
 type MeshProtocolSchemaMap = {
@@ -106,15 +106,13 @@ function assertExpectedProtocolDefinition(
 ) {
   // The wallet installs the protocol with encryption enabled, so the
   // installed definition carries derived `$keyAgreement: { publicKeyJwk }`
-  // blocks at the top level and at every structure path. Those are runtime
-  // key material, not part of the authored definition — strip them (and any
-  // other `$keyAgreement` remnants) from both sides before comparing, the
-  // same normalization the Go daemon applies via
-  // `protocols.MeshProtocolDefinitionForConnect`.
+  // blocks at the top level and at every structure path. Those are
+  // owner-specific runtime key material, not part of the authored
+  // definition — normalize the installed side before comparing.
   const installed = protocolDefinition(
-    stripKeyAgreementPlaceholders(protocolDefinition(installedDefinition))
+    withoutKeyAgreement(protocolDefinition(installedDefinition))
   );
-  const expected = stripKeyAgreementPlaceholders(expectedDefinition);
+  const expected = expectedDefinition;
   if (!installed) {
     return;
   }

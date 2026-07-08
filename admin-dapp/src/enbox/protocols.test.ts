@@ -65,17 +65,10 @@ describe("meshd admin protocol requests", () => {
     expect(requests.map((item) => item.protocolDefinition.protocol)).toEqual([MESHD_PROTOCOL_URI]);
   });
 
-  it("strips the epoch-era $keyAgreement placeholders from the definition sent to the wallet", () => {
-    // The embedded JSON (shared with the Go daemon) still carries
-    // `{"rootKeyId": "#dwn-enc", "publicKeyJwk": {}}` placeholders, which
-    // dwn-sdk-js 0.4.8 rejects during ProtocolsConfigure validation.
-    expect(JSON.stringify(rawMeshProtocolDefinition)).toContain("$keyAgreement");
-    expect(JSON.stringify(rawMeshProtocolDefinition)).toContain("rootKeyId");
-
-    // The dapp-facing definition (wallet connect requests, defineProtocol,
-    // installed-definition comparison) must not carry any of them.
-    expect(JSON.stringify(MeshProtocolDefinition)).not.toContain("$keyAgreement");
-    expect(JSON.stringify(MeshProtocolDefinition)).not.toContain("rootKeyId");
+  it("sends an authored definition with no key material", () => {
+    // $keyAgreement blocks are owner-derived at install time; the authored
+    // definition carries none (dwn-sdk-js 0.4.8 rejects placeholder nodes).
+    expect(JSON.stringify(rawMeshProtocolDefinition)).not.toContain("$keyAgreement");
     for (const request of normalizeProtocolRequests(DAPP_PROTOCOLS)) {
       expect(JSON.stringify(request.protocolDefinition)).not.toContain("$keyAgreement");
       expect(JSON.stringify(request.protocolDefinition)).not.toContain("rootKeyId");

@@ -47,10 +47,7 @@ func runEnboxAuthConnect(ctx context.Context, profileFlag string, opts authConne
 		return err
 	}
 
-	meshDefinition, err := protocols.MeshProtocolDefinitionForConnect()
-	if err != nil {
-		return fmt.Errorf("preparing mesh protocol definition: %w", err)
-	}
+	meshDefinition := json.RawMessage(protocols.MeshProtocolJSON)
 
 	walletURL := firstNonEmpty(strings.TrimSpace(opts.walletURL), defaultEnboxWalletURL)
 	connectServerURL := firstNonEmpty(

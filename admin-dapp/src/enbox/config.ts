@@ -8,17 +8,14 @@ export const MESHD_PROTOCOL_URI = "https://enbox.id/protocols/wireguard-mesh";
  * Removes every `$keyAgreement` node from a protocol definition (top level
  * and the whole structure tree) and returns a deep copy.
  *
- * The embedded wireguard-mesh.json (shared with the Go daemon) carries
- * `$keyAgreement` placeholder nodes (`{"rootKeyId": "#dwn-enc",
- * "publicKeyJwk": {}}`). dwn-sdk-js 0.4.8 rejects both keys during
- * ProtocolsConfigure validation (`rootKeyId` is no longer an allowed
- * property and an empty `publicKeyJwk` fails the X25519 JWK schema), and
- * the wallet injects real `{ publicKeyJwk }` blocks itself when it installs
- * the protocol with encryption enabled. The dapp therefore always works
- * with the stripped definition — the TypeScript counterpart of the Go
- * `protocols.MeshProtocolDefinitionForConnect`.
+ * `$keyAgreement` blocks are runtime key material: the installing wallet
+ * derives owner-specific X25519 public keys and injects them at every
+ * structure path when it configures the protocol with encryption enabled.
+ * The authored definition carries none (and must not — each owner's keys
+ * differ), so comparisons against an installed definition normalize the
+ * installed side through this helper.
  */
-export function stripKeyAgreementPlaceholders<T>(definition: T): T {
+export function withoutKeyAgreement<T>(definition: T): T {
   return stripKeyAgreementNodes(structuredClone(definition)) as T;
 }
 
@@ -63,7 +60,7 @@ export const DWN_ENDPOINTS = (
 ).split(",").map((endpoint: string) => endpoint.trim()).filter(Boolean);
 export const DEFAULT_DWN_ENDPOINT = DWN_ENDPOINTS[0] || "https://dev.aws.dwn.enbox.id";
 
-export const MeshProtocolDefinition = stripKeyAgreementPlaceholders(meshProtocolDefinitionJson);
+export const MeshProtocolDefinition = meshProtocolDefinitionJson;
 
 export const DAPP_PROTOCOLS = [
   { definition: MeshProtocolDefinition, permissions: ADMIN_PERMISSIONS }
