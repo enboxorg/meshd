@@ -1,4 +1,8 @@
 /// <reference lib="webworker" />
+// Must be first: installs Buffer/process on globalThis before @enbox/browser
+// (and its DWN/crypto deps) are evaluated. See sw-polyfills.ts.
+import "./sw-polyfills";
+
 //@ts-expect-error - WorkBox disable dev logs
 self.__WB_DISABLE_DEV_LOGS = true;
 import { activatePolyfills } from "@enbox/browser";
