@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/enboxorg/meshd/compare/v0.14.5...v0.15.0) (2026-07-09)
+
+
+### Features
+
+* **mesh:** emit node role-path public keys in join requests ([#187](https://github.com/enboxorg/meshd/issues/187)) ([#188](https://github.com/enboxorg/meshd/issues/188)) ([96a2dac](https://github.com/enboxorg/meshd/commit/96a2dac1d1d0a656d8bf6c995f5c724a08d5e026))
+
 ## [0.14.5](https://github.com/enboxorg/meshd/compare/v0.14.4...v0.14.5) (2026-07-08)
 
 
