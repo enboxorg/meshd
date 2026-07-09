@@ -21,6 +21,10 @@ type OwnerNodeRequestParams struct {
 	Signer        *dwn.Signer
 	Label         string
 	SourceDWN     string
+	// NodeEncryptionKey is the node's root #enc X25519 private key. When set, the
+	// node's role-path public keys are derived and emitted so a DWN-less owner can
+	// deliver role-audience keys to it (see issue #187). Never leaves the node.
+	NodeEncryptionKey []byte
 }
 
 // NodeApprovalData is the root nodeApproval payload written by the owner
@@ -92,6 +96,11 @@ func ownerNodeRequestData(params OwnerNodeRequestParams) (NodeRequestData, error
 		return NodeRequestData{}, fmt.Errorf("node signer DID %s does not match node DID %s", params.Signer.DID, params.NodeDID)
 	}
 
+	roleKeys, err := nodeRoleKeys(params.NodeEncryptionKey)
+	if err != nil {
+		return NodeRequestData{}, err
+	}
+
 	requestedAt := time.Now().UTC().Format(time.RFC3339)
 	return NodeRequestData{
 		NodeDID:     params.NodeDID,
@@ -103,6 +112,7 @@ func ownerNodeRequestData(params OwnerNodeRequestParams) (NodeRequestData, error
 		SourceDWN:   params.SourceDWN,
 		Label:       params.Label,
 		RequestedAt: requestedAt,
+		RoleKeys:    roleKeys,
 	}, nil
 }
 

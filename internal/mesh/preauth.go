@@ -45,6 +45,15 @@ type NodeRequestData struct {
 	PreAuthProof    string `json:"preAuthProof,omitempty"`
 	RequestedAt     string `json:"requestedAt,omitempty"`
 	ExpiresAt       string `json:"expiresAt,omitempty"`
+
+	// RoleKeys carries the PUBLIC halves of the node's own role-path X25519 keys,
+	// keyed by full protocol role path (e.g. "network/node"). A did:jwk node
+	// publishes no DWN endpoint, so an owner/dashboard cannot resolve these keys by
+	// DID; the node supplies them here so the owner can wrap each
+	// $encryption/delivery record to the recipient node without a DWN lookup. Each
+	// value is byte-identical to the $keyAgreement.publicKeyJwk the node injects
+	// into its own protocol definition (see dwncrypto.RolePathPublicKeyJWK).
+	RoleKeys map[string]dwncrypto.PublicKeyJWK `json:"roleKeys,omitempty"`
 }
 
 func (r NodeRequestData) EffectiveOwnerDID() string {
@@ -55,6 +64,33 @@ func (r NodeRequestData) EffectiveOwnerDID() string {
 		return r.MemberDID
 	}
 	return r.NodeDID
+}
+
+// nodeRoleKeyPaths are the mesh $role paths a node HOLDS (their delivery recipient
+// is the node itself). "network/member" is deliberately excluded: its recipient is
+// the member/owner DID, a different identity whose key the node cannot assert. The
+// node cannot know at join time whether approval places it under a member layer
+// (network/member/node) or directly (network/node) — deliverJoinerAudienceKeys
+// decides per-approval — so it publishes both candidate public keys.
+var nodeRoleKeyPaths = []string{"network/node", "network/member/node"}
+
+// nodeRoleKeys derives the PUBLIC halves of the node's own role-path keys from its
+// root #enc key, for delivery to it without a DWN lookup. Returns nil (field
+// omitted) when no encryption key is available, so nodes/paths that don't emit keys
+// stay wire-compatible.
+func nodeRoleKeys(encryptionKey []byte) (map[string]dwncrypto.PublicKeyJWK, error) {
+	if len(encryptionKey) == 0 {
+		return nil, nil
+	}
+	keys := make(map[string]dwncrypto.PublicKeyJWK, len(nodeRoleKeyPaths))
+	for _, rolePath := range nodeRoleKeyPaths {
+		jwk, err := dwncrypto.RolePathPublicKeyJWK(encryptionKey, protocols.MeshProtocolURI, rolePath)
+		if err != nil {
+			return nil, fmt.Errorf("deriving role-path public key for %q: %w", rolePath, err)
+		}
+		keys[rolePath] = jwk
+	}
+	return keys, nil
 }
 
 // CreatePreAuthKeyParams configures preauth token creation.
@@ -175,6 +211,10 @@ type WritePreAuthNodeRequestParams struct {
 	Signer      *dwn.Signer
 	Label       string
 	SourceDWN   string
+	// NodeEncryptionKey is the node's root #enc X25519 private key, used to derive
+	// the PUBLIC role-path keys published in the request's roleKeys. Optional: when
+	// empty, roleKeys is omitted (older behavior).
+	NodeEncryptionKey []byte
 }
 
 // WritePreAuthNodeRequest writes a network/nodeRequest claim to the anchor DWN.
@@ -230,6 +270,11 @@ func preAuthNodeRequestData(params WritePreAuthNodeRequestParams) (NodeRequestDa
 		nodeProof = SignNodeJoinProof(params.Signer, params.Invite.NetworkID, params.NodeDID, memberDID, params.Invite.TokenID)
 	}
 
+	roleKeys, err := nodeRoleKeys(params.NodeEncryptionKey)
+	if err != nil {
+		return NodeRequestData{}, err
+	}
+
 	return NodeRequestData{
 		NodeDID:         params.NodeDID,
 		MemberDID:       memberDID,
@@ -245,6 +290,7 @@ func preAuthNodeRequestData(params WritePreAuthNodeRequestParams) (NodeRequestDa
 		PreAuthKeyID:    params.Invite.TokenID,
 		PreAuthProof:    invite.Proof(params.Invite.Secret, params.Invite.NetworkID, params.NodeDID),
 		RequestedAt:     time.Now().UTC().Format(time.RFC3339),
+		RoleKeys:        roleKeys,
 	}, nil
 }
 
