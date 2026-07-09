@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -18,6 +19,35 @@ func DeriveRolePathKey(rootPrivateKey []byte, protocol, rolePath string) (privat
 	segments := splitProtocolPath(rolePath)
 	path := BuildProtocolPathDerivation(protocol, segments...)
 	return DeriveKeyBytes(rootPrivateKey, path)
+}
+
+// RolePathPublicKeyJWK derives the PUBLIC half of a role-path X25519 key from a
+// root #enc key and returns it as a PublicKeyJWK. It is the public counterpart of
+// DeriveRolePathKey and is byte-identical to the `$keyAgreement.publicKeyJwk` that
+// InjectEncryptionDirectives publishes at the same protocol/rolePath (both walk
+// the same HKDF chain via BuildProtocolPathDerivation).
+//
+// A role holder emits this so an owner can wrap an `$encryption/delivery` record
+// to it WITHOUT resolving the holder's DWN — the delivery is key transport to an
+// already role-authorized reader, so a self-asserted key grants no new authority.
+// The `kid` member is intentionally omitted to match the injected wire shape
+// ({kty, crv, x} only); consumers recompute the thumbprint from `x`.
+func RolePathPublicKeyJWK(rootPrivateKey []byte, protocol, rolePath string) (PublicKeyJWK, error) {
+	priv, err := DeriveRolePathKey(rootPrivateKey, protocol, rolePath)
+	if err != nil {
+		return PublicKeyJWK{}, err
+	}
+	defer clear(priv) // Only the public half is published; zero the derived private key.
+
+	pub, err := X25519PublicKey(priv)
+	if err != nil {
+		return PublicKeyJWK{}, err
+	}
+	return PublicKeyJWK{
+		KTY: "OKP",
+		CRV: "X25519",
+		X:   base64.RawURLEncoding.EncodeToString(pub),
+	}, nil
 }
 
 // RoleAudienceDecrypter decrypts roleAudience-encrypted records with a fixed

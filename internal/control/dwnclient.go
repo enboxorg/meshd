@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/enboxorg/meshd/internal/dwn"
@@ -150,6 +151,17 @@ type DWNClient struct {
 
 	// peerEndpoints caches resolved DID → DWN endpoint mappings.
 	peerEndpoints map[string]*PeerEndpointInfo
+
+	// undecryptablePeers counts (cumulatively, across all state loads) node
+	// records whose data payload could not be decrypted — the visible symptom
+	// of a missing role-audience key delivery (issue #187). Tracked separately
+	// from droppedPeers because a record can fail to decrypt yet still surface a
+	// mesh IP via fallback, or decrypt yet lack a usable IP.
+	undecryptablePeers atomic.Int64
+
+	// droppedPeers counts (cumulatively) peers omitted from the network map
+	// because no mesh IP could be read or derived for them.
+	droppedPeers atomic.Int64
 }
 
 // NewDWNClient creates a new DWN-based control client.
@@ -195,6 +207,20 @@ func NewDWNClient(
 		nodes:           make(map[string]*NodeRecord),
 		peerEndpoints:   make(map[string]*PeerEndpointInfo),
 	}
+}
+
+// UndecryptablePeerCount returns the cumulative number of node records this
+// client has failed to decrypt since it was created. A non-zero, growing value
+// means role-audience keys are not reaching this node (issue #187): its peers
+// exist in the DWN but cannot be read, so they never enter the mesh map.
+func (c *DWNClient) UndecryptablePeerCount() int64 {
+	return c.undecryptablePeers.Load()
+}
+
+// DroppedPeerCount returns the cumulative number of peers omitted from the
+// network map because no mesh IP could be read or derived for them.
+func (c *DWNClient) DroppedPeerCount() int64 {
+	return c.droppedPeers.Load()
 }
 
 // readAuth builds the message auth for read queries at the given role. A
@@ -482,9 +508,16 @@ func (c *DWNClient) loadNodeEntry(ctx context.Context, entry json.RawMessage, de
 
 	var node NodeRecord
 	if err := ParseEntryData(entry, &node, decryptor); err != nil {
-		c.logger.DebugContext(ctx, "parsing node entry",
+		// An undecryptable peer node record is the visible symptom of a
+		// missing role-audience key delivery (issue #187): the record exists
+		// but this node was never handed the key to read it. Surface it at
+		// Warn (not Debug) and count it so operators can see peers silently
+		// dropping out of the mesh.
+		c.undecryptablePeers.Add(1)
+		c.logger.WarnContext(ctx, "node record could not be decrypted; peer will be invisible until a role-audience key is delivered",
 			slog.Any("error", err),
 			slog.String("nodeDID", nodeDID),
+			slog.String("memberRecordId", memberRecordID),
 		)
 		// Even if we can't decrypt the data payload, track the node DID
 		// from the unencrypted recipient field. This allows peer discovery
@@ -743,9 +776,12 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 
 		// Skip peers whose mesh IP cannot be read or derived. These
 		// "ghost" nodes are still tracked in c.nodes for auto key delivery
-		// purposes, but should not be injected into the network map.
+		// purposes, but should not be injected into the network map. A peer
+		// reaching here typically failed to decrypt (issue #187), so surface
+		// it at Warn and count it rather than swallowing at Debug.
 		if did != c.selfDID && !node.MeshIP.IsValid() {
-			c.logger.Debug("skipping undecryptable peer in network map",
+			c.droppedPeers.Add(1)
+			c.logger.Warn("dropping peer from network map: no mesh IP (record likely undecryptable — missing role-audience key)",
 				slog.String("did", did),
 			)
 			continue

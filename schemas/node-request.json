@@ -81,6 +81,30 @@
         }
       }
     },
+    "roleKeys": {
+      "type": "object",
+      "description": "PUBLIC halves of the node's own role-path X25519 keys, keyed by full protocol role path (e.g. \"network/node\"). A did:jwk node publishes no DWN endpoint, so the owner/dashboard cannot resolve these keys by DID; the node supplies them here so each $encryption/delivery record can be wrapped to the recipient node without a DWN lookup. Each value is byte-identical to the $keyAgreement.publicKeyJwk the node injects at the same role path.",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9]+(/[A-Za-z0-9]+)*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["kty", "crv", "x"],
+        "additionalProperties": true,
+        "properties": {
+          "kty": { "type": "string", "const": "OKP" },
+          "crv": { "type": "string", "const": "X25519" },
+          "x": {
+            "type": "string",
+            "description": "Base64url-encoded X25519 public key derived at this role path"
+          },
+          "kid": {
+            "type": "string",
+            "description": "Optional key ID; omitted to match the injected $keyAgreement wire shape"
+          }
+        }
+      }
+    },
     "preAuthKeyId": {
       "type": "string",
       "description": "Record ID of the encrypted pre-auth key used for this request"

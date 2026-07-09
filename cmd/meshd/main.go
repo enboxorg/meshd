@@ -1913,13 +1913,14 @@ func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
 		label, _ := os.Hostname()
 		signer := &dwn.Signer{DID: identity.URI, PrivateKey: identity.SigningKey}
 		if err := mesh.WritePreAuthNodeRequest(ctx, mesh.WritePreAuthNodeRequestParams{
-			Invite:      payload,
-			NodeDID:     nodeDID,
-			MemberDID:   ownerDID,
-			DelegateDID: meta.DelegateDID,
-			RequestedBy: identity.URI,
-			Signer:      signer,
-			Label:       label,
+			Invite:            payload,
+			NodeDID:           nodeDID,
+			MemberDID:         ownerDID,
+			DelegateDID:       meta.DelegateDID,
+			RequestedBy:       identity.URI,
+			Signer:            signer,
+			Label:             label,
+			NodeEncryptionKey: identity.EncryptionPrivateKey,
 		}); err != nil {
 			return err
 		}
@@ -4190,12 +4191,13 @@ func setupOwnerNodeRequest(ctx context.Context, f upFlags, stateDir string, iden
 
 	label, _ := os.Hostname()
 	requestID, err := mesh.WriteOwnerNodeRequest(ctx, mesh.OwnerNodeRequestParams{
-		OwnerEndpoint: endpoint,
-		OwnerDID:      ownerDID,
-		NodeDID:       identity.URI,
-		Signer:        dwnSigner(identity),
-		Label:         label,
-		SourceDWN:     endpoint,
+		OwnerEndpoint:     endpoint,
+		OwnerDID:          ownerDID,
+		NodeDID:           identity.URI,
+		Signer:            dwnSigner(identity),
+		Label:             label,
+		SourceDWN:         endpoint,
+		NodeEncryptionKey: identity.EncryptionPrivateKey,
 	})
 	if err != nil {
 		ctx := adminContext{OwnerDID: ownerDID}
