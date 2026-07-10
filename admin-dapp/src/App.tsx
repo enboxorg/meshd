@@ -197,7 +197,7 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
   const [topology, setTopology] = useState<MeshdNetworkTopology>();
   const [loadState, setLoadState] = useState<LoadState>("idle");
   const [error, setError] = useState<string>();
-  const [inviteResult, setInviteResult] = useState<CreateMeshdInviteResult>();
+  const [inviteResults, setInviteResults] = useState<CreateMeshdInviteResult[]>([]);
   const [inviteLabel, setInviteLabel] = useState("");
   const [inviteExpiry, setInviteExpiry] = useState<ExpiryValue>("24h");
   const [approvalExpiry, setApprovalExpiry] = useState<ExpiryValue>("never");
@@ -290,6 +290,12 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     window.history.replaceState(null, "", `?${params.toString()}`);
   }, [did, selectedNetwork]);
 
+  // The freshly-created invite list is scoped to the selected network; reset it
+  // when the operator switches networks so stale URLs don't carry across.
+  useEffect(() => {
+    setInviteResults([]);
+  }, [selectedNetwork?.recordId]);
+
   async function runAction(label: string, action: () => Promise<void>) {
     setBusyAction(label);
     setError(undefined);
@@ -317,12 +323,14 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     if (!session || !selectedNetwork) return;
     await runAction("create-invite", async () => {
       const result = await createMeshdInvite(session, selectedNetwork, {
-        label: inviteLabel.trim() || selectedNetwork.name,
+        label: inviteLabel.trim() || undefined,
         expiresAt: expiryTimestamp(inviteExpiry),
         reusable: inviteReusable
       });
       setInviteLabel("");
-      setInviteResult(result);
+      // Keep every invite created this session pinned and copyable, newest first,
+      // so several machines can be invited and copied without losing earlier URLs.
+      setInviteResults((prev) => [result, ...prev]);
       toast.success("Invite created");
       await refreshTopology();
     });
@@ -541,17 +549,17 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
               </div>
             </section>
 
-            {inviteResult ? (
-              <div className="invite-result">
+            {inviteResults.map((result) => (
+              <div className="invite-result" key={result.tokenId}>
                 <div>
-                  <strong>Invite URL</strong>
-                  <code>{inviteResult.url}</code>
+                  <strong>{result.label || "Invite URL"}</strong>
+                  <code>{result.url}</code>
                 </div>
-                <button className="icon-button" type="button" aria-label="Copy invite URL" title="Copy" onClick={() => void copyToClipboard(inviteResult.url)}>
+                <button className="icon-button" type="button" aria-label="Copy invite URL" title="Copy" onClick={() => void copyToClipboard(result.url)}>
                   <ClipboardIcon size={16} />
                 </button>
               </div>
-            ) : null}
+            ))}
 
             <section className="content-section">
               <div className="section-heading">

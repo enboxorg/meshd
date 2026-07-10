@@ -12,6 +12,7 @@ import {
   DELEGATE_SESSION_REQUIRED_ERROR,
   fetchMeshdNetworks,
   parseMeshdNodeRequestRecord,
+  parseMeshdPreAuthKeyRecord,
   rejectMeshdNodeRequest,
   updateMeshdNodeExpiry,
   updateMeshdNodeLabel,
@@ -59,6 +60,50 @@ async function signedOwnerNodeRequest(opts: {
     requestKind: "owner-node",
     nodeProof: toBase64Url(signature),
     requestedAt,
+    ...(opts.roleKeys ? { roleKeys: opts.roleKeys } : {})
+  };
+}
+
+// Builds a real invite-based (non-owner-scoped) node request signed by a fresh
+// did:jwk, with a matching HMAC invite proof, so approve's proof checks pass and
+// the tests exercise the preAuthKey consumption + label-carry paths end to end.
+async function signedInviteNodeRequest(opts: {
+  networkId: string;
+  secret: string;
+  preAuthKeyId: string;
+  ownerDID: string;
+  label?: string;
+  roleKeys?: Record<string, RolePublicKeyJwk>;
+}): Promise<MeshdNodeRequestSummary> {
+  const privateKey = await Ed25519.generateKey();
+  const publicKey = await Ed25519.computePublicKey({ key: privateKey });
+  const nodeDID = `did:jwk:${toBase64Url(new TextEncoder().encode(JSON.stringify(publicKey)))}`;
+  const joinMessage = new TextEncoder().encode(
+    "meshd node join v1\n"
+    + `network=${opts.networkId}\n`
+    + `node=${nodeDID}\n`
+    + `member=${opts.ownerDID || nodeDID}\n`
+    + `preauth=${opts.preAuthKeyId}\n`
+  );
+  const nodeProof = toBase64Url(await Ed25519.sign({ key: privateKey, data: joinMessage }));
+  const hmacKey = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(opts.secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", hmacKey, new TextEncoder().encode(`${opts.networkId}\n${nodeDID}`)));
+  return {
+    recordId: "req-rec",
+    protocolPath: "network/nodeRequest",
+    nodeDID,
+    ownerDID: opts.ownerDID,
+    memberDID: opts.ownerDID,
+    preAuthKeyId: opts.preAuthKeyId,
+    preAuthProof: `hmac-sha256:${toBase64Url(mac)}`,
+    nodeProof,
+    ...(opts.label ? { label: opts.label } : {}),
     ...(opts.roleKeys ? { roleKeys: opts.roleKeys } : {})
   };
 }
@@ -781,5 +826,107 @@ describe("meshd node role-audience key delivery (#187)", () => {
       (r) => r.messageType === DwnInterface.RecordsWrite && r.messageParams?.protocolPath === "network/member/node"
     );
     expect(nodeWrite).toBeUndefined();
+  });
+});
+
+describe("meshd invite lifecycle", () => {
+  const network: MeshdNetworkSummary = { recordId: "net-1", name: "Test Net", meshCIDR: "10.200.0.0/16" };
+  const roleKeys = { "network/member": VALID_X25519_KEY, "network/member/node": VALID_X25519_KEY };
+  const secret = "invite-secret";
+
+  function inviteEntry(overrides: Record<string, unknown>) {
+    return recordEntry("invite-rec", "network/preAuthKey", {
+      key: secret,
+      createdAt: "2026-06-24T00:00:00Z",
+      usedBy: [],
+      ...overrides
+    });
+  }
+
+  // createMeshdInvite writes the label + expiresAt into the encrypted payload, and
+  // parseMeshdPreAuthKeyRecord must read them back — the round-trip that surfaces as
+  // the invite row's label and "Expires …" text (guards against silent "No expiry").
+  it("round-trips an invite's label and expiry through create and parse", async () => {
+    const { session, requests } = createFakeSession({ delegate: true, recordIds: ["invite-rec"] });
+    const result = await createMeshdInvite(session, network, {
+      label: "laptop-01",
+      expiresAt: "2026-06-25T00:00:00Z",
+      reusable: false
+    });
+    expect(result.label).toBe("laptop-01");
+
+    const written = await blobJson(requests[0].dataStream);
+    const parsed = parseMeshdPreAuthKeyRecord(recordEntry(result.tokenId, "network/preAuthKey", written));
+    expect(parsed?.label).toBe("laptop-01");
+    expect(parsed?.expiresAt).toBe("2026-06-25T00:00:00Z");
+  });
+
+  it("removes a single-use invite once it is consumed", async () => {
+    const { session, requests } = createFakeSession({
+      recordIds: ["member-rec", "node-rec"],
+      queryEntries: [inviteEntry({ reusable: false })]
+    });
+    const request = await signedInviteNodeRequest({
+      networkId: network.recordId, secret, preAuthKeyId: "invite-rec", ownerDID: "did:example:owner", roleKeys
+    });
+
+    await approveMeshdNodeRequest(session, network, request);
+
+    // The spent invite is deleted, not left as a dead "1 used" entry...
+    const inviteDeletes = requests.filter(
+      (r) => r.messageType === DwnInterface.RecordsDelete && r.messageParams?.recordId === "invite-rec"
+    );
+    expect(inviteDeletes).toHaveLength(1);
+    // ...and never rewritten with a usedBy entry.
+    const inviteRewrites = requests.filter(
+      (r) => r.messageType === DwnInterface.RecordsWrite && r.messageParams?.protocolPath === "network/preAuthKey"
+    );
+    expect(inviteRewrites).toHaveLength(0);
+  });
+
+  it("keeps a reusable invite and records the new consumer", async () => {
+    const { session, requests } = createFakeSession({
+      recordIds: ["member-rec", "node-rec"],
+      queryEntries: [inviteEntry({ reusable: true })]
+    });
+    const request = await signedInviteNodeRequest({
+      networkId: network.recordId, secret, preAuthKeyId: "invite-rec", ownerDID: "did:example:owner", roleKeys
+    });
+
+    await approveMeshdNodeRequest(session, network, request);
+
+    // A reusable invite survives...
+    const inviteDeletes = requests.filter(
+      (r) => r.messageType === DwnInterface.RecordsDelete && r.messageParams?.recordId === "invite-rec"
+    );
+    expect(inviteDeletes).toHaveLength(0);
+    // ...and records the consumer in usedBy.
+    const rewrite = requests.find(
+      (r) => r.messageType === DwnInterface.RecordsWrite && r.messageParams?.protocolPath === "network/preAuthKey"
+    );
+    expect(rewrite).toBeDefined();
+    const payload = await blobJson(rewrite!.dataStream);
+    expect(payload.reusable).toBe(true);
+    expect(payload.usedBy).toEqual([request.nodeDID]);
+  });
+
+  it("carries the invite label to the joined node when the request has none", async () => {
+    const { session, requests } = createFakeSession({
+      recordIds: ["member-rec", "node-rec"],
+      queryEntries: [inviteEntry({ reusable: false, label: "laptop-01" })]
+    });
+    const request = await signedInviteNodeRequest({
+      networkId: network.recordId, secret, preAuthKeyId: "invite-rec", ownerDID: "did:example:owner", roleKeys
+    });
+    expect(request.label).toBeUndefined();
+
+    await approveMeshdNodeRequest(session, network, request);
+
+    const nodeWrite = requests.find(
+      (r) => r.messageType === DwnInterface.RecordsWrite && r.messageParams?.protocolPath === "network/member/node"
+    );
+    expect(nodeWrite).toBeDefined();
+    const payload = await blobJson(nodeWrite!.dataStream);
+    expect(payload.label).toBe("laptop-01");
   });
 });
