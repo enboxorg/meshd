@@ -15,7 +15,7 @@ Assumptions:
   a network for that owner.
 - The released CLI is installed on both machines.
 - The standalone meshd Admin dapp is deployed at
-  `https://meshd-admin.pages.dev`.
+  `https://admin.meshd.sh`.
 
 ## 0. Install or update meshd
 
@@ -55,7 +55,7 @@ meshd admin --print
 The dashboard URL should use:
 
 ```text
-https://meshd-admin.pages.dev
+https://admin.meshd.sh
 ```
 
 If you are opening the dashboard from a machine without the owner profile,

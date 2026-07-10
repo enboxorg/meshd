@@ -257,7 +257,7 @@ func TestPrintDoctorCheck(t *testing.T) {
 }
 
 func TestBuildAdminURL(t *testing.T) {
-	rawURL := buildAdminURL("https://meshd-admin.pages.dev/", adminContext{
+	rawURL := buildAdminURL("https://admin.meshd.sh/", adminContext{
 		OwnerDID:        "did:dht:wallet",
 		NetworkRecordID: "network-1",
 	})
@@ -265,7 +265,7 @@ func TestBuildAdminURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if got := parsed.Scheme + "://" + parsed.Host + parsed.Path; got != "https://meshd-admin.pages.dev" {
+	if got := parsed.Scheme + "://" + parsed.Host + parsed.Path; got != "https://admin.meshd.sh" {
 		t.Fatalf("admin URL base = %q", got)
 	}
 	if got := parsed.Query().Get("owner"); got != "did:dht:wallet" {
@@ -274,7 +274,7 @@ func TestBuildAdminURL(t *testing.T) {
 	if got := parsed.Query().Get("network"); got != "network-1" {
 		t.Fatalf("network query = %q", got)
 	}
-	if got := buildAdminURL("", adminContext{}); got != "https://meshd-admin.pages.dev" {
+	if got := buildAdminURL("", adminContext{}); got != "https://admin.meshd.sh" {
 		t.Fatalf("default admin URL = %q", got)
 	}
 	if got := adminDashboardCommand(adminContext{OwnerDID: "did:example:own'er", NetworkRecordID: "network-1"}, true); got != "meshd admin --owner 'did:example:own'\\''er' --network 'network-1' --print" {

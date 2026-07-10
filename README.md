@@ -108,7 +108,7 @@ endpoint by default. Use `--endpoint` or `DWN_ENDPOINT` to override it.
 The dashboard uses the same beta endpoint when creating a network for an owner
 without a published DWN endpoint.
 
-The default dashboard is deployed at `https://meshd-admin.pages.dev`.
+The default dashboard is deployed at `https://admin.meshd.sh`.
 
 For a full Mac/Linux validation pass, see
 [docs/smoke-test-mac-linux.md](docs/smoke-test-mac-linux.md).

@@ -15,7 +15,7 @@ pending, expired locally, or had stale approval metadata.
 Production dashboard:
 
 ```text
-https://meshd-admin.pages.dev
+https://admin.meshd.sh
 ```
 
 ## Local development

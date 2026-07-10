@@ -53,7 +53,7 @@ jobs:
       deployments: write
     environment:
       name: meshd-admin
-      url: https://meshd-admin.pages.dev
+      url: https://admin.meshd.sh
     steps:
       - name: Checkout
         uses: actions/checkout@v4
