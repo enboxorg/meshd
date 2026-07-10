@@ -176,6 +176,11 @@ func SaveNetworkState(stateDir string, ns *NetworkState) error {
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
+	// When `meshd up` re-execs under sudo for the TUN device, the root daemon
+	// writes this file. Align its ownership to the profile directory's owner
+	// before the atomic rename, so the non-root CLI can still read it while the
+	// daemon keeps running. No-op for normal user runs and on non-POSIX platforms.
+	alignOwnerToDir(stateDir, tmp)
 	if err := os.Rename(tmp, target); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("rename: %w", err)
