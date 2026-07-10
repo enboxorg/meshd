@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/enboxorg/meshd/compare/v0.17.1...v0.18.0) (2026-07-10)
+
+
+### Features
+
+* **admin:** unify invite→node expiry and tighten the dashboard flow ([#206](https://github.com/enboxorg/meshd/issues/206)) ([63a644a](https://github.com/enboxorg/meshd/commit/63a644a7e398c7f26091c986e47fb2491e2423e9)), closes [#204](https://github.com/enboxorg/meshd/issues/204)
+
 ## [0.17.1](https://github.com/enboxorg/meshd/compare/v0.17.0...v0.17.1) (2026-07-10)
 
 
