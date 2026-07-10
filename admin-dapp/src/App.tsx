@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckIcon,
   ClipboardIcon,
+  ClockIcon,
   KeyRoundIcon,
   Loader2Icon,
   LogOutIcon,
   NetworkIcon,
+  PencilIcon,
   PlusIcon,
   RefreshCwIcon,
-  SaveIcon,
   ServerIcon,
   ShieldCheckIcon,
   TerminalIcon,
@@ -48,6 +49,7 @@ import {
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 type ExpiryValue = "1h" | "24h" | "7d" | "30d" | "never";
+type ExpiryTone = "none" | "active" | "soon" | "expired";
 
 const EXPIRY_OPTIONS: Array<{ value: ExpiryValue; label: string; durationMs?: number }> = [
   { value: "1h", label: "1 hour", durationMs: 60 * 60 * 1000 },
@@ -64,26 +66,24 @@ function truncateDid(did: string, head = 18, tail = 10) {
   return `${did.slice(0, head)}...${did.slice(-tail)}`;
 }
 
-function formatTime(value?: string) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return value;
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date);
+function formatDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${Math.max(1, minutes)} min`;
+  const hours = Math.round(ms / 3_600_000);
+  if (hours < 48) return `${hours} hr`;
+  return `${Math.round(ms / 86_400_000)} days`;
 }
 
-function expiryState(value?: string) {
-  if (!value) return "none";
+// A single human-readable expiry descriptor drives both the label text and the
+// colour tone, so the node card, invite composer, and invite rows all speak the
+// same language ("Expires in 6 days" / "Expired 2 days ago" / "No expiry").
+function describeExpiry(value?: string): { label: string; tone: ExpiryTone } {
+  if (!value) return { label: "No expiry", tone: "none" };
   const time = new Date(value).getTime();
-  if (!Number.isFinite(time)) return "unknown";
-  const remaining = time - Date.now();
-  if (remaining <= 0) return "expired";
-  if (remaining <= 24 * 60 * 60 * 1000) return "soon";
-  return "active";
+  if (!Number.isFinite(time)) return { label: value, tone: "none" };
+  const diff = time - Date.now();
+  if (diff <= 0) return { label: `Expired ${formatDuration(-diff)} ago`, tone: "expired" };
+  return { label: `Expires in ${formatDuration(diff)}`, tone: diff <= 24 * 60 * 60 * 1000 ? "soon" : "active" };
 }
 
 async function copyToClipboard(value: string) {
@@ -199,19 +199,46 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
   const [error, setError] = useState<string>();
   const [inviteResults, setInviteResults] = useState<CreateMeshdInviteResult[]>([]);
   const [inviteLabel, setInviteLabel] = useState("");
-  const [inviteExpiry, setInviteExpiry] = useState<ExpiryValue>("24h");
-  const [approvalExpiry, setApprovalExpiry] = useState<ExpiryValue>("never");
+  const [inviteExpiry, setInviteExpiry] = useState<ExpiryValue>("7d");
   const [inviteReusable, setInviteReusable] = useState(false);
   const [networkName, setNetworkName] = useState("");
   const [networkCIDR, setNetworkCIDR] = useState("10.200.0.0/16");
   const [busyAction, setBusyAction] = useState<string>();
   const [topologyRefreshing, setTopologyRefreshing] = useState(false);
   const topologyRefreshInFlight = useRef(false);
+  // Records the operator just approved/rejected/removed are dropped from the
+  // topology optimistically, then kept suppressed so a topology refetch that
+  // still reflects the pre-delete DWN state can't resurrect them until the
+  // delete has propagated (approvals used to linger until a later refresh).
+  const suppressed = useRef({
+    requests: new Set<string>(),
+    invites: new Set<string>(),
+    nodes: new Set<string>()
+  });
 
   const selectedNetwork = useMemo(() => {
     if (networks.length === 0) return undefined;
     return networks.find((network) => network.recordId === selectedNetworkId) ?? networks[0];
   }, [networks, selectedNetworkId]);
+
+  const applySuppression = useCallback((next: MeshdNetworkTopology): MeshdNetworkTopology => {
+    const { requests, invites, nodes } = suppressed.current;
+    if (requests.size === 0 && invites.size === 0 && nodes.size === 0) return next;
+    return {
+      ...next,
+      pendingRequests: next.pendingRequests.filter((request) => !requests.has(request.recordId)),
+      preAuthKeys: next.preAuthKeys.filter((key) => !invites.has(key.recordId)),
+      members: next.members.map((member) => ({
+        ...member,
+        nodes: member.nodes.filter((node) => !nodes.has(node.recordId))
+      })),
+      legacyNodes: next.legacyNodes.filter((node) => !nodes.has(node.recordId))
+    };
+  }, []);
+
+  const patchTopology = useCallback((update: (current: MeshdNetworkTopology) => MeshdNetworkTopology) => {
+    setTopology((current) => (current ? update(current) : current));
+  }, []);
 
   const refreshNetworks = useCallback(async () => {
     if (!session || !protocolsInitialized || !ownerMatchesDashboardContext(context, did)) return;
@@ -240,7 +267,7 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     }
     try {
       const nextTopology = await fetchMeshdNetworkTopology(session, selectedNetwork);
-      setTopology(nextTopology);
+      setTopology(applySuppression(nextTopology));
       setError(undefined);
     } catch (err) {
       if (!options?.silent) {
@@ -250,7 +277,7 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
       topologyRefreshInFlight.current = false;
       setTopologyRefreshing(false);
     }
-  }, [context, did, protocolsInitialized, selectedNetwork, session]);
+  }, [applySuppression, context, did, protocolsInitialized, selectedNetwork, session]);
 
   useEffect(() => {
     void refreshNetworks();
@@ -290,10 +317,12 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     window.history.replaceState(null, "", `?${params.toString()}`);
   }, [did, selectedNetwork]);
 
-  // The freshly-created invite list is scoped to the selected network; reset it
-  // when the operator switches networks so stale URLs don't carry across.
+  // Freshly-created invite URLs and optimistic suppressions are scoped to the
+  // selected network; reset them when the operator switches networks so nothing
+  // carries across.
   useEffect(() => {
     setInviteResults([]);
+    suppressed.current = { requests: new Set(), invites: new Set(), nodes: new Set() };
   }, [selectedNetwork?.recordId]);
 
   async function runAction(label: string, action: () => Promise<void>) {
@@ -339,11 +368,26 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
   async function handleApprove(request: MeshdNodeRequestSummary) {
     if (!session || !selectedNetwork) return;
     await runAction(`approve-${request.recordId}`, async () => {
-      const result = await approveMeshdNodeRequest(session, selectedNetwork, request, {
-        expiresAt: expiryTimestamp(approvalExpiry)
-      });
+      const result = await approveMeshdNodeRequest(session, selectedNetwork, request);
+      // Drop the approved request now, and drop the single-use invite it consumed,
+      // so both disappear immediately instead of lingering until the delete
+      // propagates back through a refetch.
+      suppressed.current.requests.add(request.recordId);
+      const consumedInvite = request.preAuthKeyId
+        ? topology?.preAuthKeys.find((key) => key.recordId === request.preAuthKeyId)
+        : undefined;
+      if (consumedInvite && !consumedInvite.reusable) {
+        suppressed.current.invites.add(consumedInvite.recordId);
+      }
+      patchTopology((current) => ({
+        ...current,
+        pendingRequests: current.pendingRequests.filter((item) => item.recordId !== request.recordId),
+        preAuthKeys: consumedInvite && !consumedInvite.reusable
+          ? current.preAuthKeys.filter((key) => key.recordId !== consumedInvite.recordId)
+          : current.preAuthKeys
+      }));
       toast.success(`Node approved at ${result.meshIP}`);
-      await refreshTopology();
+      await refreshTopology({ silent: true });
     });
   }
 
@@ -351,8 +395,13 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     if (!session) return;
     await runAction(`reject-${request.recordId}`, async () => {
       await rejectMeshdNodeRequest(session, request);
+      suppressed.current.requests.add(request.recordId);
+      patchTopology((current) => ({
+        ...current,
+        pendingRequests: current.pendingRequests.filter((item) => item.recordId !== request.recordId)
+      }));
       toast.success("Request rejected");
-      await refreshTopology();
+      await refreshTopology({ silent: true });
     });
   }
 
@@ -378,8 +427,13 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     if (!session) return;
     await runAction(`revoke-${key.recordId}`, async () => {
       await revokeMeshdInvite(session, key);
+      suppressed.current.invites.add(key.recordId);
+      patchTopology((current) => ({
+        ...current,
+        preAuthKeys: current.preAuthKeys.filter((item) => item.recordId !== key.recordId)
+      }));
       toast.success("Invite revoked");
-      await refreshTopology();
+      await refreshTopology({ silent: true });
     });
   }
 
@@ -398,9 +452,22 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     if (!session || !selectedNetwork) return;
     await runAction(`remove-${node.recordId}`, async () => {
       await removeMeshdNode(session, selectedNetwork, node);
+      suppressed.current.nodes.add(node.recordId);
+      patchTopology((current) => ({
+        ...current,
+        members: current.members.map((member) => ({
+          ...member,
+          nodes: member.nodes.filter((item) => item.recordId !== node.recordId)
+        })),
+        legacyNodes: current.legacyNodes.filter((item) => item.recordId !== node.recordId)
+      }));
       toast.success("Node removed");
-      await refreshTopology();
+      await refreshTopology({ silent: true });
     });
+  }
+
+  function dismissInviteResult(tokenId: string) {
+    setInviteResults((prev) => prev.filter((result) => result.tokenId !== tokenId));
   }
 
   if (!ownerMatchesDashboardContext(context, did)) {
@@ -437,6 +504,7 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     ...(topology?.members.flatMap((member) => member.nodes.map((node) => ({ node, member }))) ?? []),
     ...(topology?.legacyNodes.map((node) => ({ node, member: undefined })) ?? [])
   ];
+  const pendingRequests = topology?.pendingRequests ?? [];
 
   return (
     <div className="dashboard-grid">
@@ -463,11 +531,14 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
               </span>
             </button>
           ))}
+          {networks.length === 0 && loadState === "ready" ? (
+            <EmptyRow icon={<NetworkIcon size={16} />} text="No networks yet" />
+          ) : null}
         </div>
 
         <div className="create-box">
           <div className="section-heading">
-            <span>Create</span>
+            <span>New Network</span>
           </div>
           <label>
             Name
@@ -492,13 +563,13 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
       <section className="main-panel">
         {error ? <div className="error-banner">{error}</div> : null}
         {!selectedNetwork ? (
-          <StatePanel title="No networks" detail="Create a mesh network to start approving nodes." />
+          <StatePanel title="No networks" detail="Create a mesh network in the sidebar to start inviting devices." />
         ) : (
           <>
             <div className="network-header">
               <div>
                 <h1>{selectedNetwork.name}</h1>
-                <p>{selectedNetwork.meshCIDR}</p>
+                <p>{selectedNetwork.meshCIDR} · {allNodes.length} node{allNodes.length === 1 ? "" : "s"}</p>
               </div>
               <div className="header-buttons">
                 <button className="secondary-button" type="button" onClick={() => void handleCopyOwnerSetupCommand()}>
@@ -512,17 +583,37 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
               </div>
             </div>
 
+            {pendingRequests.length > 0 ? (
+              <section className="content-section pending-section">
+                <div className="section-heading">
+                  <span>Waiting for approval</span>
+                  <small className="count-badge">{pendingRequests.length}</small>
+                </div>
+                <div className="stack">
+                  {pendingRequests.map((request) => (
+                    <PendingRequestRow
+                      key={request.recordId}
+                      request={request}
+                      busyAction={busyAction}
+                      onApprove={handleApprove}
+                      onReject={handleReject}
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
             <section className="invite-composer">
               <div className="section-heading">
-                <span>New Invite</span>
+                <span>Invite a device</span>
               </div>
               <div className="invite-fields">
                 <label>
                   Label
-                  <input value={inviteLabel} onChange={(event) => setInviteLabel(event.target.value)} placeholder={selectedNetwork.name} />
+                  <input value={inviteLabel} onChange={(event) => setInviteLabel(event.target.value)} placeholder="e.g. laptop" />
                 </label>
                 <label>
-                  Expires
+                  Access expires
                   <select value={inviteExpiry} onChange={(event) => setInviteExpiry(event.target.value as ExpiryValue)}>
                     {EXPIRY_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>{option.label}</option>
@@ -547,47 +638,18 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
                   Create Invite
                 </button>
               </div>
+              <p className="field-hint">
+                The device stays valid until the invite expires — you set the expiry once, here, and it carries to the node when you approve it.
+              </p>
             </section>
 
-            {inviteResults.map((result) => (
-              <div className="invite-result" key={result.tokenId}>
-                <div>
-                  <strong>{result.label || "Invite URL"}</strong>
-                  <code>{result.url}</code>
-                </div>
-                <button className="icon-button" type="button" aria-label="Copy invite URL" title="Copy" onClick={() => void copyToClipboard(result.url)}>
-                  <ClipboardIcon size={16} />
-                </button>
-              </div>
-            ))}
-
-            <section className="content-section">
-              <div className="section-heading">
-                <span>Pending</span>
-                <small>{topology?.pendingRequests.length ?? 0}</small>
-              </div>
-              <div className="inline-control">
-                <label>
-                  Approve for
-                  <select value={approvalExpiry} onChange={(event) => setApprovalExpiry(event.target.value as ExpiryValue)}>
-                    {EXPIRY_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
+            {inviteResults.length > 0 ? (
               <div className="stack">
-                {topology?.pendingRequests.length ? topology.pendingRequests.map((request) => (
-                  <PendingRequestRow
-                    key={request.recordId}
-                    request={request}
-                    busyAction={busyAction}
-                    onApprove={handleApprove}
-                    onReject={handleReject}
-                  />
-                )) : <EmptyRow icon={<ShieldCheckIcon size={18} />} text="No pending approvals" />}
+                {inviteResults.map((result) => (
+                  <InviteResultCard key={result.tokenId} result={result} onDismiss={dismissInviteResult} />
+                ))}
               </div>
-            </section>
+            ) : null}
 
             <section className="content-section">
               <div className="section-heading">
@@ -605,13 +667,13 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
                     onUpdateExpiry={handleUpdateNodeExpiry}
                     onUpdateLabel={handleUpdateNodeLabel}
                   />
-                )) : <EmptyRow icon={<ServerIcon size={18} />} text="No nodes" />}
+                )) : <EmptyRow icon={<ServerIcon size={18} />} text="No nodes yet — invite a device to get started." />}
               </div>
             </section>
 
             <section className="content-section">
               <div className="section-heading">
-                <span>Invites</span>
+                <span>Active invites</span>
                 <small>{topology?.preAuthKeys.length ?? 0}</small>
               </div>
               <div className="stack">
@@ -646,19 +708,21 @@ function PendingRequestRow({
 }) {
   const approving = busyAction === `approve-${request.recordId}`;
   const rejecting = busyAction === `reject-${request.recordId}`;
+  const isOwnerRequest = request.requestKind === "owner-node" || request.protocolPath === "nodeRequest";
   return (
     <article className="data-row">
       <div className="row-main">
         <span className="row-icon"><ServerIcon size={17} /></span>
         <span>
           <strong>{request.label || truncateDid(request.nodeDID)}</strong>
-          <small>{request.requestKind === "owner-node" || request.protocolPath === "nodeRequest" ? "Owner request" : "Invite request"}</small>
+          <small>{isOwnerRequest ? "Owner request" : "Joined via invite"}</small>
         </span>
       </div>
       <code title={request.nodeDID}>{truncateDid(request.nodeDID)}</code>
       <div className="row-actions">
-        <button className="icon-button success" type="button" aria-label="Approve" title="Approve" disabled={approving || rejecting} onClick={() => void onApprove(request)}>
-          {approving ? <Loader2Icon className="spin" size={16} /> : <CheckIcon size={16} />}
+        <button className="primary-button small" type="button" disabled={approving || rejecting} onClick={() => void onApprove(request)}>
+          {approving ? <Loader2Icon className="spin" size={15} /> : <CheckIcon size={15} />}
+          Approve
         </button>
         <button className="icon-button danger" type="button" aria-label="Reject" title="Reject" disabled={approving || rejecting} onClick={() => void onReject(request)}>
           {rejecting ? <Loader2Icon className="spin" size={16} /> : <XIcon size={16} />}
@@ -686,66 +750,120 @@ function NodeCard({
   const removing = busyAction === `remove-${node.recordId}`;
   const updatingLabel = busyAction === `label-${node.recordId}`;
   const updatingExpiry = busyAction === `expiry-${node.recordId}`;
+  const [editing, setEditing] = useState(false);
   const [labelValue, setLabelValue] = useState(node.label ?? "");
-  const [expiryChoice, setExpiryChoice] = useState<ExpiryValue>("30d");
-  const state = expiryState(node.expiresAt);
-  const expiryLabel = node.expiresAt
-    ? state === "expired"
-      ? `Expired ${formatTime(node.expiresAt)}`
-      : `Expires ${formatTime(node.expiresAt)}`
-    : "No expiry";
+  const [expiryChoice, setExpiryChoice] = useState<ExpiryValue | "">("");
+  const expiry = describeExpiry(node.expiresAt);
+
   useEffect(() => {
     setLabelValue(node.label ?? "");
   }, [node.label]);
+
+  async function applyLabel() {
+    await onUpdateLabel(node, labelValue);
+  }
+
+  async function applyExpiry() {
+    if (!expiryChoice) return;
+    await onUpdateExpiry(node, expiryChoice);
+    setExpiryChoice("");
+  }
+
   return (
-    <article className={`node-card ${state === "expired" ? "expired" : state === "soon" ? "expiring" : ""}`}>
+    <article className={`node-card ${expiry.tone === "expired" ? "expired" : expiry.tone === "soon" ? "expiring" : ""}`}>
       <div className="node-card-header">
         <span className="row-icon"><ServerIcon size={17} /></span>
         <strong>{node.label || node.meshIP || truncateDid(node.did, 12, 6)}</strong>
-        <button className="icon-button danger small" type="button" aria-label="Remove node" title="Remove" disabled={removing} onClick={() => void onRemove(node)}>
-          {removing ? <Loader2Icon className="spin" size={15} /> : <Trash2Icon size={15} />}
-        </button>
+        <span className={`expiry-pill ${expiry.tone}`} title={node.expiresAt ? formatFullTime(node.expiresAt) : undefined}>
+          <ClockIcon size={13} />
+          {expiry.label}
+        </span>
       </div>
       <dl>
         <div><dt>Mesh IP</dt><dd>{node.meshIP || "unknown"}</dd></div>
         <div><dt>Node</dt><dd title={node.did}>{truncateDid(node.did)}</dd></div>
         {owner ? <div><dt>Owner</dt><dd title={owner}>{truncateDid(owner)}</dd></div> : null}
-        <div><dt>Expiry</dt><dd>{expiryLabel}</dd></div>
       </dl>
-      <div className="label-editor">
-        <label>
-          Label
-          <input value={labelValue} onChange={(event) => setLabelValue(event.target.value)} placeholder={node.meshIP || "Node label"} />
-        </label>
-        <button
-          className="icon-button"
-          type="button"
-          aria-label="Apply node label"
-          title="Apply label"
-          disabled={updatingLabel || removing}
-          onClick={() => void onUpdateLabel(node, labelValue)}
-        >
-          {updatingLabel ? <Loader2Icon className="spin" size={15} /> : <SaveIcon size={15} />}
+
+      {editing ? (
+        <div className="node-card-edit">
+          <div className="label-editor">
+            <label>
+              Label
+              <input value={labelValue} onChange={(event) => setLabelValue(event.target.value)} placeholder={node.meshIP || "Node label"} />
+            </label>
+            <button
+              className="icon-button success"
+              type="button"
+              aria-label="Save node label"
+              title="Save label"
+              disabled={updatingLabel || removing}
+              onClick={() => void applyLabel()}
+            >
+              {updatingLabel ? <Loader2Icon className="spin" size={15} /> : <CheckIcon size={15} />}
+            </button>
+          </div>
+          <div className="expiry-editor">
+            <select value={expiryChoice} onChange={(event) => setExpiryChoice(event.target.value as ExpiryValue)}>
+              <option value="" disabled>Change expiry…</option>
+              {EXPIRY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <button
+              className="icon-button success"
+              type="button"
+              aria-label="Apply node expiry"
+              title="Apply expiry"
+              disabled={!expiryChoice || updatingExpiry || removing}
+              onClick={() => void applyExpiry()}
+            >
+              {updatingExpiry ? <Loader2Icon className="spin" size={15} /> : <CheckIcon size={15} />}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="node-card-actions">
+        <button className="text-button" type="button" onClick={() => setEditing((value) => !value)}>
+          <PencilIcon size={14} />
+          {editing ? "Done" : "Edit"}
         </button>
-      </div>
-      <div className="expiry-editor">
-        <select value={expiryChoice} onChange={(event) => setExpiryChoice(event.target.value as ExpiryValue)}>
-          {EXPIRY_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-        <button
-          className="icon-button success"
-          type="button"
-          aria-label="Apply node expiry"
-          title="Apply expiry"
-          disabled={updatingExpiry || removing}
-          onClick={() => void onUpdateExpiry(node, expiryChoice)}
-        >
-          {updatingExpiry ? <Loader2Icon className="spin" size={15} /> : <CheckIcon size={15} />}
+        <button className="text-button danger" type="button" disabled={removing} onClick={() => void onRemove(node)}>
+          {removing ? <Loader2Icon className="spin" size={14} /> : <Trash2Icon size={14} />}
+          Remove
         </button>
       </div>
     </article>
+  );
+}
+
+function InviteResultCard({
+  result,
+  onDismiss
+}: {
+  result: CreateMeshdInviteResult;
+  onDismiss: (tokenId: string) => void;
+}) {
+  const expiry = describeExpiry(result.expiresAt);
+  return (
+    <div className="invite-result">
+      <div className="invite-result-body">
+        <div className="invite-result-head">
+          <strong>{result.label || "New invite"}</strong>
+          <span className={`expiry-pill ${expiry.tone}`}><ClockIcon size={13} />{expiry.label}</span>
+        </div>
+        <code>{result.url}</code>
+      </div>
+      <div className="row-actions">
+        <button className="icon-button" type="button" aria-label="Copy invite URL" title="Copy" onClick={() => void copyToClipboard(result.url)}>
+          <ClipboardIcon size={16} />
+        </button>
+        <button className="icon-button" type="button" aria-label="Dismiss" title="Dismiss" onClick={() => onDismiss(result.tokenId)}>
+          <XIcon size={16} />
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -761,16 +879,20 @@ function InviteRow({
   onRevoke: (invite: MeshdPreAuthKeySummary) => Promise<void>;
 }) {
   const revoking = busyAction === `revoke-${invite.recordId}`;
+  const expiry = describeExpiry(invite.expiresAt);
   return (
     <article className="data-row">
       <div className="row-main">
         <span className="row-icon"><UserPlusIcon size={17} /></span>
         <span>
           <strong>{invite.label || truncateDid(invite.recordId, 12, 6)}</strong>
-          <small>{invite.expiresAt ? `Expires ${formatTime(invite.expiresAt)}` : "No expiry"}</small>
+          <small>
+            {expiry.label}
+            {invite.reusable ? " · reusable" : ""}
+            {invite.usedBy.length ? ` · ${invite.usedBy.length} used` : ""}
+          </small>
         </span>
       </div>
-      <code>{invite.usedBy.length} used</code>
       <div className="row-actions">
         <button className="icon-button" type="button" aria-label="Copy invite" title="Copy" onClick={() => void onCopy(invite)}>
           <ClipboardIcon size={16} />
@@ -800,4 +922,13 @@ function EmptyRow({ icon, text }: { icon: React.ReactNode; text: string }) {
       <span>{text}</span>
     </div>
   );
+}
+
+function formatFullTime(value: string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(date);
 }

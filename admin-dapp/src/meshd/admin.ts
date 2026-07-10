@@ -1200,9 +1200,14 @@ export async function approveMeshdNodeRequest(
   }
   const member = await ensureMemberRecord(session, network, requestOwnerDID, memberRolePublicKey, effectiveLabel);
   const meshIP = await allocateMeshIp(network.meshCIDR, request.nodeDID);
+  // One expiry model: the invite defines the access window and the joined node
+  // inherits it, so an operator sets the expiry once (when creating the invite)
+  // and never re-picks it at approval time. An explicit options.expiresAt still
+  // overrides for tooling that wants to; the fallback covers owner-scoped joins
+  // that carry no invite (they may name their own expiry on the request).
   const expiresAt = Object.prototype.hasOwnProperty.call(options, "expiresAt")
     ? options.expiresAt?.trim()
-    : request.expiresAt;
+    : preAuthKey?.expiresAt ?? request.expiresAt;
 
   // Sealed-model key delivery: the node record below is a role record with a
   // recipient, so the agent mints the sealed `$encryption/audience` key during the
