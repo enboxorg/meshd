@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -20,12 +22,15 @@ import (
 	"time"
 
 	"github.com/enboxorg/meshd/internal/control"
+	"github.com/enboxorg/meshd/internal/daemon"
 	"github.com/enboxorg/meshd/internal/did"
 	"github.com/enboxorg/meshd/internal/dwn"
+	"github.com/enboxorg/meshd/internal/engine"
 	"github.com/enboxorg/meshd/internal/invite"
 	"github.com/enboxorg/meshd/internal/mesh"
 	"github.com/enboxorg/meshd/internal/profile"
 	"github.com/enboxorg/meshd/internal/state"
+	"github.com/enboxorg/meshd/internal/vaultkey"
 	"github.com/enboxorg/meshd/internal/walletconnect"
 	"github.com/enboxorg/meshd/protocols"
 )
@@ -687,6 +692,7 @@ func TestParseUpFlagsForeground(t *testing.T) {
 }
 
 func TestShouldReexecWithSudoForTun(t *testing.T) {
+	t.Setenv(trayConnectEnv, "")
 	if !shouldReexecWithSudoForTun(upFlags{}, 501, "darwin", true) {
 		t.Fatal("expected interactive non-root darwin up to reexec with sudo")
 	}
@@ -704,6 +710,31 @@ func TestShouldReexecWithSudoForTun(t *testing.T) {
 	}
 	if shouldReexecWithSudoForTun(upFlags{}, 1000, "freebsd", true) {
 		t.Fatal("did not expect unsupported OS to reexec with sudo")
+	}
+	t.Setenv(trayConnectEnv, "1")
+	if !shouldReexecWithSudoForTun(upFlags{}, 501, "darwin", false) {
+		t.Fatal("expected non-interactive tray connect on darwin to request GUI elevation")
+	}
+	if shouldReexecWithSudoForTun(upFlags{}, 1000, "linux", false) {
+		t.Fatal("did not expect the macOS tray marker to elevate on linux")
+	}
+}
+
+func TestMacOSTrayElevationIsDisabled(t *testing.T) {
+	if !strings.Contains(errMacOSTrayElevationUnsupported.Error(), "run 'meshd up' in a terminal") {
+		t.Fatalf("tray elevation error is not actionable: %v", errMacOSTrayElevationUnsupported)
+	}
+}
+
+func TestElevatedProcessCannotOpenDaemonLog(t *testing.T) {
+	if !shouldRejectElevatedLogOpen(0, "", "501") {
+		t.Fatal("direct sudo process was allowed to open a user-controlled log path")
+	}
+	if !shouldRejectElevatedLogOpen(0, "1", "") {
+		t.Fatal("sudo child was allowed to open a user-controlled log path")
+	}
+	if shouldRejectElevatedLogOpen(501, "1", "501") {
+		t.Fatal("unprivileged process was incorrectly rejected")
 	}
 }
 
@@ -723,9 +754,9 @@ func TestSudoEnvironmentAssignments(t *testing.T) {
 	assignments := sudoEnvironmentAssignments()
 	for _, want := range []string{
 		sudoChildEnv + "=1",
+		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
 		"HOME=" + home,
 		"ENBOX_HOME=" + enboxHome,
-		"PATH=/tmp/test-path",
 		"DWN_ENDPOINT=https://dwn.example",
 		"ENBOX_PROFILE=work",
 		"MESHD_STATE_DIR=" + filepath.Join(home, "state"),
@@ -737,6 +768,9 @@ func TestSudoEnvironmentAssignments(t *testing.T) {
 		}
 	}
 	for _, got := range assignments {
+		if got == "PATH=/tmp/test-path" {
+			t.Fatal("sudoEnvironmentAssignments propagated the caller's PATH")
+		}
 		if strings.HasPrefix(got, "MESHD_VAULT_PASSWORD=") {
 			t.Fatal("sudoEnvironmentAssignments must not expose MESHD_VAULT_PASSWORD")
 		}
@@ -752,56 +786,6 @@ func TestSudoEnvironmentAssignmentsDefaultsEnboxHome(t *testing.T) {
 	want := "ENBOX_HOME=" + filepath.Join(home, ".enbox")
 	if !hasString(assignments, want) {
 		t.Fatalf("sudoEnvironmentAssignments() missing %q in %v", want, assignments)
-	}
-}
-
-func TestSudoOriginalIDs(t *testing.T) {
-	t.Setenv("SUDO_UID", "501")
-	t.Setenv("SUDO_GID", "20")
-
-	uid, gid, ok := sudoOriginalIDs()
-	if !ok || uid != 501 || gid != 20 {
-		t.Fatalf("sudoOriginalIDs() = %d, %d, %v; want 501, 20, true", uid, gid, ok)
-	}
-
-	t.Setenv("SUDO_UID", "0")
-	if _, _, ok := sudoOriginalIDs(); ok {
-		t.Fatal("sudoOriginalIDs() should reject root SUDO_UID")
-	}
-}
-
-func TestSudoOwnershipRoots(t *testing.T) {
-	home := t.TempDir()
-	stateDir := filepath.Join(home, "state")
-	enboxHome := filepath.Join(home, ".enbox")
-	t.Setenv("HOME", home)
-	t.Setenv("MESHD_STATE_DIR", stateDir)
-	t.Setenv("ENBOX_HOME", enboxHome)
-
-	roots := sudoOwnershipRoots()
-	if len(roots) != 1 || roots[0] != stateDir {
-		t.Fatalf("sudoOwnershipRoots() = %v, want [%s]", roots, stateDir)
-	}
-
-	t.Setenv("MESHD_STATE_DIR", "")
-	roots = sudoOwnershipRoots()
-	if len(roots) != 1 || roots[0] != enboxHome {
-		t.Fatalf("sudoOwnershipRoots() = %v, want [%s]", roots, enboxHome)
-	}
-}
-
-func TestSudoOwnershipRootsRejectsOutsideHome(t *testing.T) {
-	home := t.TempDir()
-	outside := filepath.Join(t.TempDir(), "state")
-	t.Setenv("HOME", home)
-	t.Setenv("MESHD_STATE_DIR", outside)
-	t.Setenv("ENBOX_HOME", "")
-
-	if roots := sudoOwnershipRoots(); len(roots) != 0 {
-		t.Fatalf("sudoOwnershipRoots() = %v, want empty for path outside HOME", roots)
-	}
-	if isSafeSudoOwnershipRoot(home, home) {
-		t.Fatal("home itself must not be accepted as an ownership root")
 	}
 }
 
@@ -1535,14 +1519,200 @@ func resetVaultPasswordCache(t *testing.T) {
 	t.Helper()
 	previous := cachedVaultPassword
 	previousStateDir := cachedVaultPasswordStateDir
+	previousFromKeychain := cachedVaultPasswordFromKeychain
+	previousGet, previousSet, previousDelete := vaultKeyGet, vaultKeySet, vaultKeyDelete
 	cachedVaultPassword = ""
 	cachedVaultPasswordStateDir = ""
+	cachedVaultPasswordFromKeychain = false
+	vaultKeyGet = func(string) (string, error) { return "", vaultkey.ErrNotFound }
+	vaultKeySet = func(string, string) error { return nil }
+	vaultKeyDelete = func(string) error { return vaultkey.ErrNotFound }
 	t.Setenv(vaultPasswordCacheDirEnv, t.TempDir())
 	t.Setenv(vaultPasswordCacheTTLEnv, "")
+	t.Setenv(sudoChildEnv, "")
 	t.Cleanup(func() {
 		cachedVaultPassword = previous
 		cachedVaultPasswordStateDir = previousStateDir
+		cachedVaultPasswordFromKeychain = previousFromKeychain
+		vaultKeyGet, vaultKeySet, vaultKeyDelete = previousGet, previousSet, previousDelete
 	})
+}
+
+func TestVaultPasswordUnlockPrecedence(t *testing.T) {
+	resetVaultPasswordCache(t)
+	stateDir := t.TempDir()
+	rememberVaultPassword(stateDir, "cache-password", false)
+	vaultKeyGet = func(string) (string, error) { return "keychain-password", nil }
+
+	password, err := vaultPasswordForUnlock(stateDir)
+	if err != nil {
+		t.Fatalf("vaultPasswordForUnlock keychain: %v", err)
+	}
+	if password != "keychain-password" || !cachedVaultPasswordFromKeychain {
+		t.Fatalf("keychain password = %q, fromKeychain = %v", password, cachedVaultPasswordFromKeychain)
+	}
+	cachePath, err := vaultPasswordCachePath(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Fatalf("keychain lookup created persistent plaintext cache: %v", err)
+	}
+
+	t.Setenv(vaultPasswordEnv, "environment-password")
+	password, err = vaultPasswordForUnlock(stateDir)
+	if err != nil {
+		t.Fatalf("vaultPasswordForUnlock environment: %v", err)
+	}
+	if password != "environment-password" || cachedVaultPasswordFromKeychain {
+		t.Fatalf("environment password = %q, fromKeychain = %v", password, cachedVaultPasswordFromKeychain)
+	}
+}
+
+func TestVaultPasswordHandoffIsOneShot(t *testing.T) {
+	resetVaultPasswordCache(t)
+	stateDir := t.TempDir()
+	identity, err := did.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := identity.StoreEncrypted(stateDir, "keychain-password"); err != nil {
+		t.Fatal(err)
+	}
+	vaultKeyGet = func(string) (string, error) { return "keychain-password", nil }
+
+	if _, err := vaultPasswordForUnlock(stateDir); err != nil {
+		t.Fatalf("keychain unlock: %v", err)
+	}
+	if err := prepareVaultPasswordHandoff(stateDir); err != nil {
+		t.Fatalf("prepare handoff: %v", err)
+	}
+	handoffPath, err := vaultPasswordHandoffPath(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(handoffPath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("handoff stat = %v, %v", info, err)
+	}
+
+	cachedVaultPassword = ""
+	cachedVaultPasswordStateDir = ""
+	cachedVaultPasswordFromKeychain = false
+	t.Setenv(sudoChildEnv, "1")
+	password, err := vaultPasswordForUnlock(stateDir)
+	if err != nil || password != "keychain-password" {
+		t.Fatalf("privileged handoff unlock = %q, %v", password, err)
+	}
+	if _, err := os.Stat(handoffPath); !os.IsNotExist(err) {
+		t.Fatalf("consumed handoff remains on disk: %v", err)
+	}
+}
+
+func TestLoadIdentityDeletesOnlyStaleKeychainCredential(t *testing.T) {
+	resetVaultPasswordCache(t)
+	stateDir := t.TempDir()
+	identity, err := did.Generate()
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if err := identity.StoreEncrypted(stateDir, "correct-password"); err != nil {
+		t.Fatalf("StoreEncrypted: %v", err)
+	}
+
+	deleted := false
+	vaultKeyGet = func(string) (string, error) { return "stale-password", nil }
+	vaultKeyDelete = func(string) error { deleted = true; return nil }
+	if _, err := loadIdentity(stateDir); err == nil {
+		t.Fatal("loadIdentity accepted stale Keychain password")
+	}
+	if !deleted {
+		t.Fatal("stale Keychain credential was not deleted")
+	}
+
+	deleted = false
+	t.Setenv(vaultPasswordEnv, "wrong-environment-password")
+	if _, err := loadIdentity(stateDir); err == nil {
+		t.Fatal("loadIdentity accepted wrong environment password")
+	}
+	if deleted {
+		t.Fatal("wrong environment override deleted the Keychain credential")
+	}
+}
+
+func TestVaultRememberAndForget(t *testing.T) {
+	resetVaultPasswordCache(t)
+	stateDir := t.TempDir()
+	t.Setenv("MESHD_STATE_DIR", stateDir)
+	t.Setenv(vaultPasswordEnv, "test-password")
+	identity, err := did.Generate()
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if err := identity.StoreEncrypted(stateDir, "test-password"); err != nil {
+		t.Fatalf("StoreEncrypted: %v", err)
+	}
+
+	var storedDir, storedPassword, deletedDir string
+	vaultKeySet = func(dir, password string) error {
+		storedDir, storedPassword = dir, password
+		return nil
+	}
+	vaultKeyDelete = func(dir string) error {
+		deletedDir = dir
+		return nil
+	}
+	if err := cmdVaultRemember(nil, ""); err != nil {
+		t.Fatalf("cmdVaultRemember: %v", err)
+	}
+	if storedDir != stateDir || storedPassword != "test-password" {
+		t.Fatalf("stored credential = %q %q", storedDir, storedPassword)
+	}
+	if err := cmdVaultForget(nil, ""); err != nil {
+		t.Fatalf("cmdVaultForget: %v", err)
+	}
+	if deletedDir != stateDir || cachedVaultPassword != "" {
+		t.Fatalf("deletedDir = %q, cached password remains = %v", deletedDir, cachedVaultPassword != "")
+	}
+}
+
+func TestVaultForgetClearsLocalSecretsWhenKeychainDeleteFails(t *testing.T) {
+	resetVaultPasswordCache(t)
+	stateDir := t.TempDir()
+	t.Setenv("MESHD_STATE_DIR", stateDir)
+	rememberVaultPassword(stateDir, "test-password", true)
+	if err := prepareVaultPasswordHandoff(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	vaultKeyDelete = func(string) error { return errors.New("credential store unavailable") }
+
+	err := cmdVaultForget(nil, "")
+	if err == nil || !strings.Contains(err.Error(), "credential store unavailable") {
+		t.Fatalf("cmdVaultForget error = %v", err)
+	}
+	for _, pathFn := range []func(string) (string, error){vaultPasswordCachePath, vaultPasswordHandoffPath} {
+		path, pathErr := pathFn(stateDir)
+		if pathErr != nil {
+			t.Fatal(pathErr)
+		}
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("local secret %s remains after forget: %v", path, statErr)
+		}
+	}
+	if cachedVaultPassword != "" {
+		t.Fatal("in-memory vault password remains after forget")
+	}
+}
+
+func TestDaemonPeerStatuses(t *testing.T) {
+	got := daemonPeerStatuses([]engine.PeerSnapshot{{
+		Name: "laptop", MeshIP: "10.200.0.2", Online: true,
+	}})
+	want := []daemon.PeerStatus{{
+		Name: "laptop", MeshIP: "10.200.0.2", Online: true,
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("daemonPeerStatuses = %+v, want %+v", got, want)
+	}
 }
 
 func TestVaultPasswordCachePersistsAcrossCLIInvocations(t *testing.T) {

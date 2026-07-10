@@ -35,11 +35,79 @@ jobs:
       - name: Installer up-passthrough test
         run: ./scripts/e2e/install-up.test.sh
 
+      - name: Installer tray artifact test
+        run: ./scripts/e2e/install-tray.test.sh
+
+      - name: Installer Windows tray upgrade test
+        run: ./scripts/e2e/install-tray-windows.test.sh
+
+      - name: macOS tray version mapping test
+        run: ./scripts/e2e/macos-tray-version.test.sh
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           files: coverage.out
           fail_ci_if_error: false
+
+  tray-build:
+    name: Tray build (${{ matrix.os }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: darwin
+            arch: x64
+            goos: darwin
+            goarch: amd64
+            cgo: '1'
+            runner: macos-15-intel
+          - os: darwin
+            arch: arm64
+            goos: darwin
+            goarch: arm64
+            cgo: '1'
+            runner: macos-15
+          - os: windows
+            arch: x64
+            goos: windows
+            goarch: amd64
+            cgo: '0'
+            runner: ubuntu-latest
+          - os: windows
+            arch: arm64
+            goos: windows
+            goarch: arm64
+            cgo: '0'
+            runner: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Build tray
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+        run: |
+          if [ "${{ matrix.os }}" = 'windows' ]; then
+            go build -trimpath -ldflags="-H=windowsgui" -o /tmp/meshd-tray.exe ./cmd/meshd-tray
+          else
+            MESHD_TRAY_LDFLAGS='-X main.version=0.0.0' \
+              ./scripts/build-macos-tray.sh 0.0.0 /tmp/meshd-tray.app
+
+            (cd /tmp && tar -czf meshd-tray-ci.tar.gz meshd-tray.app)
+            verify_dir="$(mktemp -d)"
+            tar -xzf /tmp/meshd-tray-ci.tar.gz -C "$verify_dir"
+            ./scripts/verify-macos-tray.sh "$verify_dir/meshd-tray.app" 0.0.0
+            rm -rf "$verify_dir"
+
+            go test ./cmd/meshd-tray ./internal/trayapp ./internal/trayicon -count=1
+          fi
 
   integration:
     runs-on: ubuntu-latest

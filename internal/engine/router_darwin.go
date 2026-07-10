@@ -27,6 +27,11 @@ type darwinRouter struct {
 	routes map[netip.Prefix]bool
 }
 
+const (
+	darwinIfconfigPath = "/sbin/ifconfig"
+	darwinRoutePath    = "/sbin/route"
+)
+
 func newOSRouter(logf logger.Logf, tunName string) router.Router {
 	return &darwinRouter{
 		logf:    logf,
@@ -163,11 +168,26 @@ func (r *darwinRouter) run(argv ...string) error {
 	if len(argv) == 0 {
 		return fmt.Errorf("empty command")
 	}
+	name, err := trustedDarwinCommand(argv[0])
+	if err != nil {
+		return err
+	}
 	cmd := r.cmd
 	if cmd == nil {
 		cmd = darwinExecCommand
 	}
-	return cmd(argv[0], argv[1:]...)
+	return cmd(name, argv[1:]...)
+}
+
+func trustedDarwinCommand(name string) (string, error) {
+	switch name {
+	case "ifconfig", darwinIfconfigPath:
+		return darwinIfconfigPath, nil
+	case "route", darwinRoutePath:
+		return darwinRoutePath, nil
+	default:
+		return "", fmt.Errorf("untrusted Darwin routing command %q", name)
+	}
 }
 
 func diffPrefixes(have []netip.Prefix, want []netip.Prefix) []netip.Prefix {
@@ -186,6 +206,10 @@ func diffPrefixes(have []netip.Prefix, want []netip.Prefix) []netip.Prefix {
 }
 
 func darwinExecCommand(name string, args ...string) error {
+	name, err := trustedDarwinCommand(name)
+	if err != nil {
+		return err
+	}
 	out, err := exec.Command(name, args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s %s: %w (%s)", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))

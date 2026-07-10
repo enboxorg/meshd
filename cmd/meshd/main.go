@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -24,14 +25,17 @@ import (
 
 	"github.com/enboxorg/meshd/internal/control"
 	"github.com/enboxorg/meshd/internal/daemon"
+	"github.com/enboxorg/meshd/internal/dashboard"
 	"github.com/enboxorg/meshd/internal/did"
 	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 	"github.com/enboxorg/meshd/internal/engine"
 	"github.com/enboxorg/meshd/internal/invite"
 	"github.com/enboxorg/meshd/internal/mesh"
+	"github.com/enboxorg/meshd/internal/openurl"
 	"github.com/enboxorg/meshd/internal/profile"
 	"github.com/enboxorg/meshd/internal/state"
+	"github.com/enboxorg/meshd/internal/vaultkey"
 	"github.com/enboxorg/meshd/internal/walletconnect"
 	"github.com/enboxorg/meshd/pkg/dids"
 	"github.com/enboxorg/meshd/pkg/dids/didcore"
@@ -54,6 +58,8 @@ Identity:
   vault status      Show local vault state
   vault init        Encrypt a legacy plaintext identity
   vault unlock      Verify the vault password and show identity
+  vault remember    Store the vault password in the OS credential store
+  vault forget      Remove the vault password from the OS credential store
 
 Network:
   network create    Create a new mesh network on a DWN
@@ -134,9 +140,12 @@ Environment:
 
 var version = "dev"
 
+var errMacOSTrayElevationUnsupported = errors.New("macOS tray Connect cannot safely request administrator privileges from a user-writable installation; run 'meshd up' in a terminal to authorize system routing")
+
 const (
 	sudoChildEnv    = "MESHD_SUDO_CHILD"
 	upBackgroundEnv = "MESHD_UP_BACKGROUND_CHILD"
+	trayConnectEnv  = "MESHD_TRAY_CONNECT"
 	backgroundWait  = 30 * time.Second
 	daemonLogName   = "meshd.log"
 	walletWaitTime  = 10 * time.Minute
@@ -164,7 +173,7 @@ func main() {
 			"peer list", "peer add", "peer remove", "peer approve",
 			"acl set", "acl show",
 			"auth login", "auth connect", "auth list", "auth use", "auth logout",
-			"vault status", "vault init", "vault unlock":
+			"vault status", "vault init", "vault unlock", "vault remember", "vault forget":
 			cmd = combined
 			args = os.Args[3:]
 		}
@@ -201,6 +210,10 @@ func main() {
 		err = cmdVaultInit(args, flagProfile)
 	case "vault unlock":
 		err = cmdVaultUnlock(args, flagProfile)
+	case "vault remember":
+		err = cmdVaultRemember(args, flagProfile)
+	case "vault forget":
+		err = cmdVaultForget(args, flagProfile)
 	case "network create":
 		err = cmdNetworkCreate(ctx, args, flagProfile)
 	case "network join":
@@ -382,6 +395,58 @@ func cmdVaultUnlock(args []string, flagProfile string) error {
 
 	fmt.Println("Vault unlocked.")
 	fmt.Printf("Local Node DID: %s\n", identity.URI)
+	fmt.Printf("State: %s\n", stateDir)
+	return nil
+}
+
+func cmdVaultRemember(args []string, flagProfile string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("usage: meshd vault remember")
+	}
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
+	if !did.EncryptedExists(stateDir) {
+		return fmt.Errorf("vault is not initialized; run 'meshd vault init' first")
+	}
+
+	password, err := vaultPasswordForRemember()
+	if err != nil {
+		return err
+	}
+	identity, err := did.LoadEncrypted(stateDir, password)
+	if err != nil {
+		return fmt.Errorf("verify vault password: %w", err)
+	}
+	if identity == nil {
+		return fmt.Errorf("encrypted identity is missing")
+	}
+	if err := vaultKeySet(stateDir, password); err != nil {
+		return fmt.Errorf("remember vault password: %w", err)
+	}
+	rememberVaultPassword(stateDir, password, false)
+
+	fmt.Println("Vault password saved in the OS credential store.")
+	fmt.Printf("State: %s\n", stateDir)
+	return nil
+}
+
+func cmdVaultForget(args []string, flagProfile string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("usage: meshd vault forget")
+	}
+	stateDir, err := resolveStateDir(flagProfile)
+	if err != nil {
+		return err
+	}
+	clearVaultPasswordCache(stateDir)
+	deleteErr := vaultKeyDelete(stateDir)
+	if deleteErr != nil && !errors.Is(deleteErr, vaultkey.ErrNotFound) {
+		return fmt.Errorf("forget vault password: %w", deleteErr)
+	}
+
+	fmt.Println("Vault password removed from the OS credential store.")
 	fmt.Printf("State: %s\n", stateDir)
 	return nil
 }
@@ -716,39 +781,14 @@ func setupWalletResponseRelay(ctx context.Context, endpoint string, identity *di
 }
 
 func browserOpenCommand(goos string, rawURL string) (string, []string, bool) {
-	switch goos {
-	case "darwin":
-		return "open", []string{rawURL}, true
-	case "windows":
-		return "rundll32", []string{"url.dll,FileProtocolHandler", rawURL}, true
-	default:
-		return "xdg-open", []string{rawURL}, true
-	}
+	return openurl.Command(goos, rawURL)
 }
 
 func openBrowser(rawURL string) error {
 	if rawURL == "" {
 		return fmt.Errorf("wallet URL is empty")
 	}
-	name, args, ok := browserOpenCommand(runtime.GOOS, rawURL)
-	if !ok {
-		return fmt.Errorf("unsupported OS")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
-	output, err := cmd.CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("%s did not return within 5s", name)
-	}
-	if err != nil {
-		detail := strings.TrimSpace(string(output))
-		if detail != "" {
-			return fmt.Errorf("%s failed: %w: %s", name, err, detail)
-		}
-		return fmt.Errorf("%s failed: %w", name, err)
-	}
-	return nil
+	return openurl.Open(rawURL)
 }
 
 func printWalletURL(rawURL string, autoOpen bool, remoteHandoff bool) {
@@ -773,7 +813,7 @@ type adminOptions struct {
 	networkRecordID string
 }
 
-const defaultAdminDashboardURL = "https://admin.meshd.sh"
+const defaultAdminDashboardURL = dashboard.DefaultURL
 
 func parseAdminArgs(args []string) (adminOptions, error) {
 	opts := adminOptions{dashboardURL: defaultAdminDashboardURL}
@@ -832,61 +872,18 @@ func cmdAdmin(ctx context.Context, args []string, flagProfile string) error {
 	return nil
 }
 
-type adminContext struct {
-	OwnerDID        string
-	NetworkRecordID string
-}
+type adminContext = dashboard.Context
 
 func adminContextFromOptions(opts adminOptions, fallback adminContext) adminContext {
-	ctx := fallback
-	if opts.ownerDID != "" {
-		ctx.OwnerDID = opts.ownerDID
-	}
-	if opts.networkRecordID != "" {
-		ctx.NetworkRecordID = opts.networkRecordID
-	}
-	return ctx
+	return dashboard.WithOverrides(fallback, opts.ownerDID, opts.networkRecordID)
 }
 
 func adminContextFromProfile(flagProfile string) adminContext {
-	ctx := adminContext{}
-	if os.Getenv("MESHD_STATE_DIR") == "" {
-		if name, err := profile.Resolve(flagProfile); err == nil {
-			if cfg, cfgErr := profile.ReadConfig(); cfgErr == nil && cfg.Profiles[name] != nil {
-				ctx.OwnerDID = cfg.Profiles[name].EffectiveOwnerDID()
-			}
-		}
-	}
-	stateDir, err := resolveStateDir(flagProfile)
-	if err != nil {
-		return ctx
-	}
-	ns, err := state.LoadNetworkState(stateDir)
-	if err != nil || ns == nil {
-		return ctx
-	}
-	ctx.OwnerDID = networkOwnerDID(ns, ctx.OwnerDID)
-	ctx.NetworkRecordID = ns.NetworkRecordID
-	return ctx
+	return dashboard.ResolveContext(flagProfile)
 }
 
 func buildAdminURL(walletURL string, ctx adminContext) string {
-	base := strings.TrimRight(strings.TrimSpace(walletURL), "/")
-	if base == "" {
-		base = defaultAdminDashboardURL
-	}
-	adminURL := base
-	values := url.Values{}
-	if ctx.OwnerDID != "" {
-		values.Set("owner", ctx.OwnerDID)
-	}
-	if ctx.NetworkRecordID != "" {
-		values.Set("network", ctx.NetworkRecordID)
-	}
-	if encoded := values.Encode(); encoded != "" {
-		adminURL += "?" + encoded
-	}
-	return adminURL
+	return dashboard.BuildURL(walletURL, ctx)
 }
 
 func shellQuote(value string) string {
@@ -3460,13 +3457,14 @@ func supportsRealTUN(goos string) bool {
 }
 
 func shouldReexecWithSudoForTun(f upFlags, uid int, goos string, stdinTTY bool) bool {
-	if uid == 0 || f.noTun || !stdinTTY || !supportsRealTUN(goos) {
+	guiPrompt := goos == "darwin" && os.Getenv(trayConnectEnv) == "1"
+	if uid == 0 || f.noTun || (!stdinTTY && !guiPrompt) || !supportsRealTUN(goos) {
 		return false
 	}
 	return true
 }
 
-func reexecUpWithSudo(args []string, flagProfile string) error {
+func reexecUpWithSudo(args []string, flagProfile, stateDir string) error {
 	sudoPath, err := exec.LookPath("sudo")
 	if err != nil {
 		return fmt.Errorf("system routing requires administrator privileges, but sudo was not found; run meshd as root or use --no-tun")
@@ -3477,15 +3475,26 @@ func reexecUpWithSudo(args []string, flagProfile string) error {
 		return fmt.Errorf("resolving meshd executable for sudo handoff: %w", err)
 	}
 
-	sudoArgs := []string{"env"}
+	fmt.Fprintln(os.Stderr, "meshd: system routing needs administrator privileges; asking sudo to start the tunnel.")
+	validate := exec.Command(sudoPath, "-v")
+	validate.Stdin = os.Stdin
+	validate.Stdout = os.Stdout
+	validate.Stderr = os.Stderr
+	if err := validate.Run(); err != nil {
+		return fmt.Errorf("sudo authentication failed: %w", err)
+	}
+	if err := prepareVaultPasswordHandoff(stateDir); err != nil {
+		return fmt.Errorf("prepare vault unlock for privileged daemon: %w", err)
+	}
+	defer removeVaultPasswordHandoff(stateDir)
+
+	sudoArgs := []string{"-n", "env"}
 	sudoArgs = append(sudoArgs, sudoEnvironmentAssignments()...)
 	sudoArgs = append(sudoArgs, exePath, "up")
 	if flagProfile != "" {
 		sudoArgs = append(sudoArgs, "--profile", flagProfile)
 	}
 	sudoArgs = append(sudoArgs, args...)
-
-	fmt.Fprintln(os.Stderr, "meshd: system routing needs administrator privileges; asking sudo to start the tunnel.")
 
 	cmd := exec.Command(sudoPath, sudoArgs...)
 	cmd.Stdin = os.Stdin
@@ -3506,6 +3515,14 @@ func startUpInBackground(ctx context.Context, args []string, flagProfile, stateD
 	exePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolving meshd executable: %w", err)
+	}
+	if needsSudo && runtime.GOOS == "darwin" && os.Getenv(trayConnectEnv) == "1" {
+		return errMacOSTrayElevationUnsupported
+	}
+	// A sudo child must either run in the foreground or inherit a log descriptor
+	// opened by its unprivileged parent. Never open a user-controlled path as root.
+	if shouldRejectElevatedLogOpen(os.Geteuid(), os.Getenv(sudoChildEnv), os.Getenv("SUDO_UID")) {
+		return fmt.Errorf("refusing to open the daemon log after privilege elevation; run 'meshd up' as your normal user so it can open the log before sudo")
 	}
 
 	logPath := daemonLogPath(stateDir)
@@ -3538,6 +3555,10 @@ func startUpInBackground(ctx context.Context, args []string, flagProfile, stateD
 		if err := validate.Run(); err != nil {
 			return fmt.Errorf("sudo authentication failed: %w", err)
 		}
+		if err := prepareVaultPasswordHandoff(stateDir); err != nil {
+			return fmt.Errorf("prepare vault unlock for privileged daemon: %w", err)
+		}
+		defer removeVaultPasswordHandoff(stateDir)
 
 		sudoArgs := []string{"-n", "env"}
 		sudoArgs = append(sudoArgs, sudoEnvironmentAssignments()...)
@@ -3605,8 +3626,15 @@ func daemonLogPath(stateDir string) string {
 	return filepath.Join(stateDir, daemonLogName)
 }
 
+func shouldRejectElevatedLogOpen(euid int, sudoChild, sudoUID string) bool {
+	return euid == 0 && (sudoChild == "1" || sudoUID != "")
+}
+
 func sudoEnvironmentAssignments() []string {
-	assignments := []string{sudoChildEnv + "=1"}
+	assignments := []string{
+		sudoChildEnv + "=1",
+		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+	}
 
 	home := os.Getenv("HOME")
 	if home == "" {
@@ -3632,80 +3660,13 @@ func sudoEnvironmentAssignments() []string {
 		assignments = append(assignments, vaultPasswordCacheDirEnv+"="+cacheDir)
 	}
 
-	for _, key := range []string{"PATH", "DWN_ENDPOINT", "ENBOX_PROFILE", "MESHD_STATE_DIR", vaultPasswordCacheTTLEnv, walletResponseEndpointEnv} {
+	for _, key := range []string{"DWN_ENDPOINT", "ENBOX_PROFILE", "MESHD_STATE_DIR", vaultPasswordCacheTTLEnv, walletResponseEndpointEnv} {
 		if value := os.Getenv(key); value != "" {
 			assignments = append(assignments, key+"="+value)
 		}
 	}
 
 	return assignments
-}
-
-func restoreSudoUserOwnership() {
-	uid, gid, ok := sudoOriginalIDs()
-	if !ok {
-		return
-	}
-
-	for _, root := range sudoOwnershipRoots() {
-		if root == "" {
-			continue
-		}
-		_ = filepath.WalkDir(root, func(path string, _ os.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-			_ = os.Lchown(path, uid, gid)
-			return nil
-		})
-	}
-}
-
-func sudoOriginalIDs() (uid int, gid int, ok bool) {
-	uid64, uidErr := strconv.ParseInt(os.Getenv("SUDO_UID"), 10, 32)
-	gid64, gidErr := strconv.ParseInt(os.Getenv("SUDO_GID"), 10, 32)
-	if uidErr != nil || gidErr != nil || uid64 <= 0 || gid64 < 0 {
-		return 0, 0, false
-	}
-	return int(uid64), int(gid64), true
-}
-
-func sudoOwnershipRoots() []string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		return nil
-	}
-
-	var candidates []string
-	if stateDir := os.Getenv("MESHD_STATE_DIR"); stateDir != "" {
-		candidates = append(candidates, stateDir)
-	} else if enboxHome := os.Getenv("ENBOX_HOME"); enboxHome != "" {
-		candidates = append(candidates, enboxHome)
-	}
-
-	roots := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		if isSafeSudoOwnershipRoot(candidate, home) {
-			roots = append(roots, candidate)
-		}
-	}
-	return roots
-}
-
-func isSafeSudoOwnershipRoot(root string, home string) bool {
-	absRoot, rootErr := filepath.Abs(root)
-	absHome, homeErr := filepath.Abs(home)
-	if rootErr != nil || homeErr != nil {
-		return false
-	}
-	if absRoot == absHome {
-		return false
-	}
-	rel, err := filepath.Rel(absHome, absRoot)
-	if err != nil || rel == "." {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // cmdUp starts the mesh agent daemon.
@@ -3733,9 +3694,6 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 			fmt.Println("Run 'meshd status' to inspect it or 'meshd down' to stop it.")
 			return nil
 		}
-	}
-	if os.Getenv(sudoChildEnv) == "1" {
-		defer restoreSudoUserOwnership()
 	}
 	shouldElevate := shouldReexecWithSudoForTun(f, os.Getuid(), runtime.GOOS, stdinIsTerminal())
 
@@ -3816,7 +3774,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		if !backgroundChild && !f.foreground {
 			return startUpInBackground(ctx, args, flagProfile, stateDir, true)
 		}
-		return reexecUpWithSudo(args, flagProfile)
+		return reexecUpWithSudo(args, flagProfile, stateDir)
 	}
 	if !backgroundChild && !f.foreground {
 		return startUpInBackground(ctx, args, flagProfile, stateDir, false)
@@ -3991,18 +3949,20 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	socketPath := daemon.DefaultSocketPath()
 	daemonSrv := daemon.NewServer(socketPath, func() daemon.Status {
 		return daemon.Status{
-			TUNDevice: eng.TUNDeviceName(),
-			MeshIP:    ns.MeshIP,
-			Network:   ns.NetworkName,
+			TUNDevice:       eng.TUNDeviceName(),
+			MeshIP:          ns.MeshIP,
+			Network:         ns.NetworkName,
+			OwnerDID:        networkOwnerDID(ns, meta.OwnerDID),
+			NetworkRecordID: ns.NetworkRecordID,
+			Peers:           daemonPeerStatuses(eng.PeerSnapshots()),
 		}
 	}, logger)
 
 	if err := daemonSrv.Start(); err != nil {
-		// Non-fatal: the mesh still works without the control socket.
-		logger.Warn("daemon control socket failed to start", slog.Any("error", err))
-	} else {
-		defer daemonSrv.Stop()
+		_ = eng.Stop()
+		return fmt.Errorf("starting daemon control socket: %w", err)
 	}
+	defer daemonSrv.Stop()
 
 	var stopPreAuthApproval chan struct{}
 	if ownerAutomation {
@@ -4042,6 +4002,21 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 
 	fmt.Printf("Stopped.\n")
 	return nil
+}
+
+func daemonPeerStatuses(peers []engine.PeerSnapshot) []daemon.PeerStatus {
+	if len(peers) == 0 {
+		return nil
+	}
+	status := make([]daemon.PeerStatus, 0, len(peers))
+	for _, peer := range peers {
+		status = append(status, daemon.PeerStatus{
+			Name:   peer.Name,
+			MeshIP: peer.MeshIP,
+			Online: peer.Online,
+		})
+	}
+	return status
 }
 
 // ensureIdentity creates a new identity profile when none exists.
@@ -4693,13 +4668,18 @@ const (
 	nodeIdentityVaultFile      = "node.identity.vault.json"
 	delegateIdentityVaultFile  = "delegate.identity.vault.json"
 	defaultVaultPasswordCache  = 5 * time.Minute
+	vaultPasswordHandoffTTL    = time.Minute
 	vaultPasswordCacheFileMode = 0o600
 	vaultPasswordCacheDirMode  = 0o700
 )
 
 var (
-	cachedVaultPassword         string
-	cachedVaultPasswordStateDir string
+	cachedVaultPassword             string
+	cachedVaultPasswordStateDir     string
+	cachedVaultPasswordFromKeychain bool
+	vaultKeyGet                     = vaultkey.Get
+	vaultKeySet                     = vaultkey.Set
+	vaultKeyDelete                  = vaultkey.Delete
 )
 
 type vaultPasswordCacheEntry struct {
@@ -5127,6 +5107,21 @@ func vaultPasswordForUnlock(stateDir string) (string, error) {
 		rememberVaultPassword(stateDir, password, true)
 		return password, nil
 	}
+	// Privileged children consume a one-shot, user-owned handoff created only
+	// after sudo authentication. Looking in root's keychain would target the
+	// wrong login session and can trigger an unrelated credential prompt.
+	if os.Getenv(sudoChildEnv) != "1" {
+		if password, err := vaultKeyGet(stateDir); err == nil && password != "" {
+			rememberVaultPasswordSource(stateDir, password, false, true)
+			return password, nil
+		}
+	}
+	if os.Getenv(sudoChildEnv) == "1" {
+		if password, ok := readVaultPasswordHandoff(stateDir); ok {
+			rememberVaultPassword(stateDir, password, false)
+			return password, nil
+		}
+	}
 	if cachedVaultPassword != "" && cachedVaultPasswordStateDir == normalizeVaultStateDir(stateDir) {
 		return cachedVaultPassword, nil
 	}
@@ -5135,10 +5130,29 @@ func vaultPasswordForUnlock(stateDir string) (string, error) {
 		return password, nil
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return "", fmt.Errorf("vault password required; run in a terminal or set %s", vaultPasswordEnv)
+		return "", fmt.Errorf("vault password required; run 'meshd vault remember' in a terminal or set %s", vaultPasswordEnv)
 	}
 
-	fmt.Print("Vault password: ")
+	password, err := readVaultPassword("Vault password: ")
+	if err != nil {
+		return "", err
+	}
+	rememberVaultPassword(stateDir, password, true)
+	return password, nil
+}
+
+func vaultPasswordForRemember() (string, error) {
+	if password := os.Getenv(vaultPasswordEnv); password != "" {
+		return password, nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", fmt.Errorf("vault password required; run in a terminal or set %s", vaultPasswordEnv)
+	}
+	return readVaultPassword("Vault password: ")
+}
+
+func readVaultPassword(prompt string) (string, error) {
+	fmt.Print(prompt)
 	passwordBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Println()
 	if err != nil {
@@ -5148,7 +5162,6 @@ func vaultPasswordForUnlock(stateDir string) (string, error) {
 	if password == "" {
 		return "", fmt.Errorf("vault password is required")
 	}
-	rememberVaultPassword(stateDir, password, true)
 	return password, nil
 }
 
@@ -5197,12 +5210,17 @@ func vaultPasswordForCreate(stateDir string) (string, error) {
 }
 
 func rememberVaultPassword(stateDir, password string, persist bool) {
+	rememberVaultPasswordSource(stateDir, password, persist, false)
+}
+
+func rememberVaultPasswordSource(stateDir, password string, persist, fromKeychain bool) {
 	if password == "" {
 		return
 	}
 	normalized := normalizeVaultStateDir(stateDir)
 	cachedVaultPassword = password
 	cachedVaultPasswordStateDir = normalized
+	cachedVaultPasswordFromKeychain = fromKeychain
 	if persist {
 		writeVaultPasswordCache(normalized, password)
 	}
@@ -5210,11 +5228,22 @@ func rememberVaultPassword(stateDir, password string, persist bool) {
 
 func forgetVaultPassword(stateDir string) {
 	normalized := normalizeVaultStateDir(stateDir)
+	deleteKeychain := cachedVaultPasswordStateDir == normalized && cachedVaultPasswordFromKeychain
+	clearVaultPasswordCache(normalized)
+	if deleteKeychain {
+		_ = vaultKeyDelete(normalized)
+	}
+}
+
+func clearVaultPasswordCache(stateDir string) {
+	normalized := normalizeVaultStateDir(stateDir)
 	if cachedVaultPasswordStateDir == normalized {
 		cachedVaultPassword = ""
 		cachedVaultPasswordStateDir = ""
+		cachedVaultPasswordFromKeychain = false
 	}
 	removeVaultPasswordCache(normalized)
+	removeVaultPasswordHandoff(normalized)
 }
 
 func normalizeVaultStateDir(stateDir string) string {
@@ -5265,6 +5294,14 @@ func vaultPasswordCachePath(stateDir string) (string, error) {
 	return filepath.Join(dir, "vault", name), nil
 }
 
+func vaultPasswordHandoffPath(stateDir string) (string, error) {
+	path, err := vaultPasswordCachePath(stateDir)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(path, ".json") + ".handoff.json", nil
+}
+
 func readVaultPasswordCache(stateDir string) (string, bool) {
 	if vaultPasswordCacheTTL() <= 0 {
 		return "", false
@@ -5274,11 +5311,24 @@ func readVaultPasswordCache(stateDir string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
+	return readVaultPasswordFile(path, normalized, false)
+}
+
+func readVaultPasswordHandoff(stateDir string) (string, bool) {
+	normalized := normalizeVaultStateDir(stateDir)
+	path, err := vaultPasswordHandoffPath(normalized)
+	if err != nil {
 		return "", false
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	return readVaultPasswordFile(path, normalized, true)
+}
+
+func readVaultPasswordFile(path, normalizedStateDir string, consume bool) (string, bool) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	if info.Mode().Perm() != vaultPasswordCacheFileMode {
 		_ = os.Remove(path)
 		return "", false
 	}
@@ -5291,13 +5341,14 @@ func readVaultPasswordCache(stateDir string) (string, bool) {
 		_ = os.Remove(path)
 		return "", false
 	}
-	if entry.Version != 1 || entry.StateDir != normalized || entry.Password == "" {
+	if entry.Version != 1 || entry.StateDir != normalizedStateDir || entry.Password == "" || !entry.Expires.After(time.Now()) {
 		_ = os.Remove(path)
 		return "", false
 	}
-	if !entry.Expires.After(time.Now()) {
-		_ = os.Remove(path)
-		return "", false
+	if consume {
+		if err := os.Remove(path); err != nil {
+			return "", false
+		}
 	}
 	return entry.Password, true
 }
@@ -5312,48 +5363,83 @@ func writeVaultPasswordCache(stateDir, password string) {
 	if err != nil {
 		return
 	}
+	_ = writeVaultPasswordFile(path, normalized, password, ttl)
+}
+
+func prepareVaultPasswordHandoff(stateDir string) error {
+	normalized := normalizeVaultStateDir(stateDir)
+	removeVaultPasswordHandoff(normalized)
+	if cachedVaultPassword == "" || cachedVaultPasswordStateDir != normalized {
+		if did.EncryptedExists(normalized) {
+			return fmt.Errorf("vault password is unavailable for privilege handoff")
+		}
+		return nil
+	}
+	path, err := vaultPasswordHandoffPath(normalized)
+	if err != nil {
+		return err
+	}
+	return writeVaultPasswordFile(path, normalized, cachedVaultPassword, vaultPasswordHandoffTTL)
+}
+
+func writeVaultPasswordFile(path, normalizedStateDir, password string, ttl time.Duration) error {
+	if password == "" || ttl <= 0 {
+		return fmt.Errorf("vault password and positive lifetime are required")
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, vaultPasswordCacheDirMode); err != nil {
-		return
+		return fmt.Errorf("create vault handoff directory: %w", err)
 	}
-	_ = os.Chmod(dir, vaultPasswordCacheDirMode)
+	if err := os.Chmod(dir, vaultPasswordCacheDirMode); err != nil {
+		return fmt.Errorf("secure vault handoff directory: %w", err)
+	}
 	entry := vaultPasswordCacheEntry{
 		Version:  1,
-		StateDir: normalized,
+		StateDir: normalizedStateDir,
 		Password: password,
 		Expires:  time.Now().Add(ttl),
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return
+		return fmt.Errorf("encode vault handoff: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".vault-cache-*")
+	tmp, err := os.CreateTemp(dir, ".vault-secret-*")
 	if err != nil {
-		return
+		return fmt.Errorf("create vault handoff: %w", err)
 	}
 	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
+	cleanup := func() {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
-		return
+	}
+	if err := os.Chmod(tmpName, vaultPasswordCacheFileMode); err != nil {
+		cleanup()
+		return fmt.Errorf("secure vault handoff: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("write vault handoff: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(tmpName)
-		return
-	}
-	if err := os.Chmod(tmpName, vaultPasswordCacheFileMode); err != nil {
-		_ = os.Remove(tmpName)
-		return
+		return fmt.Errorf("close vault handoff: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		_ = os.Remove(tmpName)
-		return
+		return fmt.Errorf("publish vault handoff: %w", err)
 	}
-	_ = os.Chmod(path, vaultPasswordCacheFileMode)
+	return nil
 }
 
 func removeVaultPasswordCache(stateDir string) {
 	path, err := vaultPasswordCachePath(stateDir)
+	if err == nil {
+		_ = os.Remove(path)
+	}
+}
+
+func removeVaultPasswordHandoff(stateDir string) {
+	path, err := vaultPasswordHandoffPath(stateDir)
 	if err == nil {
 		_ = os.Remove(path)
 	}
