@@ -85,6 +85,9 @@ Up flags:
   --no-tun          Use userspace mode without OS routes
   --port <n>        WireGuard UDP listen port (default: auto)
   --poll-interval   DWN poll interval (default: 30s)
+  --wait-timeout <dur>
+                    How long to wait for dashboard approval (default: 15m)
+  --no-wait         Exit immediately when the join request is still pending
   --foreground      Run in the current terminal instead of background
   -v, --verbose     Enable debug logging
 
@@ -1941,7 +1944,31 @@ func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
 	if noStartHint {
 		joinArgs = append(joinArgs, "--no-start-hint")
 	}
-	return cmdNetworkJoin(ctx, joinArgs, flagProfile)
+	if err := cmdNetworkJoin(ctx, joinArgs, flagProfile); err != nil {
+		return err
+	}
+	if preauth {
+		rememberPendingJoinToken(stateDir, payload.TokenID)
+	}
+	return nil
+}
+
+// rememberPendingJoinToken records which invite token the pending join
+// request was submitted with, so a later `meshd up` with the same invite does
+// not submit a duplicate request. Best-effort: the token is an optimization,
+// not a correctness requirement.
+func rememberPendingJoinToken(stateDir, tokenID string) {
+	if tokenID == "" {
+		return
+	}
+	ns, err := state.LoadNetworkState(stateDir)
+	if err != nil || ns == nil || ns.NodeRecordID != "" || ns.PendingJoinTokenID == tokenID {
+		return
+	}
+	ns.PendingJoinTokenID = tokenID
+	if err := state.SaveNetworkState(stateDir, ns); err != nil {
+		fmt.Printf("  Warning: could not record the pending invite token: %v\n", err)
+	}
 }
 
 func parseJoinCommandArgs(args []string) (inviteURL string, ownerDID string, noStartHint bool, err error) {
@@ -3323,6 +3350,10 @@ type upFlags struct {
 	pollInterval time.Duration // --poll-interval <dur>
 	foreground   bool          // --foreground: keep meshd up attached
 	verbose      bool          // -v / --verbose
+
+	// Approval wait flags.
+	waitTimeout time.Duration // --wait-timeout <dur>: approval wait bound
+	noWait      bool          // --no-wait: exit instead of waiting for approval
 }
 
 func parseUpFlags(args []string) upFlags {
@@ -3380,6 +3411,15 @@ func parseUpFlags(args []string) upFlags {
 			f.noTun = true
 		case "--foreground":
 			f.foreground = true
+		case "--wait-timeout":
+			if i+1 < len(args) {
+				if d, err := time.ParseDuration(args[i+1]); err == nil {
+					f.waitTimeout = d
+				}
+				i++
+			}
+		case "--no-wait":
+			f.noWait = true
 		case "-v", "--verbose":
 			f.verbose = true
 		default:
@@ -3681,6 +3721,10 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		socketPath := daemon.DefaultSocketPath()
 		if daemon.NewClient(socketPath).IsRunning() {
 			fmt.Println("meshd is already running.")
+			if f.inviteURL != "" || f.ownerDID != "" {
+				fmt.Println("  Note: the invite/owner argument was ignored — this machine is already in a mesh.")
+				fmt.Println("  To join a different network, run 'meshd down' and 'meshd network leave' first.")
+			}
 			fmt.Printf("  Socket: %s\n", socketPath)
 			fmt.Println("Run 'meshd status' to inspect it or 'meshd down' to stop it.")
 			return nil
@@ -3712,26 +3756,51 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 			return err
 		}
 	}
+	// Child processes never wait for approval: they are spawned only after
+	// membership is complete, and a wait loop inside them would block
+	// invisibly in the daemon log.
+	waitForApprovalEnabled := !f.noWait && !backgroundChild && os.Getenv(sudoChildEnv) != "1"
+
 	if ns != nil && ns.NetworkRecordID == "" && ns.NodeRecordID == "" && ns.AnchorDID != "" {
 		ns, err = refreshPendingOwnerApproval(ctx, stateDir, ns, identity)
 		if err != nil {
 			return err
 		}
 		if ns.NetworkRecordID == "" || ns.NodeRecordID == "" {
-			printPendingOwnerApproval(ns)
-			return nil
+			if !waitForApprovalEnabled {
+				printPendingOwnerApproval(ns)
+				return fmt.Errorf("node approval is still pending; approve it in the dashboard, then run 'meshd up'")
+			}
+			ns, err = awaitMembershipApproval(ctx, approvalWaitOwner, f, stateDir, ns, identity, flagProfile, shouldElevate)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if ns.NodeRecordID == "" && ns.AnchorDID != identity.URI {
-		if createdFromInvite {
-			return fmt.Errorf("join request is waiting for approval; approve it in the wallet admin panel or keep the anchor online, then run 'meshd up'")
-		}
-		ns, err = refreshPendingJoin(ctx, stateDir, ns, flagProfile, true)
-		if err != nil {
-			return err
+		if !createdFromInvite {
+			ns, err = refreshPendingJoin(ctx, stateDir, ns, flagProfile, true)
+			if err != nil {
+				return err
+			}
+			if ns.NodeRecordID == "" && f.inviteURL != "" {
+				// Still pending and an invite was passed explicitly: the
+				// original invite may have expired or been revoked, so honor
+				// the new one instead of silently ignoring it.
+				ns, err = resubmitPendingInviteJoin(ctx, f.inviteURL, stateDir, ns, identity, flagProfile)
+				if err != nil {
+					return err
+				}
+			}
 		}
 		if ns.NodeRecordID == "" {
-			return fmt.Errorf("join request is waiting for approval; approve it in the wallet admin panel or keep the anchor online, then run 'meshd up'")
+			if !waitForApprovalEnabled {
+				return fmt.Errorf("join request is waiting for approval; approve it in the wallet admin panel or keep the anchor online, then run 'meshd up'")
+			}
+			ns, err = awaitMembershipApproval(ctx, approvalWaitJoin, f, stateDir, ns, identity, flagProfile, shouldElevate)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	selfNodeDID := networkNodeDID(ns, identity.URI)
@@ -4379,12 +4448,24 @@ func refreshPendingJoin(ctx context.Context, stateDir string, ns *state.NetworkS
 		_ = state.SaveNetworkState(stateDir, &previous)
 		return &previous, nil
 	}
+	// The rejoin rewrote the state file without the pending invite token;
+	// carry it over while the join is still pending so duplicate-request
+	// suppression keeps working across re-runs.
+	if refreshed.NodeRecordID == "" && previous.PendingJoinTokenID != "" && refreshed.PendingJoinTokenID == "" {
+		refreshed.PendingJoinTokenID = previous.PendingJoinTokenID
+		if err := state.SaveNetworkState(stateDir, refreshed); err != nil {
+			return nil, fmt.Errorf("saving refreshed network state: %w", err)
+		}
+	}
 	return refreshed, nil
 }
 
 // setupInteractive prompts the user to request owner approval, create, or join
 // a network.
 func setupInteractive(ctx context.Context, f upFlags, stateDir string, identity *did.DID, flagProfile string) (*state.NetworkState, error) {
+	if !stdinIsTerminal() {
+		return nil, fmt.Errorf("no network configured and no interactive terminal; run 'meshd up <meshd://invite/...>' or 'meshd up <owner-did>' (see 'meshd --help')")
+	}
 	fmt.Println("No network configured. What would you like to do?")
 	fmt.Println()
 	fmt.Println("  Paste an owner DID or invite URL, or choose:")

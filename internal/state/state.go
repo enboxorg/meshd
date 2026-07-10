@@ -113,6 +113,12 @@ type NetworkState struct {
 
 	// PendingOwnerRequestAt is when the owner-scoped node request was written.
 	PendingOwnerRequestAt string `json:"pendingOwnerRequestAt,omitempty"`
+
+	// PendingJoinTokenID is the invite token ID of the last submitted preauth
+	// join request, kept while the join is pending so re-running `meshd up`
+	// with the same invite does not submit a duplicate request (while a fresh
+	// invite for the same network is resubmitted).
+	PendingJoinTokenID string `json:"pendingJoinTokenId,omitempty"`
 }
 
 // NormalizeOwnerDID keeps the newer ownerDid field and the older memberDid

@@ -32,13 +32,19 @@ meshd up
 meshd invite create
 # prints: meshd://invite/eyJ...
 
-# On your second machine, join from the invite
-meshd up
-# paste the meshd://invite/... URL at the setup prompt
+# On each new machine, one command installs meshd, requests to join, waits
+# for approval, and starts the mesh:
+curl -fsSL https://meshd.sh/install | bash -s -- up 'meshd://invite/eyJ...'
 
-# That's it. After the anchor approves the invite, the machines can reach each other at 10.200.x.x
-# through encrypted WireGuard tunnels. NAT traversal is automatic.
+# That's it. Once the invite is approved (dashboard, or automatically while the
+# anchor is online), the machines reach each other at 10.200.x.x through
+# encrypted WireGuard tunnels. NAT traversal is automatic.
 ```
+
+The admin dashboard's invite composer copies that one-liner for you. If meshd
+is already installed, `meshd up 'meshd://invite/...'` does the same join —
+submit, wait for approval, connect. `--wait-timeout <dur>` bounds the wait
+(default 15m) and `--no-wait` restores the old submit-and-exit behavior.
 
 ### Wallet-delegate onboarding (enbox connect)
 
@@ -88,14 +94,15 @@ meshd up did:example:owner
 # Or run the wizard and paste the owner DID at the setup prompt.
 meshd up
 
-# Approve the pending device in the dashboard, then start it.
-meshd up
+# Approve the pending device in the dashboard; meshd keeps waiting and
+# starts on its own once the approval lands.
 ```
 
-`meshd up` stores the pending owner request locally and exits cleanly while it
-waits. After approval, the dashboard writes the node membership record, delivers
-the network context key, and writes a node approval response that the CLI
-consumes on the next `meshd up`.
+`meshd up` stores the pending owner request locally and polls for approval
+(default 15m, `--wait-timeout` to change, `--no-wait` to exit immediately).
+After approval, the dashboard writes the node membership record, delivers the
+network context key, and writes a node approval response that the waiting CLI
+picks up; if the wait timed out, a later `meshd up` resumes it.
 If the owner DID does not advertise a DWN endpoint, meshd uses the beta DWN
 endpoint by default. Use `--endpoint` or `DWN_ENDPOINT` to override it.
 The dashboard uses the same beta endpoint when creating a network for an owner
