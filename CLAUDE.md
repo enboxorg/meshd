@@ -118,7 +118,9 @@ ships as a **patch** bump — never minor, never major.
 - Breaking changes are acceptable and expected. Do **not** add compatibility
   shims, migration paths, or deprecation cycles to preserve old behavior; just
   change it. Callers are updated in lockstep.
-- The intended release cadence is patch-only, so don't lean on `feat:` commits
-  to force a minor bump. (release-please derives the bump from commit types; if
-  we want to hard-enforce patch-only, set `versioning: always-bump-patch` in the
-  release-please config.)
+- This is **hard-enforced** in `release-please-config.json` via
+  `"versioning": "always-bump-patch"`, so every release is a patch bump no
+  matter the commit types — a `feat:` commit will **not** produce a minor.
+  Use whichever conventional-commit type best describes the change (`feat:`,
+  `fix:`, `refactor:`, …) for a clean changelog; it no longer affects the
+  version. The current version lives in `.release-please-manifest.json`.
