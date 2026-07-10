@@ -66,7 +66,11 @@ meshd admin --owner '<OWNER_DID>' --print
 ```
 
 Connect the owner wallet and approve meshd Admin. Create a network if one does
-not already exist. Click `Copy Setup Command` in the network header.
+not already exist. Click `Copy Setup Command` in the network header; it copies
+a full install-and-join one-liner
+(`curl -fsSL https://meshd.sh/install | bash -s -- up '<OWNER_DID>'`). When
+testing a locally built binary, use the plain `meshd up '<OWNER_DID>'` form
+instead so the released installer does not overwrite your build.
 
 If the deployed dashboard is unavailable, run the local fallback from a repo
 checkout:
@@ -80,7 +84,8 @@ meshd admin --dashboard http://127.0.0.1:5173 --print
 
 ## 2. Submit the Linux node request
 
-On the Linux server, paste the setup command copied from the dashboard:
+On the Linux server, paste the setup command copied from the dashboard (or the
+plain form when testing a local build):
 
 ```bash
 meshd down || true
@@ -95,7 +100,9 @@ Expected result:
 - If the node has no local identity, meshd creates one and asks for a vault
   password.
 - meshd writes a signed owner-node request to the owner's DWN.
-- meshd exits cleanly or reports that it is waiting for dashboard approval.
+- meshd prints the dashboard URL and keeps waiting for approval (default 15m,
+  `--wait-timeout` to change, `--no-wait` for the old submit-and-exit
+  behavior). Leave it running and continue to the next step.
 
 ## 3. Approve from the dashboard
 
@@ -113,10 +120,11 @@ key to the node, and write a node approval response.
 
 ## 4. Start both mesh daemons
 
-On the Linux server:
+On the Linux server, the waiting `meshd up` from step 2 picks the approval up
+on its own and starts the daemon. Verify it (and run `meshd up` first if the
+wait had timed out — it resumes the pending request):
 
 ```bash
-meshd up
 meshd status
 meshd peer list
 ```
@@ -177,16 +185,20 @@ On a fresh profile or another node:
 ```bash
 meshd down || true
 meshd up '<meshd://invite/...>'
-meshd up
+# approve in the dashboard while it waits; it starts on its own
 meshd status
 meshd peer list
 ```
 
-You can also run `meshd up` without flags and paste the `meshd://invite/...`
-URL at the setup prompt.
+The invite composer also offers a copyable install-and-join one-liner
+(`curl -fsSL https://meshd.sh/install | bash -s -- up '<meshd://invite/...>'`)
+for machines that do not have meshd yet. You can also run `meshd up` without
+flags and paste the `meshd://invite/...` URL at the setup prompt.
 
-If the invite request appears pending in the dashboard, approve it and run
-`meshd up` again on the joining node.
+`meshd up '<invite>'` submits the request and waits for approval (approve it
+in the dashboard, or a running anchor daemon approves it automatically). If
+the wait times out, re-run `meshd up` to resume; re-running with a fresh
+invite for the same network resubmits the request with the new token.
 
 ## Troubleshooting
 

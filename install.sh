@@ -6,6 +6,9 @@ APP='meshd'
 REPO='enboxorg/meshd'
 INSTALL_DIR="${HOME}/.${APP}/bin"
 REQUESTED_VERSION="${VERSION:-}"
+# Test/ops override for the release download base (offline CI tests use a
+# file:// mirror). Layout must match GitHub releases: <base>/<tag>/<archive>.
+DOWNLOAD_BASE="${MESHD_INSTALL_DOWNLOAD_BASE:-https://github.com/${REPO}/releases/download}"
 NO_MODIFY_PATH=false
 TMP_DIR=''
 
@@ -20,16 +23,21 @@ usage() {
   cat <<'EOF'
 meshd installer
 
-Usage: install.sh [options]
+Usage: install.sh [options] [up [meshd-up-arguments...]]
 
 Options:
   -h, --help              Show this help message
   -v, --version <version> Install a specific version (example: 0.1.0)
       --no-modify-path    Do not modify shell profile files
 
+Everything after 'up' is passed to 'meshd up', so one command can install
+meshd, request to join a network, wait for dashboard approval, and start
+the mesh.
+
 Examples:
   curl -fsSL https://meshd.sh/install | bash
   curl -fsSL https://meshd.sh/install | bash -s -- --version 0.1.0
+  curl -fsSL https://meshd.sh/install | bash -s -- up 'meshd://invite/<token>'
 EOF
 }
 
@@ -187,7 +195,38 @@ add_to_path() {
   printf '  %s\n' "$line"
 }
 
+# run_meshd_up hands off to the freshly installed binary by absolute path
+# (PATH updates only reach future shells). Under `curl | bash` stdin is the
+# script pipe, so reattach /dev/tty when one exists — that keeps the vault
+# password and sudo prompts working.
+run_meshd_up() {
+  local bin="$1"
+  shift
+
+  # ${1+"$@"} instead of bare "$@": bash <= 4.3 (macOS ships 3.2) treats an
+  # empty "$@" as unbound under set -u.
+  printf '\n==> Running meshd up\n'
+  local code=0
+  if (exec </dev/tty) 2>/dev/null; then
+    "$bin" up ${1+"$@"} </dev/tty || code=$?
+  else
+    "$bin" up ${1+"$@"} || code=$?
+  fi
+
+  if [ "$code" -ne 0 ]; then
+    local resume_args=''
+    if [ "$#" -gt 0 ]; then
+      resume_args=" $*"
+    fi
+    printf '\nmeshd up did not complete. Any join request stays pending; resume with:\n' >&2
+    printf '  %s up%s\n' "$bin" "$resume_args" >&2
+    exit "$code"
+  fi
+}
+
 main() {
+  RUN_UP=false
+  RUN_UP_ARGS=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -h|--help)
@@ -204,6 +243,12 @@ main() {
       --no-modify-path)
         NO_MODIFY_PATH=true
         shift
+        ;;
+      up)
+        RUN_UP=true
+        shift
+        RUN_UP_ARGS=("$@")
+        break
         ;;
       *)
         fail "unknown option: $1"
@@ -227,7 +272,7 @@ main() {
   fi
 
   local url
-  url="https://github.com/${REPO}/releases/download/${tag}/${archive}"
+  url="${DOWNLOAD_BASE}/${tag}/${archive}"
 
   TMP_DIR="$(mktemp -d)"
 
@@ -242,8 +287,12 @@ main() {
     suffix='.exe'
   fi
 
-  cp "${TMP_DIR}/meshd${suffix}" "${INSTALL_DIR}/meshd${suffix}"
-  chmod +x "${INSTALL_DIR}/meshd${suffix}"
+  # Install atomically: a plain cp onto a running binary fails with
+  # "Text file busy" (re-running the one-liner while meshd is up), while a
+  # rename over it succeeds.
+  cp "${TMP_DIR}/meshd${suffix}" "${INSTALL_DIR}/meshd${suffix}.new"
+  chmod +x "${INSTALL_DIR}/meshd${suffix}.new"
+  mv -f "${INSTALL_DIR}/meshd${suffix}.new" "${INSTALL_DIR}/meshd${suffix}"
 
   if [ "$NO_MODIFY_PATH" = false ] && [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
     add_to_path
@@ -251,7 +300,17 @@ main() {
 
   printf '==> Installed to %s\n' "$INSTALL_DIR"
   "${INSTALL_DIR}/meshd${suffix}" --version || true
-  printf 'Run: meshd init\n'
+
+  if [ "$RUN_UP" = true ]; then
+    # meshd up can wait minutes for dashboard approval; drop the download
+    # scratch dir before handing off.
+    cleanup
+    TMP_DIR=''
+    run_meshd_up "${INSTALL_DIR}/meshd${suffix}" ${RUN_UP_ARGS[@]+"${RUN_UP_ARGS[@]}"}
+    return
+  fi
+
+  printf 'Run: meshd up\n'
 }
 
 main "$@"

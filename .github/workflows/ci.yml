@@ -32,6 +32,9 @@ jobs:
       - name: Installer smoke fetch test
         run: ./scripts/e2e/install-smoke.test.sh
 
+      - name: Installer up-passthrough test
+        run: ./scripts/e2e/install-up.test.sh
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:

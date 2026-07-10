@@ -25,7 +25,7 @@ import {
   ownerMatchesDashboardContext,
   type MeshdDashboardURLContext
 } from "./meshd/dashboard-url";
-import { ownerSetupCommand } from "./meshd/commands";
+import { installAndUpCommand } from "./meshd/commands";
 import {
   approveMeshdNodeRequest,
   buildMeshdInviteURL,
@@ -386,7 +386,7 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
           ? current.preAuthKeys.filter((key) => key.recordId !== consumedInvite.recordId)
           : current.preAuthKeys
       }));
-      toast.success(`Node approved at ${result.meshIP}`);
+      toast.success(`Node approved at ${result.meshIP} — a waiting device connects on its own; otherwise run 'meshd up' on it`);
       await refreshTopology({ silent: true });
     });
   }
@@ -443,9 +443,15 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     await copyToClipboard(url);
   }
 
+  async function handleCopyExistingInviteCommand(key: MeshdPreAuthKeySummary) {
+    if (!session || !selectedNetwork) return;
+    const url = await buildMeshdInviteURL(session, selectedNetwork, key);
+    await copyToClipboard(installAndUpCommand(url));
+  }
+
   async function handleCopyOwnerSetupCommand() {
     if (!did) return;
-    await copyToClipboard(ownerSetupCommand(did));
+    await copyToClipboard(installAndUpCommand(did));
   }
 
   async function handleRemoveNode(node: MeshdNodeSummary) {
@@ -683,6 +689,7 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
                     invite={key}
                     busyAction={busyAction}
                     onCopy={handleCopyExistingInvite}
+                    onCopyCommand={handleCopyExistingInviteCommand}
                     onRevoke={handleRevokeInvite}
                   />
                 )) : <EmptyRow icon={<UserPlusIcon size={18} />} text="No active invites" />}
@@ -846,6 +853,7 @@ function InviteResultCard({
   onDismiss: (tokenId: string) => void;
 }) {
   const expiry = describeExpiry(result.expiresAt);
+  const command = installAndUpCommand(result.url);
   return (
     <div className="invite-result">
       <div className="invite-result-body">
@@ -853,10 +861,18 @@ function InviteResultCard({
           <strong>{result.label || "New invite"}</strong>
           <span className={`expiry-pill ${expiry.tone}`}><ClockIcon size={13} />{expiry.label}</span>
         </div>
-        <code>{result.url}</code>
+        <code>{command}</code>
+        <p className="field-hint">
+          Run this on the new device: it installs meshd, requests to join, and
+          connects on its own once you approve it here. If meshd is already
+          installed, copy just the invite URL and run `meshd up &lt;url&gt;` instead.
+        </p>
       </div>
       <div className="row-actions">
-        <button className="icon-button" type="button" aria-label="Copy invite URL" title="Copy" onClick={() => void copyToClipboard(result.url)}>
+        <button className="icon-button" type="button" aria-label="Copy install command" title="Copy install command" onClick={() => void copyToClipboard(command)}>
+          <TerminalIcon size={16} />
+        </button>
+        <button className="icon-button" type="button" aria-label="Copy invite URL" title="Copy invite URL" onClick={() => void copyToClipboard(result.url)}>
           <ClipboardIcon size={16} />
         </button>
         <button className="icon-button" type="button" aria-label="Dismiss" title="Dismiss" onClick={() => onDismiss(result.tokenId)}>
@@ -871,11 +887,13 @@ function InviteRow({
   invite,
   busyAction,
   onCopy,
+  onCopyCommand,
   onRevoke
 }: {
   invite: MeshdPreAuthKeySummary;
   busyAction?: string;
   onCopy: (invite: MeshdPreAuthKeySummary) => Promise<void>;
+  onCopyCommand: (invite: MeshdPreAuthKeySummary) => Promise<void>;
   onRevoke: (invite: MeshdPreAuthKeySummary) => Promise<void>;
 }) {
   const revoking = busyAction === `revoke-${invite.recordId}`;
@@ -894,7 +912,10 @@ function InviteRow({
         </span>
       </div>
       <div className="row-actions">
-        <button className="icon-button" type="button" aria-label="Copy invite" title="Copy" onClick={() => void onCopy(invite)}>
+        <button className="icon-button" type="button" aria-label="Copy install command" title="Copy install command" onClick={() => void onCopyCommand(invite)}>
+          <TerminalIcon size={16} />
+        </button>
+        <button className="icon-button" type="button" aria-label="Copy invite URL" title="Copy invite URL" onClick={() => void onCopy(invite)}>
           <ClipboardIcon size={16} />
         </button>
         <button className="icon-button danger" type="button" aria-label="Revoke invite" title="Revoke" disabled={revoking} onClick={() => void onRevoke(invite)}>
