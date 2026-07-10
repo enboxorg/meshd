@@ -1085,6 +1085,7 @@ async function ensureMemberRecord(
   session: MeshdAdminSession,
   network: MeshdNetworkSummary,
   nodeOwnerDID: string,
+  recipientRolePublicKey: RolePublicKeyJwk,
   label?: string
 ): Promise<AuthoredRecord> {
   const existingEntries = await queryRecords(
@@ -1098,13 +1099,24 @@ async function ensureMemberRecord(
     .map(parseMeshdMemberRecord)
     .find((member) => member?.did === nodeOwnerDID);
   if (existing) {
+    // The network/member role record — and its network/member `$encryption/delivery`
+    // to this recipient — already exists from a prior approval. For a self-owned node
+    // the member DID is the node DID, so that delivery already reached the node; nothing
+    // to re-provision. (A distinct-human-member layer delivering to a NEW node under an
+    // existing member is a separate case — see #192.)
     return {
       recordId: existing.recordId,
       dateCreated: existing.createdAt
     };
   }
 
-  return writeRecord(
+  // Peer node records grant can:read to network/member (and network/node); a
+  // member-invited did:jwk node authorizes as network/member, so it must recover the
+  // network/member audience to decrypt its peers. Writing the network/member role
+  // record with the node's supplied network/member role-path key mints that audience
+  // and delivers it to the node — the reading-role audience, distinct from the
+  // network/member/node role the node merely holds (issue #192).
+  const memberRecord = await writeRecord(
     session,
     MESHD_PROTOCOL_URI,
     {
@@ -1119,8 +1131,24 @@ async function ensureMemberRecord(
       addedAt: new Date().toISOString(),
       ...(label ? { label } : {})
     },
-    true
+    true,
+    recipientRolePublicKey
   );
+
+  // Best-effort delivery is reported, not thrown (like the node record). Enforce it and
+  // roll back with the dashboard's own delete grant so the operator can retry cleanly —
+  // a member without its reading-role audience delivered can never see its peers.
+  if (!memberRecord.audienceKeyDelivery?.delivered) {
+    const reason = memberRecord.audienceKeyDelivery?.reason ?? "no delivery outcome was reported";
+    await deleteRecord(session, MESHD_PROTOCOL_URI, memberRecord.recordId, false);
+    throw new Error(
+      `Approved node ${nodeOwnerDID} but could not deliver its network/member reading-role ` +
+      `audience key (${reason}); the member record was rolled back so you can retry. The node ` +
+      "cannot decrypt its peers until this delivery succeeds."
+    );
+  }
+
+  return memberRecord;
 }
 
 export async function approveMeshdNodeRequest(
@@ -1140,7 +1168,23 @@ export async function approveMeshdNodeRequest(
 
   const preAuthKey = ownerScopedRequest ? undefined : await readPreAuthKey(session, network, request);
   const requestOwnerDID = nodeOwnerDID(request);
-  const member = await ensureMemberRecord(session, network, requestOwnerDID, request.label);
+
+  // The node authorizes as network/member and its peer records are encrypted to the
+  // network/member audience, so that reading-role audience must be delivered to it. A
+  // did:jwk node has no DWN endpoint to resolve its role-path key from, so it supplies
+  // the network/member key in its join request (#192); refuse to approve without it —
+  // the node would silently never decrypt its peers.
+  const MEMBER_ROLE_PATH = "network/member";
+  const memberRolePublicKey = request.roleKeys?.[MEMBER_ROLE_PATH];
+  if (!memberRolePublicKey) {
+    throw new Error(
+      `Node ${request.nodeDID} did not include its ${MEMBER_ROLE_PATH} role-audience key, so the ` +
+      "reading-role audience its peers are encrypted to cannot be delivered and it would never " +
+      "decrypt its peers. Upgrade the meshd node to a build that publishes the network/member " +
+      "roleKey in its join request (#192)."
+    );
+  }
+  const member = await ensureMemberRecord(session, network, requestOwnerDID, memberRolePublicKey, request.label);
   const meshIP = await allocateMeshIp(network.meshCIDR, request.nodeDID);
   const expiresAt = Object.prototype.hasOwnProperty.call(options, "expiresAt")
     ? options.expiresAt?.trim()
