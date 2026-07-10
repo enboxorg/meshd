@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/enboxorg/meshd/compare/v0.17.0...v0.17.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* **ci:** make the release installer smoke test resilient to Cloudflare edge blocks ([#202](https://github.com/enboxorg/meshd/issues/202)) ([74e2e8d](https://github.com/enboxorg/meshd/commit/74e2e8d2c66d051d761659ee477734f9de6b8991))
+
 ## [0.17.0](https://github.com/enboxorg/meshd/compare/v0.16.1...v0.17.0) (2026-07-10)
 
 
