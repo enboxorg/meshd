@@ -1,21 +1,67 @@
 import { DwnInterface } from "@enbox/agent";
+import { Ed25519 } from "@enbox/crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_DWN_ENDPOINT, MESHD_PROTOCOL_URI } from "@/enbox/config";
 
 import {
+  approveMeshdNodeRequest,
   buildMeshdInviteURL,
   createMeshdInvite,
   createMeshdNetwork,
   DELEGATE_SESSION_REQUIRED_ERROR,
   fetchMeshdNetworks,
+  parseMeshdNodeRequestRecord,
   rejectMeshdNodeRequest,
   updateMeshdNodeExpiry,
   updateMeshdNodeLabel,
   type MeshdAdminAgent,
   type MeshdAdminSession,
-  type MeshdNetworkSummary
+  type MeshdNetworkSummary,
+  type MeshdNodeRequestSummary,
+  type RolePublicKeyJwk
 } from "./admin";
+
+// A structurally valid 32-byte X25519 OKP public key.
+const VALID_X25519_KEY: RolePublicKeyJwk = { kty: "OKP", crv: "X25519", x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo" };
+
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// Builds a real owner-node request signed by a fresh did:jwk so approve's proof check
+// passes, letting the tests exercise the roleKeys delivery path end to end.
+async function signedOwnerNodeRequest(opts: {
+  ownerDID: string;
+  roleKeys?: Record<string, RolePublicKeyJwk>;
+  requestedAt?: string;
+}): Promise<MeshdNodeRequestSummary> {
+  const privateKey = await Ed25519.generateKey();
+  const publicKey = await Ed25519.computePublicKey({ key: privateKey });
+  const nodeDID = `did:jwk:${toBase64Url(new TextEncoder().encode(JSON.stringify(publicKey)))}`;
+  const requestedAt = opts.requestedAt ?? "2026-07-10T00:00:00Z";
+  const message = new TextEncoder().encode(
+    "meshd owner node request v1\n"
+    + `owner=${opts.ownerDID}\n`
+    + `node=${nodeDID}\n`
+    + "sourceDWN=\n"
+    + `requestedAt=${requestedAt}\n`
+  );
+  const signature = await Ed25519.sign({ key: privateKey, data: message });
+  return {
+    recordId: "req-record",
+    protocolPath: "nodeRequest",
+    nodeDID,
+    ownerDID: opts.ownerDID,
+    memberDID: opts.ownerDID,
+    requestKind: "owner-node",
+    nodeProof: toBase64Url(signature),
+    requestedAt,
+    ...(opts.roleKeys ? { roleKeys: opts.roleKeys } : {})
+  };
+}
 
 type CapturedRequest = Record<string, any>;
 
@@ -49,6 +95,7 @@ function createFakeSession(options: {
   endpoints?: string[];
   queryEntries?: unknown[];
   recordIds?: string[];
+  audienceKeyDelivery?: { delivered: boolean; recipientDid?: string; reason?: string };
 } = {}) {
   const requests: CapturedRequest[] = [];
   const pushes: Array<string | undefined> = [];
@@ -83,13 +130,19 @@ function createFakeSession(options: {
       }
 
       const recordId = recordIds.shift() ?? `record-${requests.length}`;
+      // The agent only reports audienceKeyDelivery for a $role write carrying a
+      // supplied recipient key; default to delivered so unrelated writes are unaffected.
+      const audienceKeyDelivery = request.recipientRolePublicKey
+        ? (options.audienceKeyDelivery ?? { delivered: true, recipientDid: (request.messageParams as any)?.recipient })
+        : undefined;
       return {
         reply: { status: { code: 202, detail: "Accepted" } },
         message: {
           recordId,
           descriptor: { dateCreated: "2026-06-24T00:00:00Z" }
         },
-        messageCid: `cid-${++cid}`
+        messageCid: `cid-${++cid}`,
+        ...(audienceKeyDelivery ? { audienceKeyDelivery } : {})
       };
     }),
     sync: {
@@ -611,5 +664,82 @@ describe("meshd admin DWN operations", () => {
         }
       }
     });
+  });
+});
+
+describe("meshd node role-audience key delivery (#187)", () => {
+  const network: MeshdNetworkSummary = { recordId: "net-1", name: "Test Net", meshCIDR: "10.200.0.0/16" };
+
+  it("parseMeshdNodeRequestRecord surfaces roleKeys and drops malformed entries", () => {
+    const raw = recordEntry("req-1", "network/nodeRequest", {
+      nodeDID: "did:jwk:node",
+      roleKeys: {
+        "network/member/node": VALID_X25519_KEY,
+        "network/node": VALID_X25519_KEY,
+        "network/bad": { kty: "OKP", crv: "Ed25519", x: "abc" }, // wrong curve — dropped
+        "network/empty": { kty: "OKP", crv: "X25519" }           // missing x — dropped
+      }
+    });
+
+    const parsed = parseMeshdNodeRequestRecord(raw);
+    expect(parsed?.roleKeys).toEqual({
+      "network/member/node": VALID_X25519_KEY,
+      "network/node": VALID_X25519_KEY
+    });
+  });
+
+  it("parseMeshdNodeRequestRecord omits roleKeys when none are present", () => {
+    const raw = recordEntry("req-2", "network/nodeRequest", { nodeDID: "did:jwk:node" });
+    expect(parseMeshdNodeRequestRecord(raw)?.roleKeys).toBeUndefined();
+  });
+
+  it("supplies the node's role-audience key on the member/node write and approves", async () => {
+    const { session, requests } = createFakeSession({ recordIds: ["member-rec", "node-rec", "approval-rec"] });
+    const request = await signedOwnerNodeRequest({ ownerDID: "did:example:owner", roleKeys: { "network/member/node": VALID_X25519_KEY } });
+
+    const result = await approveMeshdNodeRequest(session, network, request);
+    expect(result.nodeRecordId).toBe("node-rec");
+
+    const nodeWrite = requests.find(
+      (r) => r.messageType === DwnInterface.RecordsWrite && r.messageParams?.protocolPath === "network/member/node"
+    );
+    expect(nodeWrite).toBeDefined();
+    expect(nodeWrite!.recipientRolePublicKey).toEqual(VALID_X25519_KEY);
+    expect(nodeWrite!.messageParams.recipient).toBe(request.nodeDID);
+
+    // The node record is NOT rolled back on a successful delivery.
+    const nodeDeletes = requests.filter(
+      (r) => r.messageType === DwnInterface.RecordsDelete && r.messageParams?.recordId === "node-rec"
+    );
+    expect(nodeDeletes).toHaveLength(0);
+  });
+
+  it("refuses to approve a node that did not supply role keys (fail-fast)", async () => {
+    const { session, requests } = createFakeSession();
+    const request = await signedOwnerNodeRequest({ ownerDID: "did:example:owner" }); // no roleKeys
+
+    await expect(approveMeshdNodeRequest(session, network, request)).rejects.toThrow(/did not include.*role-audience key|#187/i);
+
+    // The node record write is never reached.
+    const nodeWrite = requests.find(
+      (r) => r.messageType === DwnInterface.RecordsWrite && r.messageParams?.protocolPath === "network/member/node"
+    );
+    expect(nodeWrite).toBeUndefined();
+  });
+
+  it("rolls back the node record and fails when the key could not be delivered", async () => {
+    const { session, requests } = createFakeSession({
+      recordIds: ["member-rec", "node-rec", "approval-rec"],
+      audienceKeyDelivery: { delivered: false, recipientDid: "did:jwk:node", reason: "no seal coverage" }
+    });
+    const request = await signedOwnerNodeRequest({ ownerDID: "did:example:owner", roleKeys: { "network/member/node": VALID_X25519_KEY } });
+
+    await expect(approveMeshdNodeRequest(session, network, request)).rejects.toThrow(/could not deliver.*rolled back|no seal coverage/i);
+
+    // The just-written node record is deleted with the dashboard's own delete grant.
+    const nodeDeletes = requests.filter(
+      (r) => r.messageType === DwnInterface.RecordsDelete && r.messageParams?.recordId === "node-rec"
+    );
+    expect(nodeDeletes).toHaveLength(1);
   });
 });
