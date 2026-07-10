@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.20.0](https://github.com/enboxorg/meshd/compare/v0.19.0...v0.20.0) (2026-07-10)
+
+
+### Features
+
+* **admin:** guided first-run onboarding and ID-referenced invites ([#219](https://github.com/enboxorg/meshd/issues/219)) ([911bea7](https://github.com/enboxorg/meshd/commit/911bea73d8711d0fd2bbe899bfa12d64174fc2d7))
+
+
+### Bug Fixes
+
+* explain the vault before first-time creation and structure meshd up output ([#216](https://github.com/enboxorg/meshd/issues/216)) ([#218](https://github.com/enboxorg/meshd/issues/218)) ([662f995](https://github.com/enboxorg/meshd/commit/662f9955ffb9ed707d59b50dc5697654729af91c))
+* point the admin dashboard default at admin.meshd.sh ([#213](https://github.com/enboxorg/meshd/issues/213)) ([#214](https://github.com/enboxorg/meshd/issues/214)) ([2d23051](https://github.com/enboxorg/meshd/commit/2d23051f726da57fe57c3d6ba67eeaf6fdf0b865))
+
 ## [0.19.0](https://github.com/enboxorg/meshd/compare/v0.18.0...v0.19.0) (2026-07-10)
 
 
