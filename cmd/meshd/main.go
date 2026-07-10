@@ -773,7 +773,7 @@ type adminOptions struct {
 	networkRecordID string
 }
 
-const defaultAdminDashboardURL = "https://meshd-admin.pages.dev"
+const defaultAdminDashboardURL = "https://admin.meshd.sh"
 
 func parseAdminArgs(args []string) (adminOptions, error) {
 	opts := adminOptions{dashboardURL: defaultAdminDashboardURL}
