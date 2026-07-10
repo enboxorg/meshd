@@ -147,6 +147,7 @@ export type CreateMeshdInviteResult = {
   tokenId: string;
   secret: string;
   expiresAt?: string;
+  label?: string;
 };
 
 export type ApproveMeshdNodeRequestResult = {
@@ -817,7 +818,8 @@ export async function createMeshdInvite(
     url: encodeMeshdInviteURL(endpoint, session.ownerDid, network, record.recordId, secret, expiresAt),
     tokenId: record.recordId,
     secret,
-    ...(expiresAt ? { expiresAt } : {})
+    ...(expiresAt ? { expiresAt } : {}),
+    ...(options.label?.trim() ? { label: options.label.trim() } : {})
   };
 }
 
@@ -993,6 +995,13 @@ async function markPreAuthKeyUsed(
   if (key.usedBy.includes(nodeDID)) {
     return;
   }
+  // A single-use invite is spent the moment it is consumed, so delete the
+  // record instead of leaving a dead "1 used" entry cluttering the admin list.
+  // Reusable invites persist and just record the new consumer.
+  if (!key.reusable) {
+    await deleteRecord(session, MESHD_PROTOCOL_URI, key.recordId, false);
+    return;
+  }
   await writeRecord(
     session,
     MESHD_PROTOCOL_URI,
@@ -1009,7 +1018,7 @@ async function markPreAuthKeyUsed(
       key: key.key,
       ...(key.createdAt ? { createdAt: key.createdAt } : {}),
       ...(key.expiresAt ? { expiresAt: key.expiresAt } : {}),
-      ...(key.reusable !== undefined ? { reusable: key.reusable } : {}),
+      reusable: true,
       ...(key.ephemeral !== undefined ? { ephemeral: key.ephemeral } : {}),
       ...(key.label ? { label: key.label } : {}),
       usedBy: [...key.usedBy, nodeDID]
@@ -1169,6 +1178,11 @@ export async function approveMeshdNodeRequest(
   const preAuthKey = ownerScopedRequest ? undefined : await readPreAuthKey(session, network, request);
   const requestOwnerDID = nodeOwnerDID(request);
 
+  // An invite can pre-name the machine that joins with it: when the node request
+  // carries no label of its own, fall back to the invite's label, so an invite
+  // labeled "laptop-01" makes the joined node show as "laptop-01".
+  const effectiveLabel = request.label?.trim() || preAuthKey?.label;
+
   // The node authorizes as network/member and its peer records are encrypted to the
   // network/member audience, so that reading-role audience must be delivered to it. A
   // did:jwk node has no DWN endpoint to resolve its role-path key from, so it supplies
@@ -1184,7 +1198,7 @@ export async function approveMeshdNodeRequest(
       "roleKey in its join request (#192)."
     );
   }
-  const member = await ensureMemberRecord(session, network, requestOwnerDID, memberRolePublicKey, request.label);
+  const member = await ensureMemberRecord(session, network, requestOwnerDID, memberRolePublicKey, effectiveLabel);
   const meshIP = await allocateMeshIp(network.meshCIDR, request.nodeDID);
   const expiresAt = Object.prototype.hasOwnProperty.call(options, "expiresAt")
     ? options.expiresAt?.trim()
@@ -1222,7 +1236,7 @@ export async function approveMeshdNodeRequest(
     {
       meshIP,
       addedAt: new Date().toISOString(),
-      ...(request.label ? { label: request.label } : {}),
+      ...(effectiveLabel ? { label: effectiveLabel } : {}),
       ownerDID: requestOwnerDID,
       memberDID: requestOwnerDID,
       ...(request.delegateDID ? { delegateDID: request.delegateDID } : {}),
@@ -1274,7 +1288,7 @@ export async function approveMeshdNodeRequest(
         ...(member.dateCreated ? { memberDateCreated: member.dateCreated } : {}),
         nodeRecordId: nodeRecord.recordId,
         ...(nodeRecord.dateCreated ? { nodeDateCreated: nodeRecord.dateCreated } : {}),
-        ...(request.label ? { label: request.label } : {}),
+        ...(effectiveLabel ? { label: effectiveLabel } : {}),
         ...(expiresAt ? { expiresAt } : {}),
         approvedAt: new Date().toISOString(),
         requestRecordId: request.recordId
