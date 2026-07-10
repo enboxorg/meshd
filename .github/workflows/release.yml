@@ -128,4 +128,5 @@ jobs:
         env:
           MESHD_INSTALL_REQUESTED_VERSION: ${{ github.event.inputs.tag }}
           MESHD_INSTALL_EXPECTED_VERSION: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+          MESHD_INSTALL_FALLBACK_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.event.inputs.tag || github.event.release.tag_name }}/install.sh
         run: ./scripts/e2e/install-smoke.sh
