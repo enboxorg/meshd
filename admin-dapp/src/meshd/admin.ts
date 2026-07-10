@@ -30,6 +30,14 @@ export type MeshdAdminAgent = {
       };
     };
     messageCid?: string;
+    // Present on a `$role` RecordsWrite: reports whether the agent could deliver the
+    // recipient's role-audience key. Best-effort — a failure is reported here, not
+    // thrown (see @enbox/agent supplied-key delivery).
+    audienceKeyDelivery?: {
+      delivered: boolean;
+      recipientDid?: string;
+      reason?: string;
+    };
   }>;
   sync?: {
     sync?: (direction?: "push" | "pull") => Promise<void>;
@@ -79,6 +87,16 @@ export type MeshdNodeSummary = {
   createdAt?: string;
 };
 
+// RolePublicKeyJwk is the PUBLIC half of a node's role-path X25519 key, as emitted
+// in a node request's `roleKeys` (byte-identical to the `$keyAgreement.publicKeyJwk`
+// the node injects at that path). Shape matches @enbox/agent's PublicKeyJwk.
+export type RolePublicKeyJwk = {
+  kty: string;
+  crv: string;
+  x: string;
+  kid?: string;
+};
+
 export type MeshdNodeRequestSummary = {
   recordId: string;
   protocolPath?: string;
@@ -98,6 +116,10 @@ export type MeshdNodeRequestSummary = {
   requestedAt?: string;
   expiresAt?: string;
   createdAt?: string;
+  // roleKeys carries the node's own role-path public keys, keyed by full role path
+  // (e.g. "network/member/node"). A DWN-less did:jwk node has no endpoint from which
+  // the owner could resolve these, so it supplies them here for key delivery (#187).
+  roleKeys?: Record<string, RolePublicKeyJwk>;
 };
 
 export type MeshdPreAuthKeySummary = {
@@ -136,6 +158,11 @@ export type ApproveMeshdNodeRequestResult = {
 type AuthoredRecord = {
   recordId: string;
   dateCreated?: string;
+  audienceKeyDelivery?: {
+    delivered: boolean;
+    recipientDid?: string;
+    reason?: string;
+  };
 };
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -327,10 +354,11 @@ async function writeRecord(
   protocol: string,
   messageParams: Record<string, unknown>,
   payload: Record<string, unknown>,
-  encryption?: true
+  encryption?: true,
+  recipientRolePublicKey?: RolePublicKeyJwk
 ): Promise<AuthoredRecord> {
   const data = new TextEncoder().encode(JSON.stringify(payload));
-  const { reply, message } = await processDwnRequest(
+  const { reply, message, audienceKeyDelivery } = await processDwnRequest(
     session,
     {
       author: session.ownerDid,
@@ -338,7 +366,11 @@ async function writeRecord(
       messageType: DwnInterface.RecordsWrite,
       messageParams,
       dataStream: new Blob([data], { type: "application/json" }),
-      ...(encryption ? { encryption } : {})
+      ...(encryption ? { encryption } : {}),
+      // Top-level ProcessDwnRequest field: when writing a $role record with a
+      // recipient, the agent wraps the key delivery to this instead of resolving the
+      // recipient's role-path key from a DWN it does not have (#187).
+      ...(recipientRolePublicKey ? { recipientRolePublicKey } : {})
     },
     protocol
   );
@@ -350,7 +382,8 @@ async function writeRecord(
   await pushChangesToRemote(session);
   return {
     recordId: recordIdFromMessage(message),
-    dateCreated: message.descriptor?.dateCreated
+    dateCreated: message.descriptor?.dateCreated,
+    ...(audienceKeyDelivery ? { audienceKeyDelivery } : {})
   };
 }
 
@@ -509,6 +542,25 @@ export function parseMeshdNodeRecord(rawEntry: unknown, memberRecordId?: string)
   };
 }
 
+// parseRoleKeys extracts a node request's `roleKeys` map, keeping only entries whose
+// value is a well-formed OKP/X25519 public JWK (kty, crv, x). The SDK re-validates the
+// key it is handed; this just keeps malformed payloads out of the summary. Returns
+// undefined when nothing usable is present.
+function parseRoleKeys(raw: unknown): Record<string, RolePublicKeyJwk> | undefined {
+  if (!isObject(raw)) return undefined;
+  const keys: Record<string, RolePublicKeyJwk> = {};
+  for (const [rolePath, value] of Object.entries(raw)) {
+    if (!isObject(value)) continue;
+    const kty = getString(value.kty);
+    const crv = getString(value.crv);
+    const x = getString(value.x);
+    if (kty !== "OKP" || crv !== "X25519" || !x) continue;
+    const kid = getString(value.kid);
+    keys[rolePath] = { kty, crv, x, ...(kid ? { kid } : {}) };
+  }
+  return Object.keys(keys).length > 0 ? keys : undefined;
+}
+
 export function parseMeshdNodeRequestRecord(rawEntry: unknown): MeshdNodeRequestSummary | undefined {
   const wrapper = isObject(rawEntry) ? rawEntry : undefined;
   const entry = getRecordWrite(rawEntry);
@@ -546,7 +598,8 @@ export function parseMeshdNodeRequestRecord(rawEntry: unknown): MeshdNodeRequest
     preAuthProof: getString(payload.preAuthProof),
     requestedAt: getString(payload.requestedAt),
     expiresAt: getString(payload.expiresAt),
-    createdAt: getString(descriptor.dateCreated) ?? getString(wrapper.dateCreated)
+    createdAt: getString(descriptor.dateCreated) ?? getString(wrapper.dateCreated),
+    roleKeys: parseRoleKeys(payload.roleKeys)
   };
 }
 
@@ -1093,18 +1146,30 @@ export async function approveMeshdNodeRequest(
     ? options.expiresAt?.trim()
     : request.expiresAt;
 
-  // Sealed-model key delivery: the member and node records below are role
-  // records with a recipient, so the agent automatically mints the sealed
-  // `$encryption/audience` keys during the encrypted writes and provisions
-  // `$encryption/delivery` records for the recipients
-  // (provisionAudienceKeyForAcceptedRoleRecord). The joining meshd daemon
-  // decrypts its records via those delivery records — nothing to do here.
+  // Sealed-model key delivery: the node record below is a role record with a
+  // recipient, so the agent mints the sealed `$encryption/audience` key during the
+  // encrypted write and provisions the `$encryption/delivery` record the joining
+  // meshd daemon decrypts its records with. A did:jwk node has no DWN endpoint for
+  // the owner to resolve its role-path key from, so it supplies that key in its join
+  // request (#187); we hand it to the agent to wrap the delivery. Refuse to approve a
+  // node that did not supply it — approving would create a node that silently can
+  // never decrypt its peers.
+  const NODE_ROLE_PATH = "network/member/node";
+  const recipientRolePublicKey = request.roleKeys?.[NODE_ROLE_PATH];
+  if (!recipientRolePublicKey) {
+    throw new Error(
+      `Node ${request.nodeDID} did not include its ${NODE_ROLE_PATH} role-audience key, so its ` +
+      "encryption keys cannot be delivered and it would never decrypt its peers. Upgrade the " +
+      "meshd node to a build that publishes roleKeys in its join request (#187)."
+    );
+  }
+
   const nodeRecord = await writeRecord(
     session,
     MESHD_PROTOCOL_URI,
     {
       protocol: MESHD_PROTOCOL_URI,
-      protocolPath: "network/member/node",
+      protocolPath: NODE_ROLE_PATH,
       schema: "https://enbox.id/schemas/wireguard-mesh/node",
       dataFormat: "application/json",
       recipient: request.nodeDID,
@@ -1119,8 +1184,24 @@ export async function approveMeshdNodeRequest(
       ...(request.delegateDID ? { delegateDID: request.delegateDID } : {}),
       ...(expiresAt ? { expiresAt } : {})
     },
-    true
+    true,
+    recipientRolePublicKey
   );
+
+  // Delivery is best-effort in the agent: a failure is reported on
+  // `audienceKeyDelivery`, not thrown. Enforce it here — the node is useless without
+  // its key. Roll back the just-written role record with the dashboard's own delete
+  // grant (which authorizes the delete the agent's write-scoped grant cannot) so the
+  // operator can retry cleanly instead of being blocked by a duplicate-role grant.
+  if (!nodeRecord.audienceKeyDelivery?.delivered) {
+    const reason = nodeRecord.audienceKeyDelivery?.reason ?? "no delivery outcome was reported";
+    await deleteRecord(session, MESHD_PROTOCOL_URI, nodeRecord.recordId, false);
+    throw new Error(
+      `Approved node ${request.nodeDID} but could not deliver its role-audience key (${reason}); ` +
+      "the node record was rolled back so you can retry. The node cannot decrypt its peers until " +
+      "delivery succeeds."
+    );
+  }
 
   if (preAuthKey) {
     await markPreAuthKeyUsed(session, network, preAuthKey, request.nodeDID);
