@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.21.0](https://github.com/enboxorg/meshd/compare/v0.20.0...v0.21.0) (2026-07-10)
+
+
+### Features
+
+* **admin:** unify brand with meshd.sh ([#220](https://github.com/enboxorg/meshd/issues/220)) ([#221](https://github.com/enboxorg/meshd/issues/221)) ([3612a75](https://github.com/enboxorg/meshd/commit/3612a756d925362b41eb2a3ca46e7d51dd9d7c03))
+
+
+### Bug Fixes
+
+* **tray:** add menu bar companion ([#224](https://github.com/enboxorg/meshd/issues/224)) ([2d6446f](https://github.com/enboxorg/meshd/commit/2d6446f2aa914122fba80e7a1309275475e848e4))
+
 ## [0.20.0](https://github.com/enboxorg/meshd/compare/v0.19.0...v0.20.0) (2026-07-10)
 
 
