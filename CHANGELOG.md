@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.17.0](https://github.com/enboxorg/meshd/compare/v0.16.1...v0.17.0) (2026-07-10)
+
+
+### Features
+
+* **admin-dapp:** invite lifecycle — auto-remove used, carry label to node, keep created copyable ([#198](https://github.com/enboxorg/meshd/issues/198)) ([aa8fb45](https://github.com/enboxorg/meshd/commit/aa8fb4510e4c7f9d3c279df732a49c8dc6cd411a))
+
+
+### Bug Fixes
+
+* **state:** keep network.json readable by the non-root CLI under sudo ([#195](https://github.com/enboxorg/meshd/issues/195)) ([#196](https://github.com/enboxorg/meshd/issues/196)) ([eb8e822](https://github.com/enboxorg/meshd/commit/eb8e82267db1a4c8c994a9d16178b2f7e2d6b08e))
+
 ## [0.16.1](https://github.com/enboxorg/meshd/compare/v0.16.0...v0.16.1) (2026-07-10)
 
 
