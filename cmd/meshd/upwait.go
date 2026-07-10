@@ -257,7 +257,7 @@ func awaitMembershipApproval(ctx context.Context, kind approvalWaitKind, f upFla
 	// joins that is the anchor DID — the local OwnerDID defaults to the
 	// joiner's own DID and would produce a URL the owner's wallet rejects.
 	adminCtx := adminContext{OwnerDID: ns.AnchorDID, NetworkRecordID: ns.NetworkRecordID}
-	fmt.Printf("\nWaiting for approval (timeout %s)...\n", timeout)
+	fmt.Printf("\n==> Waiting for approval (times out after %s)\n", timeout)
 	if kind == approvalWaitJoin {
 		fmt.Printf("  Approve this device in the dashboard, or keep the anchor node online\n")
 		fmt.Printf("  for automatic approval:\n")
@@ -288,6 +288,7 @@ func awaitMembershipApproval(ctx context.Context, kind approvalWaitKind, f upFla
 	if err := waitForApproval(waitCtx, deadline, os.Stdout, defaultApprovalPollPolicy, check); err != nil {
 		return nil, approvalWaitFailure(err, kind, inviteExpiresAt, deadline, adminCtx)
 	}
+	fmt.Printf("==> Approved — finalizing membership\n")
 
 	// Approval observed: run the existing refresh to persist the full
 	// membership state. The refresh re-queries the DWN, so a transient error
