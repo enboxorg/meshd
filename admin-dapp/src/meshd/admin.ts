@@ -830,6 +830,50 @@ export async function revokeMeshdInvite(
   await deleteRecord(session, MESHD_PROTOCOL_URI, key.recordId, false);
 }
 
+// Rewrites an invite's preAuthKey record with an updated description (stored in
+// the record's `label` field), preserving the secret, expiry, reusability, and
+// usage list. Invites are referenced by ID; the description is an optional
+// operator note added after creation.
+export async function updateMeshdInviteDescription(
+  session: MeshdAdminSession,
+  network: MeshdNetworkSummary,
+  invite: MeshdPreAuthKeySummary,
+  description?: string
+): Promise<MeshdPreAuthKeySummary> {
+  const nextDescription = description?.trim();
+  await writeRecord(
+    session,
+    MESHD_PROTOCOL_URI,
+    {
+      protocol: MESHD_PROTOCOL_URI,
+      protocolPath: "network/preAuthKey",
+      schema: "https://enbox.id/schemas/wireguard-mesh/pre-auth-key",
+      dataFormat: "application/json",
+      parentContextId: network.recordId,
+      recordId: invite.recordId,
+      ...(invite.recordCreatedAt ? { dateCreated: invite.recordCreatedAt } : {})
+    },
+    {
+      key: invite.key,
+      ...(invite.createdAt ? { createdAt: invite.createdAt } : {}),
+      ...(invite.expiresAt ? { expiresAt: invite.expiresAt } : {}),
+      ...(invite.reusable !== undefined ? { reusable: invite.reusable } : {}),
+      ...(invite.ephemeral !== undefined ? { ephemeral: invite.ephemeral } : {}),
+      ...(nextDescription ? { label: nextDescription } : {}),
+      usedBy: invite.usedBy ?? []
+    },
+    true
+  );
+
+  const next = { ...invite };
+  if (nextDescription) {
+    next.label = nextDescription;
+  } else {
+    delete next.label;
+  }
+  return next;
+}
+
 function nodeJoinProofMessage(
   networkId: string,
   nodeDID: string,
@@ -1178,10 +1222,11 @@ export async function approveMeshdNodeRequest(
   const preAuthKey = ownerScopedRequest ? undefined : await readPreAuthKey(session, network, request);
   const requestOwnerDID = nodeOwnerDID(request);
 
-  // An invite can pre-name the machine that joins with it: when the node request
-  // carries no label of its own, fall back to the invite's label, so an invite
-  // labeled "laptop-01" makes the joined node show as "laptop-01".
-  const effectiveLabel = request.label?.trim() || preAuthKey?.label;
+  // The node is named by what it reports about itself — its hostname, sent as
+  // the request label. An invite's description never names a machine: invites
+  // are operator annotations referenced by ID, and the joined device's name is
+  // editable on the node card after it connects.
+  const effectiveLabel = request.label?.trim() || undefined;
 
   // The node authorizes as network/member and its peer records are encrypted to the
   // network/member audience, so that reading-role audience must be delivered to it. A
