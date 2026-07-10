@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/enboxorg/meshd/compare/v0.15.0...v0.16.0) (2026-07-10)
+
+
+### Features
+
+* **admin-dapp:** deliver role-audience keys to did:jwk nodes on approve ([#187](https://github.com/enboxorg/meshd/issues/187)) ([#190](https://github.com/enboxorg/meshd/issues/190)) ([41d2d51](https://github.com/enboxorg/meshd/commit/41d2d5175a3c41cb6e1bc0c6feea692cebe69b38))
+
 ## [0.15.0](https://github.com/enboxorg/meshd/compare/v0.14.5...v0.15.0) (2026-07-09)
 
 
