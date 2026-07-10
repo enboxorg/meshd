@@ -14,6 +14,7 @@ import {
   parseMeshdNodeRequestRecord,
   parseMeshdPreAuthKeyRecord,
   rejectMeshdNodeRequest,
+  updateMeshdInviteDescription,
   updateMeshdNodeExpiry,
   updateMeshdNodeLabel,
   type MeshdAdminAgent,
@@ -634,6 +635,102 @@ describe("meshd admin DWN operations", () => {
     await expect(blobJson(requests[0].dataStream)).resolves.not.toHaveProperty("label");
   });
 
+  // The description edit re-reads the record before rewriting: the anchor
+  // daemon consumes invites concurrently, and writing a stale usedBy back
+  // would re-arm a spent single-use invite. The caller's (possibly stale)
+  // summary must contribute nothing but the record ID.
+  it("updates the invite description from the fresh record, never the stale summary", async () => {
+    const { session, requests } = createFakeSession({
+      recordIds: ["invite-record"],
+      queryEntries: [
+        recordEntry("invite-record", "network/preAuthKey", {
+          key: "secret-value",
+          createdAt: "2026-06-24T00:00:00Z",
+          expiresAt: "2026-06-25T00:00:00Z",
+          reusable: false,
+          usedBy: ["did:example:already-joined"]
+        })
+      ]
+    });
+    const network: MeshdNetworkSummary = {
+      recordId: "network-record",
+      name: "Home mesh",
+      meshCIDR: "10.200.0.0/16",
+      anchorEndpoint: "https://owner.dwn.example"
+    };
+
+    // Stale summary: fetched before the anchor daemon consumed the invite.
+    const invite = await updateMeshdInviteDescription(session, network, {
+      recordId: "invite-record",
+      key: "secret-value",
+      usedBy: [],
+      recordCreatedAt: "2026-01-01T00:00:00Z"
+    } as never, "office rack invite");
+
+    expect(invite.label).toBe("office rack invite");
+    expect(invite.usedBy).toEqual(["did:example:already-joined"]);
+    const write = requests.find((request) => request.messageType === DwnInterface.RecordsWrite);
+    expect(write).toMatchObject({
+      encryption: true,
+      messageParams: {
+        protocol: MESHD_PROTOCOL_URI,
+        protocolPath: "network/preAuthKey",
+        schema: "https://enbox.id/schemas/wireguard-mesh/pre-auth-key",
+        parentContextId: "network-record",
+        recordId: "invite-record",
+        dateCreated: "2026-06-24T00:00:00Z"
+      }
+    });
+    await expect(blobJson(write!.dataStream)).resolves.toEqual({
+      key: "secret-value",
+      createdAt: "2026-06-24T00:00:00Z",
+      expiresAt: "2026-06-25T00:00:00Z",
+      reusable: false,
+      label: "office rack invite",
+      usedBy: ["did:example:already-joined"]
+    });
+  });
+
+  it("clears the invite description while keeping the fresh secret and usage list", async () => {
+    const { session, requests } = createFakeSession({
+      recordIds: ["invite-record"],
+      queryEntries: [
+        recordEntry("invite-record", "network/preAuthKey", {
+          key: "secret-value",
+          label: "old note",
+          usedBy: []
+        })
+      ]
+    });
+    const network: MeshdNetworkSummary = {
+      recordId: "network-record",
+      name: "Home mesh",
+      meshCIDR: "10.200.0.0/16"
+    };
+
+    const invite = await updateMeshdInviteDescription(session, network, { recordId: "invite-record" }, "   ");
+
+    expect(invite.label).toBeUndefined();
+    const write = requests.find((request) => request.messageType === DwnInterface.RecordsWrite);
+    await expect(blobJson(write!.dataStream)).resolves.toEqual({
+      key: "secret-value",
+      usedBy: []
+    });
+  });
+
+  it("refuses to update the description of a revoked or consumed invite", async () => {
+    const { session } = createFakeSession({ recordIds: ["invite-record"], queryEntries: [] });
+    const network: MeshdNetworkSummary = {
+      recordId: "network-record",
+      name: "Home mesh",
+      meshCIDR: "10.200.0.0/16"
+    };
+
+    await expect(
+      updateMeshdInviteDescription(session, network, { recordId: "invite-record" }, "note")
+    ).rejects.toThrow("no longer exists");
+  });
+
   it("fails closed when the session has no delegate identity (never authors as owner)", async () => {
     const { session, agent, requests, pushes } = createFakeSession({ delegate: false });
 
@@ -910,7 +1007,10 @@ describe("meshd invite lifecycle", () => {
     expect(payload.usedBy).toEqual([request.nodeDID]);
   });
 
-  it("carries the invite label to the joined node when the request has none", async () => {
+  // Invites are operator annotations referenced by ID — their description never
+  // names a machine. The node's name is its self-reported hostname (the request
+  // label), editable on the node card after it connects.
+  it("does not carry the invite description to the joined node", async () => {
     const { session, requests } = createFakeSession({
       recordIds: ["member-rec", "node-rec"],
       queryEntries: [inviteEntry({ reusable: false, label: "laptop-01" })]
@@ -927,7 +1027,7 @@ describe("meshd invite lifecycle", () => {
     );
     expect(nodeWrite).toBeDefined();
     const payload = await blobJson(nodeWrite!.dataStream);
-    expect(payload.label).toBe("laptop-01");
+    expect(payload).not.toHaveProperty("label");
   });
 
   // One expiry model: the invite defines the access window, and the node that

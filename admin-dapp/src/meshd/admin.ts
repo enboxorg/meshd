@@ -830,6 +830,69 @@ export async function revokeMeshdInvite(
   await deleteRecord(session, MESHD_PROTOCOL_URI, key.recordId, false);
 }
 
+// Rewrites an invite's preAuthKey record with an updated description (stored in
+// the record's `label` field). Invites are referenced by ID; the description is
+// an optional operator note added after creation.
+//
+// The record is re-read immediately before the rewrite: the anchor daemon
+// consumes invites concurrently (appending to usedBy), and rewriting from a
+// stale topology snapshot would reset usedBy — re-arming a spent single-use
+// invite for anyone still holding its URL. Only the description may come from
+// the caller; everything else is preserved from the fresh record.
+export async function updateMeshdInviteDescription(
+  session: MeshdAdminSession,
+  network: MeshdNetworkSummary,
+  invite: Pick<MeshdPreAuthKeySummary, "recordId">,
+  description?: string
+): Promise<MeshdPreAuthKeySummary> {
+  const nextDescription = description?.trim();
+  const entries = await queryRecords(
+    session,
+    MESHD_PROTOCOL_URI,
+    "network/preAuthKey",
+    network.recordId,
+    { recordId: invite.recordId }
+  );
+  const fresh = entries
+    .map(parseMeshdPreAuthKeyRecord)
+    .find((entry) => entry?.recordId === invite.recordId);
+  if (!fresh) {
+    throw new Error("This invite no longer exists — it may have been revoked or already consumed.");
+  }
+
+  await writeRecord(
+    session,
+    MESHD_PROTOCOL_URI,
+    {
+      protocol: MESHD_PROTOCOL_URI,
+      protocolPath: "network/preAuthKey",
+      schema: "https://enbox.id/schemas/wireguard-mesh/pre-auth-key",
+      dataFormat: "application/json",
+      parentContextId: network.recordId,
+      recordId: fresh.recordId,
+      ...(fresh.recordCreatedAt ? { dateCreated: fresh.recordCreatedAt } : {})
+    },
+    {
+      key: fresh.key,
+      ...(fresh.createdAt ? { createdAt: fresh.createdAt } : {}),
+      ...(fresh.expiresAt ? { expiresAt: fresh.expiresAt } : {}),
+      ...(fresh.reusable !== undefined ? { reusable: fresh.reusable } : {}),
+      ...(fresh.ephemeral !== undefined ? { ephemeral: fresh.ephemeral } : {}),
+      ...(nextDescription ? { label: nextDescription } : {}),
+      usedBy: fresh.usedBy
+    },
+    true
+  );
+
+  const next = { ...fresh };
+  if (nextDescription) {
+    next.label = nextDescription;
+  } else {
+    delete next.label;
+  }
+  return next;
+}
+
 function nodeJoinProofMessage(
   networkId: string,
   nodeDID: string,
@@ -1178,10 +1241,11 @@ export async function approveMeshdNodeRequest(
   const preAuthKey = ownerScopedRequest ? undefined : await readPreAuthKey(session, network, request);
   const requestOwnerDID = nodeOwnerDID(request);
 
-  // An invite can pre-name the machine that joins with it: when the node request
-  // carries no label of its own, fall back to the invite's label, so an invite
-  // labeled "laptop-01" makes the joined node show as "laptop-01".
-  const effectiveLabel = request.label?.trim() || preAuthKey?.label;
+  // The node is named by what it reports about itself — its hostname, sent as
+  // the request label. An invite's description never names a machine: invites
+  // are operator annotations referenced by ID, and the joined device's name is
+  // editable on the node card after it connects.
+  const effectiveLabel = request.label?.trim() || undefined;
 
   // The node authorizes as network/member and its peer records are encrypted to the
   // network/member audience, so that reading-role audience must be delivered to it. A
