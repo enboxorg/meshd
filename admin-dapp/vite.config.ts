@@ -31,8 +31,8 @@ export default defineConfig({
         name: "meshd Admin",
         short_name: "meshd",
         description: "Dashboard for managing meshd WireGuard networks over DWN",
-        theme_color: "#101820",
-        background_color: "#101820"
+        theme_color: "#12101a",
+        background_color: "#12101a"
       },
 
       injectManifest: {

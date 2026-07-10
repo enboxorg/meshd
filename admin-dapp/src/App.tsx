@@ -113,7 +113,7 @@ export function App() {
     <div className="app-shell">
       <header className="topbar">
         <button className="brand" type="button" aria-label="meshd Admin">
-          <span className="brand-mark"><NetworkIcon size={20} /></span>
+          <span className="brand-mark"><img src="/favicon.svg" alt="" width={38} height={38} /></span>
           <span className="brand-copy">
             <span>meshd</span>
             <small>Admin</small>
