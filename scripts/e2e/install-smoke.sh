@@ -3,6 +3,13 @@
 set -euo pipefail
 
 INSTALL_URL="${MESHD_INSTALL_URL:-https://meshd.sh/install}"
+# meshd.sh sits behind Cloudflare bot protection that returns 403 to datacenter
+# IPs such as CI runners, even though it serves fine to real users. When the
+# primary edge is unreachable, fall back to this source (e.g. the raw install.sh
+# at the release tag) so the smoke test still exercises the installer and the
+# published release binaries end to end instead of failing the release.
+INSTALL_FALLBACK_URL="${MESHD_INSTALL_FALLBACK_URL:-}"
+INSTALL_USER_AGENT="${MESHD_INSTALL_USER_AGENT:-meshd-install-smoke/1 (+https://github.com/enboxorg/meshd)}"
 REQUESTED_VERSION="${MESHD_INSTALL_REQUESTED_VERSION:-}"
 EXPECTED_VERSION="${MESHD_INSTALL_EXPECTED_VERSION:-}"
 TMP_DIR="${MESHD_INSTALL_TMP_DIR:-}"
@@ -49,8 +56,28 @@ if [ -z "$EXPECTED_VERSION" ] && [ -n "$REQUESTED_VERSION" ]; then
   EXPECTED_VERSION="$REQUESTED_VERSION"
 fi
 
-printf '==> Fetching installer from %s\n' "$INSTALL_URL"
-curl -fsSL "$INSTALL_URL" | HOME="$HOME_DIR" bash -s -- "${args[@]}"
+fetch_installer() {
+  # Write the installer script to $1, trying the primary URL then the fallback.
+  # A realistic User-Agent sidesteps UA-based edge rules and --retry rides out
+  # transient network errors; a persistent primary failure (e.g. a Cloudflare
+  # 403 to a CI runner) falls through to the fallback rather than failing.
+  local out="$1" url
+  for url in "$INSTALL_URL" "$INSTALL_FALLBACK_URL"; do
+    [ -n "$url" ] || continue
+    printf '==> Fetching installer from %s\n' "$url"
+    if curl -fsSL --retry 3 --retry-connrefused -A "$INSTALL_USER_AGENT" "$url" -o "$out"; then
+      return 0
+    fi
+    printf 'install-smoke: warning: could not fetch installer from %s\n' "$url" >&2
+  done
+  return 1
+}
+
+installer="${TMP_DIR}/install.sh"
+if ! fetch_installer "$installer"; then
+  fail "could not fetch the installer from any source (primary: ${INSTALL_URL}${INSTALL_FALLBACK_URL:+, fallback: ${INSTALL_FALLBACK_URL}})"
+fi
+HOME="$HOME_DIR" bash "$installer" "${args[@]}"
 
 bin="${HOME_DIR}/.meshd/bin/meshd"
 if [ ! -x "$bin" ]; then

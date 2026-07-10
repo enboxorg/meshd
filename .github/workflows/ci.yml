@@ -29,6 +29,9 @@ jobs:
       - name: Unit Tests
         run: go test ./... -count=1 -race -coverprofile=coverage.out -covermode=atomic
 
+      - name: Installer smoke fetch test
+        run: ./scripts/e2e/install-smoke.test.sh
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:

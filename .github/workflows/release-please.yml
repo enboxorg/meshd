@@ -141,4 +141,5 @@ jobs:
       - name: Install latest release via meshd.sh
         env:
           MESHD_INSTALL_EXPECTED_VERSION: ${{ needs.release-please.outputs.tag_name }}
+          MESHD_INSTALL_FALLBACK_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ needs.release-please.outputs.tag_name }}/install.sh
         run: ./scripts/e2e/install-smoke.sh
