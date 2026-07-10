@@ -108,3 +108,17 @@ to progressively decouple:
 - Keep PRs focused. One concern per PR.
 - Run `go mod tidy && go mod vendor` if dependencies change.
 - Never edit `vendor/` directly. Push changes to the upstream repo first.
+
+## Versioning
+
+**Patch-only for now.** This module is pre-release (`0.x`) and makes **no
+backwards-compatibility guarantees** until we cut a stable release. Every change
+ships as a **patch** bump — never minor, never major.
+
+- Breaking changes are acceptable and expected. Do **not** add compatibility
+  shims, migration paths, or deprecation cycles to preserve old behavior; just
+  change it. Callers are updated in lockstep.
+- The intended release cadence is patch-only, so don't lean on `feat:` commits
+  to force a minor bump. (release-please derives the bump from commit types; if
+  we want to hard-enforce patch-only, set `versioning: always-bump-patch` in the
+  release-please config.)
