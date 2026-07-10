@@ -55,7 +55,7 @@ func TestApprovalWaitDeadline(t *testing.T) {
 
 	// Expiry before the timeout: expiry caps the wait.
 	early := now.Add(5 * time.Minute).Format(time.RFC3339)
-	if got := approvalWaitDeadline(now, timeout, early); !got.Equal(now.Add(5*time.Minute)) {
+	if got := approvalWaitDeadline(now, timeout, early); !got.Equal(now.Add(5 * time.Minute)) {
 		t.Fatalf("deadline = %s, want %s", got, now.Add(5*time.Minute))
 	}
 }

@@ -46,6 +46,27 @@ is already installed, `meshd up 'meshd://invite/...'` does the same join —
 submit, wait for approval, connect. `--wait-timeout <dur>` bounds the wait
 (default 15m) and `--no-wait` restores the old submit-and-exit behavior.
 
+### Menu-bar companion
+
+macOS and Windows release archives also include `meshd-tray`. It shows the
+daemon's connected state in the tray icon and provides Connect, Disconnect,
+Open Dashboard, Copy Mesh IP, and a live peer list; selecting a peer copies its
+mesh IP. Linux tray packaging is deferred for the first release.
+
+For password-encrypted profiles, opt in to OS credential storage once from a
+terminal, then enable the tray at login:
+
+```bash
+meshd vault remember       # macOS Keychain / Windows Credential Manager
+meshd-tray install         # LaunchAgent / per-user Startup shortcut
+```
+
+Use `meshd vault forget` to remove the saved credential. On macOS, Connect
+opens the normal `meshd up` flow in Terminal so the system-routing sudo prompt
+stays visible; Keychain removes the separate vault-password prompt. Windows
+launches the CLI directly. The vault password is never placed on a command
+line.
+
 ### Wallet-delegate onboarding (enbox connect)
 
 For wallet-owned meshes, `meshd auth connect` now onboards each machine
@@ -173,6 +194,8 @@ Identity:
   vault status      Show local vault state
   vault init        Encrypt a legacy plaintext identity
   vault unlock      Verify the vault password and show identity
+  vault remember    Store the vault password in the OS credential store
+  vault forget      Remove it from the OS credential store
 
 Network:
   network create    Create a new mesh network on a DWN
@@ -379,6 +402,7 @@ on the same machine.
 
 ```
 cmd/meshd/              CLI entrypoint
+cmd/meshd-tray/         macOS/Windows menu-bar companion
 internal/
   control/              DWN-based control client -> MapResponse for engine
   dwn/                  DWN HTTP client, JWS signing, CID, subscriptions
@@ -389,7 +413,11 @@ internal/
   vault/                Password-encrypted local secret storage
   state/                On-disk state management
   daemon/               Unix socket daemon for up/down/status
+  dashboard/            Shared dashboard URL/context resolution
   profile/              Multi-identity profile management
+  trayapp/              Platform-neutral tray state and actions
+  trayicon/             Native template/ICO status icon renderer
+  vaultkey/             OS credential-store integration for vault unlock
 pkg/
   dids/                 DID resolution (did:jwk, did:web, did:dht)
   jwk/                  JWK key operations

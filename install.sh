@@ -5,6 +5,12 @@ set -euo pipefail
 APP='meshd'
 REPO='enboxorg/meshd'
 INSTALL_DIR="${HOME}/.${APP}/bin"
+TRAY_APP_DIR="${HOME}/.${APP}/meshd-tray.app"
+TRAY_APP_BACKUP="${TRAY_APP_DIR}.previous"
+TRAY_SWAP_ACTIVE=false
+TRAY_LAUNCH_AGENT_LABEL='org.enbox.meshd-tray'
+LAUNCHCTL="${MESHD_INSTALL_LAUNCHCTL:-/bin/launchctl}"
+MESHD_WINDOWS_RESTART=false
 REQUESTED_VERSION="${VERSION:-}"
 # Test/ops override for the release download base (offline CI tests use a
 # file:// mirror). Layout must match GitHub releases: <base>/<tag>/<archive>.
@@ -13,6 +19,9 @@ NO_MODIFY_PATH=false
 TMP_DIR=''
 
 cleanup() {
+  if [ "$TRAY_SWAP_ACTIVE" = true ] && [ ! -e "$TRAY_APP_DIR" ] && [ -e "$TRAY_APP_BACKUP" ]; then
+    mv "$TRAY_APP_BACKUP" "$TRAY_APP_DIR" || true
+  fi
   if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
     rm -rf "$TMP_DIR"
   fi
@@ -195,6 +204,180 @@ add_to_path() {
   printf '  %s\n' "$line"
 }
 
+restart_macos_tray_if_loaded() {
+  [ -x "$LAUNCHCTL" ] || return 0
+
+  local service="gui/$(id -u)/${TRAY_LAUNCH_AGENT_LABEL}"
+  if "$LAUNCHCTL" print "$service" >/dev/null 2>&1; then
+    if ! "$LAUNCHCTL" kickstart -k "$service" >/dev/null 2>&1; then
+      printf 'warning: meshd-tray was updated but could not be restarted; reopen it from the next login\n' >&2
+    fi
+  fi
+}
+
+install_macos_tray() {
+  local source_app="$1"
+  local staged="${TRAY_APP_DIR}.new"
+  local had_previous=false
+
+  [ -f "${source_app}/Contents/Info.plist" ] || fail 'macOS tray bundle is missing Info.plist'
+  [ -f "${source_app}/Contents/MacOS/meshd-tray" ] || fail 'macOS tray bundle is missing its executable'
+
+  # Recover the previous bundle if an earlier install was interrupted between
+  # the two same-filesystem renames.
+  if [ ! -e "$TRAY_APP_DIR" ] && [ -e "$TRAY_APP_BACKUP" ]; then
+    mv "$TRAY_APP_BACKUP" "$TRAY_APP_DIR"
+  fi
+  rm -rf "$staged" "$TRAY_APP_BACKUP"
+  cp -R "$source_app" "$staged"
+  chmod +x "${staged}/Contents/MacOS/meshd-tray"
+
+  TRAY_SWAP_ACTIVE=true
+  if [ -e "$TRAY_APP_DIR" ]; then
+    mv "$TRAY_APP_DIR" "$TRAY_APP_BACKUP"
+    had_previous=true
+  fi
+  if ! mv "$staged" "$TRAY_APP_DIR"; then
+    if [ "$had_previous" = true ]; then
+      mv "$TRAY_APP_BACKUP" "$TRAY_APP_DIR" || true
+    fi
+    if [ -e "$TRAY_APP_DIR" ] || [ "$had_previous" = false ]; then
+      TRAY_SWAP_ACTIVE=false
+    fi
+    return 1
+  fi
+  if ! ln -sfn "${TRAY_APP_DIR}/Contents/MacOS/meshd-tray" "${INSTALL_DIR}/meshd-tray"; then
+    rm -rf "$TRAY_APP_DIR"
+    if [ "$had_previous" = true ]; then
+      mv "$TRAY_APP_BACKUP" "$TRAY_APP_DIR" || true
+    fi
+    if [ -e "$TRAY_APP_DIR" ] || [ "$had_previous" = false ]; then
+      TRAY_SWAP_ACTIVE=false
+    fi
+    return 1
+  fi
+
+  rm -rf "$TRAY_APP_BACKUP"
+  TRAY_SWAP_ACTIVE=false
+  restart_macos_tray_if_loaded
+}
+
+windows_native_path() {
+  if has_command cygpath; then
+    cygpath -w "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+refresh_windows_startup_shortcut() {
+  local target="$1"
+  has_command powershell.exe || return 0
+
+  local native_target
+  native_target="$(windows_native_path "$target")"
+  MESHD_TRAY_AUTOSTART_TARGET="$native_target" powershell.exe -NoProfile -NonInteractive -Command '
+    $ErrorActionPreference = "Stop"
+    $linkPath = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\meshd-tray.lnk"
+    if (-not (Test-Path -LiteralPath $linkPath)) { exit 0 }
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($linkPath)
+    $target = $env:MESHD_TRAY_AUTOSTART_TARGET
+    $installDir = Split-Path $target
+    $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+      try {
+        $_.Path -and (Split-Path $_.Path) -eq $installDir -and $_.Name -like "meshd-tray*"
+      } catch { $false }
+    })
+    $shortcut.TargetPath = $target
+    $shortcut.WorkingDirectory = $installDir
+    $shortcut.Save()
+    if ($running.Count -gt 0) {
+      $running | Stop-Process -Force
+      $running | Wait-Process -ErrorAction SilentlyContinue
+      Start-Process -FilePath $linkPath
+    }
+  '
+}
+
+install_windows_tray() {
+  local source_exe="$1"
+  local tag="$2"
+  local version_id="${tag#v}"
+  version_id="${version_id//[^a-zA-Z0-9._-]/_}"
+  [ -n "$version_id" ] || fail 'release tag cannot be used as a Windows tray filename'
+
+  local checksum size
+  read -r checksum size _ <<EOF
+$(cksum "$source_exe")
+EOF
+  local versioned_name="meshd-tray-${version_id}-${checksum}-${size}.exe"
+  local versioned_path="${INSTALL_DIR}/${versioned_name}"
+  local stable_path="${INSTALL_DIR}/meshd-tray.exe"
+  local pointer_path="${INSTALL_DIR}/meshd-tray.current"
+
+  if [ ! -f "$versioned_path" ]; then
+    cp "$source_exe" "${versioned_path}.new"
+    chmod +x "${versioned_path}.new"
+    mv -f "${versioned_path}.new" "$versioned_path"
+  fi
+
+  printf '%s\n' "$versioned_name" > "${pointer_path}.new"
+  mv -f "${pointer_path}.new" "$pointer_path"
+
+  cp "$source_exe" "${stable_path}.new"
+  chmod +x "${stable_path}.new"
+
+  # Retarget and stop the old version before attempting to replace the stable
+  # command path. A running Startup tray executes the versioned image, but a
+  # manually launched older install may still be holding the stable path.
+  refresh_windows_startup_shortcut "$versioned_path"
+
+  if ! mv -f "${stable_path}.new" "$stable_path"; then
+    rm -f "${stable_path}.new"
+    if [ ! -f "$stable_path" ]; then
+      return 1
+    fi
+    printf 'warning: the meshd-tray command is currently running; the Startup shortcut will use the new version\n' >&2
+  fi
+
+  local old
+  for old in "${INSTALL_DIR}"/meshd-tray-*.exe; do
+    [ -e "$old" ] || continue
+    [ "$old" = "$versioned_path" ] && continue
+    rm -f "$old" 2>/dev/null || true
+  done
+}
+
+prepare_windows_meshd_upgrade() {
+  local installed="${INSTALL_DIR}/meshd.exe"
+  [ -f "$installed" ] || return 0
+
+  local output
+  if ! output="$("$installed" down 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    fail 'could not stop the running Windows meshd daemon for upgrade'
+  fi
+  case "$output" in
+    *'Stopping meshd'*)
+      MESHD_WINDOWS_RESTART=true
+      ;;
+  esac
+}
+
+restart_windows_meshd_after_upgrade() {
+  [ "$MESHD_WINDOWS_RESTART" = true ] || return 0
+
+  printf '==> Restarting meshd after Windows upgrade\n'
+  local bin="${INSTALL_DIR}/meshd.exe"
+  if (exec </dev/tty) 2>/dev/null; then
+    "$bin" up </dev/tty
+  else
+    "$bin" up
+  fi
+  MESHD_WINDOWS_RESTART=false
+}
+
 # run_meshd_up hands off to the freshly installed binary by absolute path
 # (PATH updates only reach future shells). Under `curl | bash` stdin is the
 # script pipe, so reattach /dev/tty when one exists — that keeps the vault
@@ -282,6 +465,10 @@ main() {
 
   mkdir -p "$INSTALL_DIR"
 
+  if [ "$os" = 'windows' ]; then
+    prepare_windows_meshd_upgrade
+  fi
+
   local suffix=''
   if [ "$os" = 'windows' ]; then
     suffix='.exe'
@@ -294,12 +481,29 @@ main() {
   chmod +x "${INSTALL_DIR}/meshd${suffix}.new"
   mv -f "${INSTALL_DIR}/meshd${suffix}.new" "${INSTALL_DIR}/meshd${suffix}"
 
+  local tray_installed=false
+  if [ "$os" = 'darwin' ] && [ -d "${TMP_DIR}/meshd-tray.app" ]; then
+    install_macos_tray "${TMP_DIR}/meshd-tray.app"
+    tray_installed=true
+  elif [ "$os" = 'windows' ] && [ -f "${TMP_DIR}/meshd-tray.exe" ]; then
+    install_windows_tray "${TMP_DIR}/meshd-tray.exe" "$tag"
+    tray_installed=true
+  fi
+
+  if [ "$os" = 'windows' ] && [ "$RUN_UP" = false ]; then
+    restart_windows_meshd_after_upgrade
+  fi
+
   if [ "$NO_MODIFY_PATH" = false ] && [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
     add_to_path
   fi
 
   printf '==> Installed to %s\n' "$INSTALL_DIR"
   "${INSTALL_DIR}/meshd${suffix}" --version || true
+
+  if [ "$tray_installed" = true ]; then
+    printf 'Enable the menu-bar app at login with: meshd-tray install\n'
+  fi
 
   if [ "$RUN_UP" = true ]; then
     # meshd up can wait minutes for dashboard approval; drop the download

@@ -13,6 +13,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -20,8 +21,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/tailscale/peercred"
 )
 
 // DefaultSocketPath returns the default Unix socket path for the daemon.
@@ -45,13 +49,26 @@ func DefaultSocketPath() string {
 
 // Status is the JSON response from GET /api/v0/status.
 type Status struct {
-	Running   bool   `json:"running"`
-	TUNDevice string `json:"tunDevice,omitempty"`
-	MeshIP    string `json:"meshIP,omitempty"`
-	Network   string `json:"network,omitempty"`
-	Uptime    string `json:"uptime,omitempty"`
-	PID       int    `json:"pid"`
+	Running         bool         `json:"running"`
+	TUNDevice       string       `json:"tunDevice,omitempty"`
+	MeshIP          string       `json:"meshIP,omitempty"`
+	Network         string       `json:"network,omitempty"`
+	OwnerDID        string       `json:"ownerDID,omitempty"`
+	NetworkRecordID string       `json:"networkRecordID,omitempty"`
+	Peers           []PeerStatus `json:"peers,omitempty"`
+	Uptime          string       `json:"uptime,omitempty"`
+	PID             int          `json:"pid"`
 }
+
+// PeerStatus is the status-facing view of a peer from the engine's latest
+// network map.
+type PeerStatus struct {
+	Name   string `json:"name"`
+	MeshIP string `json:"meshIP"`
+	Online bool   `json:"online"`
+}
+
+type peerAuthorizedContextKey struct{}
 
 // StatusFunc is called to obtain the current daemon status.
 type StatusFunc func() Status
@@ -67,8 +84,9 @@ type Server struct {
 	listener net.Listener
 	srv      *http.Server
 
-	// shutdownCh is signaled when a shutdown request is received.
-	shutdownCh chan struct{}
+	// shutdownCh is closed once when a shutdown request is received.
+	shutdownCh   chan struct{}
+	shutdownOnce sync.Once
 }
 
 // NewServer creates a new daemon control server.
@@ -105,10 +123,13 @@ func (s *Server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Ensure socket directory exists.
+	// The daemon can run as root after a sudo TUN handoff, while the socket
+	// remains in the invoking user's state directory. Refuse symlinked or
+	// group/world-accessible directories instead of changing an
+	// environment-selected path as root.
 	sockDir := filepath.Dir(s.socketPath)
-	if err := os.MkdirAll(sockDir, 0755); err != nil {
-		return fmt.Errorf("creating socket directory: %w", err)
+	if err := ensurePrivateSocketDirectory(sockDir); err != nil {
+		return err
 	}
 
 	// Remove stale socket if no one is listening.
@@ -123,15 +144,11 @@ func (s *Server) Start() error {
 		return fmt.Errorf("listening on %s: %w", s.socketPath, err)
 	}
 
-	// Set socket permissions: world-accessible on platforms with peer
-	// creds (Linux, macOS), restricted otherwise.
-	perm := os.FileMode(0600)
-	switch runtime.GOOS {
-	case "linux", "darwin", "freebsd":
-		perm = 0666
-	}
-	if err := os.Chmod(s.socketPath, perm); err != nil {
-		s.logger.Warn("setting socket permissions", slog.Any("error", err))
+	uid, gid, changeOwner := sudoSocketOwner(os.Geteuid(), os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID"))
+	if err := secureSocketFile(s.socketPath, uid, gid, changeOwner); err != nil {
+		listener.Close()
+		_ = os.Remove(s.socketPath)
+		return err
 	}
 
 	s.listener = listener
@@ -140,7 +157,19 @@ func (s *Server) Start() error {
 	mux.HandleFunc("POST /api/v0/shutdown", s.handleShutdown)
 	mux.HandleFunc("GET /api/v0/status", s.handleStatus)
 
-	s.srv = &http.Server{Handler: mux}
+	allowedUIDs := authorizedSocketUIDs(os.Geteuid(), os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID"))
+	s.srv = &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if authorized, _ := r.Context().Value(peerAuthorizedContextKey{}).(bool); !authorized {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			mux.ServeHTTP(w, r)
+		}),
+		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
+			return context.WithValue(ctx, peerAuthorizedContextKey{}, socketPeerAuthorized(conn, allowedUIDs))
+		},
+	}
 
 	go func() {
 		if err := s.srv.Serve(listener); err != nil && err != http.ErrServerClosed {
@@ -150,6 +179,104 @@ func (s *Server) Start() error {
 
 	s.logger.Info("daemon control socket listening", slog.String("path", s.socketPath))
 	return nil
+}
+
+func ensurePrivateSocketDirectory(dir string) error {
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		if !mayCreateSocketDirectory(os.Geteuid(), os.Getenv("MESHD_SUDO_CHILD"), os.Getenv("SUDO_UID")) {
+			return fmt.Errorf("socket directory must be created by the invoking user before privilege elevation: %s", dir)
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("creating socket directory: %w", err)
+		}
+		info, err = os.Lstat(dir)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect socket directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("socket directory must be a real directory, not a symlink: %s", dir)
+	}
+	if privilegedSocketHandoff(os.Geteuid(), os.Getenv("MESHD_SUDO_CHILD"), os.Getenv("SUDO_UID")) {
+		hasSymlink, err := socketDirectoryPathHasSymlink(dir)
+		if err != nil {
+			return err
+		}
+		if hasSymlink {
+			return fmt.Errorf("socket directory path must not contain symlinks during privilege handoff: %s", dir)
+		}
+	}
+	if enforcePrivateMode(runtime.GOOS) && info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("socket directory permissions must be 0700: %s", dir)
+	}
+	return nil
+}
+
+func mayCreateSocketDirectory(euid int, sudoChild, sudoUID string) bool {
+	return !privilegedSocketHandoff(euid, sudoChild, sudoUID)
+}
+
+func privilegedSocketHandoff(euid int, sudoChild, sudoUID string) bool {
+	return euid == 0 && (sudoChild != "" || sudoUID != "")
+}
+
+func socketDirectoryPathHasSymlink(dir string) (bool, error) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return false, fmt.Errorf("resolve socket directory: %w", err)
+	}
+	resolvedDir, err := filepath.EvalSymlinks(absDir)
+	if err != nil {
+		return false, fmt.Errorf("resolve socket directory symlinks: %w", err)
+	}
+	return filepath.Clean(resolvedDir) != filepath.Clean(absDir), nil
+}
+
+func enforcePrivateMode(goos string) bool {
+	switch goos {
+	case "linux", "darwin", "freebsd":
+		return true
+	default:
+		return false
+	}
+}
+
+func sudoSocketOwner(euid int, sudoUID, sudoGID string) (uid, gid int, ok bool) {
+	if euid != 0 {
+		return 0, 0, false
+	}
+	uid64, uidErr := strconv.ParseInt(sudoUID, 10, 32)
+	gid64, gidErr := strconv.ParseInt(sudoGID, 10, 32)
+	if uidErr != nil || gidErr != nil || uid64 <= 0 || gid64 < 0 {
+		return 0, 0, false
+	}
+	return int(uid64), int(gid64), true
+}
+
+func authorizedSocketUIDs(euid int, sudoUID, sudoGID string) map[string]struct{} {
+	allowed := map[string]struct{}{strconv.Itoa(euid): {}}
+	if uid, _, ok := sudoSocketOwner(euid, sudoUID, sudoGID); ok {
+		allowed[strconv.Itoa(uid)] = struct{}{}
+	}
+	return allowed
+}
+
+func socketPeerAuthorized(conn net.Conn, allowedUIDs map[string]struct{}) bool {
+	creds, err := peercred.Get(conn)
+	if errors.Is(err, peercred.ErrNotImplemented) {
+		// Platforms without peer credentials rely on the owner-only socket.
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	uid, ok := creds.UserID()
+	if !ok {
+		return false
+	}
+	_, ok = allowedUIDs[uid]
+	return ok
 }
 
 // Stop gracefully shuts down the HTTP server and removes the socket.
@@ -180,10 +307,7 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	// Signal shutdown asynchronously so the HTTP response is sent first.
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		select {
-		case s.shutdownCh <- struct{}{}:
-		default:
-		}
+		s.shutdownOnce.Do(func() { close(s.shutdownCh) })
 	}()
 }
 
