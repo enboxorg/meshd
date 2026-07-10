@@ -68,6 +68,10 @@ function truncateDid(did: string, head = 18, tail = 10) {
   return `${did.slice(0, head)}...${did.slice(-tail)}`;
 }
 
+function onboardedStorageKey(networkRecordId: string) {
+  return `enbox:meshd-admin:onboarded:${networkRecordId}`;
+}
+
 function formatDuration(ms: number): string {
   const minutes = Math.round(ms / 60_000);
   if (minutes < 60) return `${Math.max(1, minutes)} min`;
@@ -205,9 +209,14 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
   const [networkName, setNetworkName] = useState("");
   const [networkCIDR, setNetworkCIDR] = useState("10.200.0.0/16");
   // First-run guide: tracks the just-approved first device for the success
-  // step, and whether the operator finished or skipped the guide.
+  // step, and whether the operator finished or skipped the guide. Completion
+  // persists per network so an established network never re-enters the guide
+  // (page reloads, removing the last node).
   const [firstConnected, setFirstConnected] = useState<{ name?: string; meshIP: string }>();
   const [onboardingDone, setOnboardingDone] = useState(false);
+  // Rebuilt install command for an invite that is still active but was created
+  // in an earlier session (inviteResults is in-memory only).
+  const [rebuiltCommand, setRebuiltCommand] = useState<string>();
   const [busyAction, setBusyAction] = useState<string>();
   const [topologyRefreshing, setTopologyRefreshing] = useState(false);
   const topologyRefreshInFlight = useRef(false);
@@ -328,9 +337,53 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
   useEffect(() => {
     setInviteResults([]);
     setFirstConnected(undefined);
-    setOnboardingDone(false);
+    setRebuiltCommand(undefined);
+    setOnboardingDone(
+      selectedNetwork ? localStorage.getItem(onboardedStorageKey(selectedNetwork.recordId)) === "1" : false
+    );
     suppressed.current = { requests: new Set(), invites: new Set(), nodes: new Set() };
   }, [selectedNetwork?.recordId]);
+
+  const markOnboarded = useCallback(() => {
+    setOnboardingDone(true);
+    if (selectedNetwork) {
+      try {
+        localStorage.setItem(onboardedStorageKey(selectedNetwork.recordId), "1");
+      } catch {
+        // Storage full/unavailable: the in-memory flag still covers this session.
+      }
+    }
+  }, [selectedNetwork]);
+
+  // A network that already has nodes is established — never (re-)enter the
+  // guide for it, including after its last node is removed later.
+  useEffect(() => {
+    if (!topology || !selectedNetwork) return;
+    const hasNodes = topology.members.some((member) => member.nodes.length > 0) || topology.legacyNodes.length > 0;
+    if (hasNodes && localStorage.getItem(onboardedStorageKey(selectedNetwork.recordId)) !== "1") {
+      markOnboarded();
+    }
+  }, [markOnboarded, selectedNetwork, topology]);
+
+  // Mid-guide reload: inviteResults is session state, but an active invite may
+  // exist on the DWN — rebuild its install command so the operator sees the
+  // same command hero instead of being pushed to mint a second invite.
+  useEffect(() => {
+    if (!session || !selectedNetwork || !topology || onboardingDone) return;
+    if (inviteResults.length > 0 || rebuiltCommand) return;
+    const hasNodes = topology.members.some((member) => member.nodes.length > 0) || topology.legacyNodes.length > 0;
+    const newestInvite = topology.preAuthKeys[0];
+    if (hasNodes || !newestInvite) return;
+    let cancelled = false;
+    void buildMeshdInviteURL(session, selectedNetwork, newestInvite)
+      .then((url) => {
+        if (!cancelled) setRebuiltCommand(installAndUpCommand(url));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [inviteResults.length, onboardingDone, rebuiltCommand, selectedNetwork, session, topology]);
 
   async function runAction(label: string, action: () => Promise<void>) {
     setBusyAction(label);
@@ -389,7 +442,9 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     await runAction(`approve-${request.recordId}`, async () => {
       const result = await approveMeshdNodeRequest(session, selectedNetwork, request);
       if (isFirstDevice) {
-        setFirstConnected({ name: request.label, meshIP: result.meshIP });
+        // Set-once: with two pending requests approved back-to-back, the
+        // success step announces the first device, not the last writer.
+        setFirstConnected((current) => current ?? { name: request.label, meshIP: result.meshIP });
       }
       // Drop the approved request now, and drop the single-use invite it consumed,
       // so both disappear immediately instead of lingering until the delete
@@ -604,21 +659,26 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
           />
         ) : !selectedNetwork ? (
           <StatePanel title="Loading networks" detail="Fetching your mesh networks." loading />
+        ) : !topology ? (
+          // The onboarding-vs-dashboard decision needs a loaded topology: an
+          // established network must never flash the first-run guide while
+          // its node list is still in flight.
+          <StatePanel title={selectedNetwork.name} detail="Loading the network topology." loading />
         ) : firstConnected && !onboardingDone ? (
           <FirstNodeConnected
             name={firstConnected.name}
             meshIP={firstConnected.meshIP}
             onAddAnother={() => {
-              setOnboardingDone(true);
+              markOnboarded();
               void handleCreateInvite();
             }}
-            onDismiss={() => setOnboardingDone(true)}
+            onDismiss={markOnboarded}
           />
         ) : allNodes.length === 0 && !onboardingDone ? (
           <>
             <FirstDevicePanel
               networkName={selectedNetwork.name}
-              command={inviteResults[0] ? installAndUpCommand(inviteResults[0].url) : undefined}
+              command={inviteResults[0] ? installAndUpCommand(inviteResults[0].url) : rebuiltCommand}
               inviteHint={inviteHint}
               creating={busyAction === "create-invite"}
               pendingCount={pendingRequests.length}
@@ -637,7 +697,7 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
                 ))}
               </div>
             </FirstDevicePanel>
-            <button className="text-button skip-guide" type="button" onClick={() => setOnboardingDone(true)}>
+            <button className="text-button skip-guide" type="button" onClick={markOnboarded}>
               Skip the guided setup
             </button>
           </>
@@ -971,15 +1031,23 @@ function InviteRow({
   const saving = busyAction === `describe-${invite.recordId}`;
   const [editing, setEditing] = useState(false);
   const [descriptionValue, setDescriptionValue] = useState(invite.label ?? "");
+  const editButtonRef = useRef<HTMLButtonElement>(null);
   const expiry = describeExpiry(invite.expiresAt);
 
   useEffect(() => {
     setDescriptionValue(invite.label ?? "");
   }, [invite.label]);
 
+  // Closing the editor unmounts the focused input; put keyboard users back on
+  // the pencil button instead of dropping focus to <body>.
+  function closeEditor() {
+    setEditing(false);
+    editButtonRef.current?.focus();
+  }
+
   async function saveDescription() {
     await onSaveDescription(invite, descriptionValue);
-    setEditing(false);
+    closeEditor();
   }
 
   return (
@@ -998,9 +1066,11 @@ function InviteRow({
       </div>
       <div className="row-actions">
         <button
+          ref={editButtonRef}
           className="icon-button"
           type="button"
           aria-label={invite.label ? "Edit invite description" : "Add invite description"}
+          aria-expanded={editing}
           title={invite.label ? "Edit description" : "Add description"}
           onClick={() => setEditing((value) => !value)}
         >
@@ -1025,7 +1095,7 @@ function InviteRow({
             placeholder="What is this invite for? (optional)"
             onKeyDown={(event) => {
               if (event.key === "Enter") void saveDescription();
-              if (event.key === "Escape") setEditing(false);
+              if (event.key === "Escape") closeEditor();
             }}
           />
           <button

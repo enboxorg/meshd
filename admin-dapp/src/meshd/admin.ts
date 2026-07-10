@@ -831,16 +831,35 @@ export async function revokeMeshdInvite(
 }
 
 // Rewrites an invite's preAuthKey record with an updated description (stored in
-// the record's `label` field), preserving the secret, expiry, reusability, and
-// usage list. Invites are referenced by ID; the description is an optional
-// operator note added after creation.
+// the record's `label` field). Invites are referenced by ID; the description is
+// an optional operator note added after creation.
+//
+// The record is re-read immediately before the rewrite: the anchor daemon
+// consumes invites concurrently (appending to usedBy), and rewriting from a
+// stale topology snapshot would reset usedBy — re-arming a spent single-use
+// invite for anyone still holding its URL. Only the description may come from
+// the caller; everything else is preserved from the fresh record.
 export async function updateMeshdInviteDescription(
   session: MeshdAdminSession,
   network: MeshdNetworkSummary,
-  invite: MeshdPreAuthKeySummary,
+  invite: Pick<MeshdPreAuthKeySummary, "recordId">,
   description?: string
 ): Promise<MeshdPreAuthKeySummary> {
   const nextDescription = description?.trim();
+  const entries = await queryRecords(
+    session,
+    MESHD_PROTOCOL_URI,
+    "network/preAuthKey",
+    network.recordId,
+    { recordId: invite.recordId }
+  );
+  const fresh = entries
+    .map(parseMeshdPreAuthKeyRecord)
+    .find((entry) => entry?.recordId === invite.recordId);
+  if (!fresh) {
+    throw new Error("This invite no longer exists — it may have been revoked or already consumed.");
+  }
+
   await writeRecord(
     session,
     MESHD_PROTOCOL_URI,
@@ -850,22 +869,22 @@ export async function updateMeshdInviteDescription(
       schema: "https://enbox.id/schemas/wireguard-mesh/pre-auth-key",
       dataFormat: "application/json",
       parentContextId: network.recordId,
-      recordId: invite.recordId,
-      ...(invite.recordCreatedAt ? { dateCreated: invite.recordCreatedAt } : {})
+      recordId: fresh.recordId,
+      ...(fresh.recordCreatedAt ? { dateCreated: fresh.recordCreatedAt } : {})
     },
     {
-      key: invite.key,
-      ...(invite.createdAt ? { createdAt: invite.createdAt } : {}),
-      ...(invite.expiresAt ? { expiresAt: invite.expiresAt } : {}),
-      ...(invite.reusable !== undefined ? { reusable: invite.reusable } : {}),
-      ...(invite.ephemeral !== undefined ? { ephemeral: invite.ephemeral } : {}),
+      key: fresh.key,
+      ...(fresh.createdAt ? { createdAt: fresh.createdAt } : {}),
+      ...(fresh.expiresAt ? { expiresAt: fresh.expiresAt } : {}),
+      ...(fresh.reusable !== undefined ? { reusable: fresh.reusable } : {}),
+      ...(fresh.ephemeral !== undefined ? { ephemeral: fresh.ephemeral } : {}),
       ...(nextDescription ? { label: nextDescription } : {}),
-      usedBy: invite.usedBy ?? []
+      usedBy: fresh.usedBy
     },
     true
   );
 
-  const next = { ...invite };
+  const next = { ...fresh };
   if (nextDescription) {
     next.label = nextDescription;
   } else {

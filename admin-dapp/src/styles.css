@@ -821,7 +821,8 @@ dd {
 
 .onboarding-steps {
   display: flex;
-  gap: 1.1rem;
+  flex-wrap: wrap;
+  gap: 0.55rem 1.1rem;
   margin: 0;
   padding: 0;
   list-style: none;

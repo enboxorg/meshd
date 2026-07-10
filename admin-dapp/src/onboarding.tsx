@@ -119,7 +119,7 @@ export function FirstDevicePanel({
           <div>
             <h1>Add your first device</h1>
             <p>
-              An invite lets one device request to join <strong>{networkName}</strong>.
+              An invite lets a device request to join <strong>{networkName}</strong>.
               You approve every request here before it can connect.
             </p>
           </div>
@@ -139,19 +139,23 @@ export function FirstDevicePanel({
             </p>
           </div>
           <CommandHero command={command} onCopy={onCopyCommand} />
-          {pendingCount > 0 ? (
-            <div className="onboarding-approve rise">
-              <div className="section-heading"><span>A device is asking to join</span></div>
-              {children}
-            </div>
-          ) : (
-            <div className="waiting-row" role="status">
-              <span className="waiting-dot" aria-hidden="true" />
-              Waiting for a device to run the command — this page updates on its own.
-            </div>
-          )}
         </>
       )}
+      {/* One persistent live region across all states: swapping its text is
+          announced to screen readers, unmounting it would not be. A pending
+          request always surfaces here, even when the command was lost (page
+          reload) — the device is waiting either way. */}
+      <div className="waiting-row" role="status">
+        {pendingCount === 0 && command ? <span className="waiting-dot" aria-hidden="true" /> : null}
+        {pendingCount > 0
+          ? "A device is asking to join — approve it below."
+          : command
+            ? "Waiting for a device to run the command — this page updates on its own."
+            : "Devices appear here as soon as they request to join."}
+      </div>
+      {pendingCount > 0 ? (
+        <div className="onboarding-approve rise">{children}</div>
+      ) : null}
     </section>
   );
 }
