@@ -66,13 +66,23 @@ func (r NodeRequestData) EffectiveOwnerDID() string {
 	return r.NodeDID
 }
 
-// nodeRoleKeyPaths are the mesh $role paths a node HOLDS (their delivery recipient
-// is the node itself). "network/member" is deliberately excluded: its recipient is
-// the member/owner DID, a different identity whose key the node cannot assert. The
-// node cannot know at join time whether approval places it under a member layer
-// (network/member/node) or directly (network/node) — deliverJoinerAudienceKeys
-// decides per-approval — so it publishes both candidate public keys.
-var nodeRoleKeyPaths = []string{"network/node", "network/member/node"}
+// nodeRoleKeyPaths are the mesh $role paths whose audience keys must reach the node
+// via `$encryption/delivery`, keyed under the node's own root. The node publishes the
+// PUBLIC half of each so a DWN-less did:jwk node can be delivered to without a lookup.
+//
+// "network/member" is the READING role a member-invited node authorizes as
+// (readProtocolRole -> "network/member"): peer node records grant can:read to
+// {network/member, network/node} only, so a node must recover the network/member
+// audience to see its peers. It derives that key from its own root at read time
+// (decryptViaDelivery), so it can and must advertise the public half — a self-asserted
+// role-path key is pure key transport and grants no new authority. Without it a node
+// silently decrypts nothing but its own record (issue #192).
+//
+// "network/node" (owner-provisioned nodes) and "network/member/node" (the node's own
+// $role path) are the roles a node HOLDS. The node cannot know at join time whether
+// approval places it under a member layer or directly, so it publishes all candidate
+// public keys and deliverJoinerAudienceKeys / the dashboard deliver the relevant ones.
+var nodeRoleKeyPaths = []string{"network/member", "network/node", "network/member/node"}
 
 // nodeRoleKeys derives the PUBLIC halves of the node's own role-path keys from its
 // root #enc key, for delivery to it without a DWN lookup. Returns nil (field

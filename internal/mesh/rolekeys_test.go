@@ -13,10 +13,11 @@ import (
 )
 
 // A did:jwk node publishes no DWN endpoint, so the owner cannot resolve its
-// role-path keys by DID. The node must therefore emit exactly the role paths it
-// HOLDS — network/node and network/member/node — and never network/member,
-// whose recipient is a different identity (the member/owner DID).
-func TestNodeRoleKeysEmitsExactlyNodeHeldPaths(t *testing.T) {
+// role-path keys by DID. The node must therefore emit the public half of every
+// role-path key it needs delivered to it: the READING role a member-invited node
+// authorizes as (network/member — the audience its peer records are encrypted to,
+// issue #192) plus the roles it may HOLD (network/node, network/member/node).
+func TestNodeRoleKeysEmitsReadingAndHeldPaths(t *testing.T) {
 	root, _, err := dwncrypto.GenerateX25519KeyPair()
 	if err != nil {
 		t.Fatalf("GenerateX25519KeyPair: %v", err)
@@ -27,12 +28,12 @@ func TestNodeRoleKeysEmitsExactlyNodeHeldPaths(t *testing.T) {
 		t.Fatalf("nodeRoleKeys: %v", err)
 	}
 
-	want := map[string]bool{"network/node": true, "network/member/node": true}
+	want := map[string]bool{"network/member": true, "network/node": true, "network/member/node": true}
 	if len(keys) != len(want) {
 		t.Fatalf("nodeRoleKeys returned %d paths (%v), want exactly %v", len(keys), keysOf(keys), keysOf(mapKeys(want)))
 	}
-	if _, bad := keys["network/member"]; bad {
-		t.Fatal("nodeRoleKeys must not emit network/member: its recipient is the member DID, not the node")
+	if _, ok := keys["network/member"]; !ok {
+		t.Fatal("nodeRoleKeys must emit network/member: it is the reading-role audience the node decrypts its peers with (#192)")
 	}
 	for path := range want {
 		jwk, ok := keys[path]

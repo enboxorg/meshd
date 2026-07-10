@@ -1361,11 +1361,13 @@ func (c *DWNClient) makeDecryptor(ctx context.Context, protocolPath string) Entr
 			c.logger.Debug("grant-key decrypt failed, trying role audience",
 				slog.String("path", protocolPath), slog.Any("error", err))
 		}
+		var roleAudienceErr error
 		if infos := dwncrypto.RoleAudienceEntryInfos(enc); len(infos) > 0 {
 			plaintext, err := c.decryptRoleAudience(ctx, ciphertext, enc, infos)
 			if err == nil {
 				return plaintext, nil
 			}
+			roleAudienceErr = err
 			c.logger.Debug("role-audience decrypt failed",
 				slog.String("path", protocolPath), slog.Any("error", err))
 			if c.encManager == nil {
@@ -1375,9 +1377,16 @@ func (c *DWNClient) makeDecryptor(ctx context.Context, protocolPath string) Entr
 		if c.encManager == nil {
 			return nil, fmt.Errorf("no key material decrypts record at %s", protocolPath)
 		}
-		// No roleAudience entry — attempt protocolPath (e.g. records the
-		// reader authored and can re-derive).
-		return c.decryptWithProtocolPath(ciphertext, enc, protocolPath)
+		// protocolPath fallback: only succeeds for records this reader authored and
+		// can re-derive. For an owner-authored roleAudience record a non-owner derives
+		// the wrong KEK and fails with a misleading "AES Key Unwrap integrity check
+		// failed" — so when the record carried roleAudience entries, surface that real
+		// (missing role-audience key) failure instead of masking it with the fallback.
+		plaintext, err := c.decryptWithProtocolPath(ciphertext, enc, protocolPath)
+		if err != nil && roleAudienceErr != nil {
+			return nil, roleAudienceErr
+		}
+		return plaintext, err
 	}
 }
 

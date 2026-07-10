@@ -693,13 +693,26 @@ describe("meshd node role-audience key delivery (#187)", () => {
     expect(parseMeshdNodeRequestRecord(raw)?.roleKeys).toBeUndefined();
   });
 
-  it("supplies the node's role-audience key on the member/node write and approves", async () => {
+  it("delivers the network/member reading-role audience to the node and approves", async () => {
     const { session, requests } = createFakeSession({ recordIds: ["member-rec", "node-rec", "approval-rec"] });
-    const request = await signedOwnerNodeRequest({ ownerDID: "did:example:owner", roleKeys: { "network/member/node": VALID_X25519_KEY } });
+    const request = await signedOwnerNodeRequest({
+      ownerDID: "did:example:owner",
+      roleKeys: { "network/member": VALID_X25519_KEY, "network/member/node": VALID_X25519_KEY }
+    });
 
     const result = await approveMeshdNodeRequest(session, network, request);
     expect(result.nodeRecordId).toBe("node-rec");
 
+    // The network/member role record — the reading-role audience peer records are
+    // encrypted to — is written with the node's supplied key so its delivery reaches
+    // the node (#192).
+    const memberWrite = requests.find(
+      (r) => r.messageType === DwnInterface.RecordsWrite && r.messageParams?.protocolPath === "network/member"
+    );
+    expect(memberWrite).toBeDefined();
+    expect(memberWrite!.recipientRolePublicKey).toEqual(VALID_X25519_KEY);
+
+    // The network/member/node role record is still written with its own key.
     const nodeWrite = requests.find(
       (r) => r.messageType === DwnInterface.RecordsWrite && r.messageParams?.protocolPath === "network/member/node"
     );
@@ -707,39 +720,66 @@ describe("meshd node role-audience key delivery (#187)", () => {
     expect(nodeWrite!.recipientRolePublicKey).toEqual(VALID_X25519_KEY);
     expect(nodeWrite!.messageParams.recipient).toBe(request.nodeDID);
 
-    // The node record is NOT rolled back on a successful delivery.
-    const nodeDeletes = requests.filter(
-      (r) => r.messageType === DwnInterface.RecordsDelete && r.messageParams?.recordId === "node-rec"
+    // Neither role record is rolled back on successful delivery (the original
+    // nodeRequest record is still cleaned up, so only the role records are checked).
+    const roleDeletes = requests.filter(
+      (r) => r.messageType === DwnInterface.RecordsDelete &&
+        (r.messageParams?.recordId === "member-rec" || r.messageParams?.recordId === "node-rec")
     );
-    expect(nodeDeletes).toHaveLength(0);
+    expect(roleDeletes).toHaveLength(0);
   });
 
-  it("refuses to approve a node that did not supply role keys (fail-fast)", async () => {
+  it("refuses to approve a node that supplied no role keys (fail-fast)", async () => {
     const { session, requests } = createFakeSession();
     const request = await signedOwnerNodeRequest({ ownerDID: "did:example:owner" }); // no roleKeys
 
-    await expect(approveMeshdNodeRequest(session, network, request)).rejects.toThrow(/did not include.*role-audience key|#187/i);
+    await expect(approveMeshdNodeRequest(session, network, request)).rejects.toThrow(/did not include.*role-audience key/i);
 
-    // The node record write is never reached.
-    const nodeWrite = requests.find(
-      (r) => r.messageType === DwnInterface.RecordsWrite && r.messageParams?.protocolPath === "network/member/node"
+    // No role record is written.
+    const roleWrite = requests.find(
+      (r) => r.messageType === DwnInterface.RecordsWrite &&
+        (r.messageParams?.protocolPath === "network/member" || r.messageParams?.protocolPath === "network/member/node")
     );
-    expect(nodeWrite).toBeUndefined();
+    expect(roleWrite).toBeUndefined();
   });
 
-  it("rolls back the node record and fails when the key could not be delivered", async () => {
+  it("refuses to approve when the network/member reading-role key is missing (fail-fast)", async () => {
+    const { session, requests } = createFakeSession();
+    // Supplies only the held-role key, not the reading-role key it decrypts peers with.
+    const request = await signedOwnerNodeRequest({
+      ownerDID: "did:example:owner",
+      roleKeys: { "network/member/node": VALID_X25519_KEY }
+    });
+
+    await expect(approveMeshdNodeRequest(session, network, request)).rejects.toThrow(/network\/member role-audience key/i);
+
+    const memberWrite = requests.find(
+      (r) => r.messageType === DwnInterface.RecordsWrite && r.messageParams?.protocolPath === "network/member"
+    );
+    expect(memberWrite).toBeUndefined();
+  });
+
+  it("rolls back the member record and fails when the reading-role audience could not be delivered", async () => {
     const { session, requests } = createFakeSession({
       recordIds: ["member-rec", "node-rec", "approval-rec"],
       audienceKeyDelivery: { delivered: false, recipientDid: "did:jwk:node", reason: "no seal coverage" }
     });
-    const request = await signedOwnerNodeRequest({ ownerDID: "did:example:owner", roleKeys: { "network/member/node": VALID_X25519_KEY } });
+    const request = await signedOwnerNodeRequest({
+      ownerDID: "did:example:owner",
+      roleKeys: { "network/member": VALID_X25519_KEY, "network/member/node": VALID_X25519_KEY }
+    });
 
     await expect(approveMeshdNodeRequest(session, network, request)).rejects.toThrow(/could not deliver.*rolled back|no seal coverage/i);
 
-    // The just-written node record is deleted with the dashboard's own delete grant.
-    const nodeDeletes = requests.filter(
-      (r) => r.messageType === DwnInterface.RecordsDelete && r.messageParams?.recordId === "node-rec"
+    // The network/member record — written first — is rolled back with the dashboard's
+    // own delete grant; the node record write is never reached.
+    const memberDeletes = requests.filter(
+      (r) => r.messageType === DwnInterface.RecordsDelete && r.messageParams?.recordId === "member-rec"
     );
-    expect(nodeDeletes).toHaveLength(1);
+    expect(memberDeletes).toHaveLength(1);
+    const nodeWrite = requests.find(
+      (r) => r.messageType === DwnInterface.RecordsWrite && r.messageParams?.protocolPath === "network/member/node"
+    );
+    expect(nodeWrite).toBeUndefined();
   });
 });
