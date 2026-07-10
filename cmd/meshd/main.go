@@ -1927,7 +1927,7 @@ func cmdJoin(ctx context.Context, args []string, flagProfile string) error {
 		}); err != nil {
 			return err
 		}
-		fmt.Printf("Join request submitted for %q.\n", payload.NetworkName)
+		fmt.Printf("==> Join request submitted for %q\n", payload.NetworkName)
 	}
 
 	joinArgs := []string{
@@ -3552,7 +3552,7 @@ func startUpInBackground(ctx context.Context, args []string, flagProfile, stateD
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
-	fmt.Println("Starting meshd in the background...")
+	fmt.Println("==> Starting the mesh in the background")
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting background meshd: %w", err)
 	}
@@ -3563,7 +3563,7 @@ func startUpInBackground(ctx context.Context, args []string, flagProfile, stateD
 		return fmt.Errorf("%w; see %s", err, logPath)
 	}
 
-	fmt.Println("meshd is running.")
+	fmt.Println("==> meshd is running")
 	if status.Network != "" {
 		fmt.Printf("  Network: %s\n", status.Network)
 	}
@@ -3575,7 +3575,11 @@ func startUpInBackground(ctx context.Context, args []string, flagProfile, stateD
 	}
 	fmt.Printf("  Socket: %s\n", socketPath)
 	fmt.Printf("  Log: %s\n", logPath)
-	fmt.Println("Run 'meshd status' to inspect it or 'meshd down' to stop it.")
+	fmt.Println()
+	fmt.Println("This device is on the mesh. Useful commands:")
+	fmt.Println("  meshd status     - daemon and membership details")
+	fmt.Println("  meshd peer list  - peers and their mesh IPs")
+	fmt.Println("  meshd down       - stop the mesh")
 	return nil
 }
 
@@ -3890,7 +3894,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	// the preauth approval params cannot invoke delegated grants yet.
 	ownerAutomation := ownerAutomationEnabled(ns, nodeIdentity.URI, networkOwner, readAuth.PermissionGrantID, ownerWriteAuth.PermissionGrantID, deleteAuth.PermissionGrantID)
 
-	fmt.Printf("Starting meshd...\n")
+	fmt.Printf("==> Starting meshd\n")
 	fmt.Printf("  Network: %s\n", ns.NetworkName)
 	fmt.Printf("  DID: %s\n", nodeIdentity.URI)
 	if operationIdentity.URI != nodeIdentity.URI {
@@ -4077,7 +4081,7 @@ func ensureIdentity(ctx context.Context, flagProfile, endpoint string) (*did.DID
 func ensureIdentityForCommand(ctx context.Context, flagProfile, endpoint string) (string, *did.DID, error) {
 	stateDir, err := resolveStateDir(flagProfile)
 	if err == profile.ErrNoProfiles {
-		fmt.Println("No identity found. Creating one...")
+		fmt.Println("==> No identity yet — creating this device's identity")
 		if _, err := ensureIdentity(ctx, flagProfile, endpoint); err != nil {
 			return "", nil, err
 		}
@@ -4095,7 +4099,7 @@ func ensureIdentityForCommand(ctx context.Context, flagProfile, endpoint string)
 		return stateDir, identity, nil
 	}
 
-	fmt.Println("No identity found. Creating one...")
+	fmt.Println("==> No identity yet — creating this device's identity")
 	identity, err := ensureIdentity(ctx, flagProfile, endpoint)
 	if err != nil {
 		return "", nil, err
@@ -4111,11 +4115,10 @@ func ensureDWNTenantRegistered(ctx context.Context, endpoint string, identity *d
 	if endpoint == "" || identity == nil || identity.URI == "" {
 		return nil
 	}
-	fmt.Printf("Registering DID with DWN...\n")
+	fmt.Printf("  Registering with the DWN at %s...\n", endpoint)
 	if err := dwn.RegisterTenant(ctx, endpoint, identity.URI); err != nil {
 		return fmt.Errorf("registering DID with DWN: %w", err)
 	}
-	fmt.Printf("  DWN tenant ready.\n")
 	return nil
 }
 
@@ -5165,6 +5168,10 @@ func vaultPasswordForCreate(stateDir string) (string, error) {
 		return "", fmt.Errorf("vault password required; run in a terminal or set %s", vaultPasswordEnv)
 	}
 
+	fmt.Println()
+	fmt.Println("meshd keeps this device's identity keys in an encrypted vault on disk.")
+	fmt.Println("Pick a vault password to protect it — meshd asks for it again after a")
+	fmt.Println("restart. (Unattended machines can set MESHD_VAULT_PASSWORD instead.)")
 	fmt.Print("Create vault password: ")
 	firstBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Println()
