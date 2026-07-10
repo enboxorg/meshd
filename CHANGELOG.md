@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/enboxorg/meshd/compare/v0.18.0...v0.19.0) (2026-07-10)
+
+
+### Features
+
+* one-command onboarding — install, join, wait for approval ([#210](https://github.com/enboxorg/meshd/issues/210)) ([#211](https://github.com/enboxorg/meshd/issues/211)) ([bcc7ddf](https://github.com/enboxorg/meshd/commit/bcc7ddf2d9ea1d6bff29bec875817475cfdd9aca))
+
 ## [0.18.0](https://github.com/enboxorg/meshd/compare/v0.17.1...v0.18.0) (2026-07-10)
 
 
