@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/enboxorg/meshd/compare/v0.16.0...v0.16.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* **mesh:** deliver the network/member reading-role audience to did:jwk nodes ([#193](https://github.com/enboxorg/meshd/issues/193)) ([e4dce29](https://github.com/enboxorg/meshd/commit/e4dce29b3e2bd9f742434cb833e70a88ad8bc0a1))
+
 ## [0.16.0](https://github.com/enboxorg/meshd/compare/v0.15.0...v0.16.0) (2026-07-10)
 
 
