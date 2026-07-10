@@ -171,7 +171,10 @@ export function CommandHero({ command, onCopy }: { command: string; onCopy: (com
 
   return (
     <div className="command-hero">
-      <code>{command}</code>
+      <div className="command-hero-line">
+        <span className="command-hero-prompt" aria-hidden="true">$</span>
+        <code>{command}</code>
+      </div>
       <button
         className={`secondary-button ${copied ? "copied" : ""}`}
         type="button"

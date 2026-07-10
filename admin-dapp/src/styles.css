@@ -96,14 +96,14 @@ code {
 .panel-icon {
   width: 44px;
   height: 44px;
-  background: #245a52;
+  background: #0e7569;
 }
 
 .row-icon {
   width: 32px;
   height: 32px;
-  background: #e1efe9;
-  color: #245a52;
+  background: #def0ec;
+  color: #0e7569;
 }
 
 .brand-copy {
@@ -265,7 +265,7 @@ p {
   height: 20px;
   padding: 0 0.4rem;
   border-radius: 999px;
-  background: #e2a53c;
+  background: #ee8a4e;
   color: #fffdf7;
   font-size: 0.72rem;
   font-weight: 720;
@@ -293,8 +293,8 @@ p {
 
 .network-row:hover,
 .network-row.active {
-  border-color: #c8d8d1;
-  background: #eef6f2;
+  border-color: #c2ded8;
+  background: #ecf7f5;
 }
 
 .network-row span,
@@ -348,8 +348,8 @@ select {
 
 input:focus,
 select:focus {
-  border-color: #4c8f7e;
-  outline: 3px solid rgba(76, 143, 126, 0.16);
+  border-color: #2aa392;
+  outline: 3px solid rgba(42, 163, 146, 0.18);
 }
 
 .network-header {
@@ -383,7 +383,7 @@ select:focus {
 }
 
 .primary-button {
-  background: #245a52;
+  background: #0e7569;
   color: #ffffff;
   padding: 0.58rem 0.9rem;
 }
@@ -472,9 +472,9 @@ select:focus {
 .invite-composer {
   display: grid;
   gap: 0.7rem;
-  border: 1px solid #cfe0d8;
+  border: 1px solid #cbe3dd;
   border-radius: 11px;
-  background: #f4faf7;
+  background: #f2faf8;
   padding: 1rem;
   min-width: 0;
 }
@@ -504,7 +504,7 @@ select:focus {
 .toggle-field input {
   width: 17px;
   height: 17px;
-  accent-color: #245a52;
+  accent-color: #0e7569;
 }
 
 .data-row {
@@ -660,9 +660,9 @@ dd {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  border: 1px solid #c8d8d1;
+  border: 1px solid #c2ded8;
   border-radius: 10px;
-  background: #eef6f2;
+  background: #ecf7f5;
   padding: 0.8rem;
   min-width: 0;
 }
@@ -857,8 +857,8 @@ dd {
 }
 
 .onboarding-step.active .onboarding-step-dot {
-  border-color: #245a52;
-  background: #245a52;
+  border-color: #0e7569;
+  background: #0e7569;
   color: #ffffff;
 }
 
@@ -887,9 +887,9 @@ dd {
   display: grid;
   gap: 0.7rem;
   width: 100%;
-  border: 1px solid #c8d8d1;
+  border: 1px solid #c2ded8;
   border-radius: 12px;
-  background: #17201d;
+  background: #12101a;
   padding: 1rem;
 }
 
@@ -897,7 +897,7 @@ dd {
   overflow: visible;
   background: transparent;
   padding: 0;
-  color: #d9e5de;
+  color: #e9e7f2;
   font-size: 0.86rem;
   line-height: 1.55;
   white-space: pre-wrap;
@@ -919,7 +919,7 @@ dd {
   align-items: center;
   gap: 0.6rem;
   width: 100%;
-  border: 1px dashed #c8d8d1;
+  border: 1px dashed #c2ded8;
   border-radius: 10px;
   padding: 0.85rem;
   color: #49534e;
@@ -931,17 +931,17 @@ dd {
   width: 9px;
   height: 9px;
   border-radius: 999px;
-  background: #2f8f6b;
+  background: #17a08d;
   animation: pulse 1.6s ease-in-out infinite;
 }
 
 @keyframes pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(47, 143, 107, 0.35);
+    box-shadow: 0 0 0 0 rgba(23, 160, 141, 0.35);
   }
   50% {
-    box-shadow: 0 0 0 6px rgba(47, 143, 107, 0);
+    box-shadow: 0 0 0 6px rgba(23, 160, 141, 0);
   }
 }
 
@@ -1012,4 +1012,34 @@ dd {
 
 .invite-id {
   font-variant-numeric: tabular-nums;
+}
+
+/* ── Shared brand (meshd.sh cohesion) ──────────────────────────────────── */
+
+h1,
+.brand-copy span {
+  font-family: "Bricolage Grotesque", Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+.brand-mark {
+  background: transparent;
+}
+
+.brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.command-hero-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+.command-hero-prompt {
+  color: #ff9f6b;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-weight: 600;
 }
