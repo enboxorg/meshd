@@ -929,4 +929,31 @@ describe("meshd invite lifecycle", () => {
     const payload = await blobJson(nodeWrite!.dataStream);
     expect(payload.label).toBe("laptop-01");
   });
+
+  // One expiry model: the invite defines the access window, and the node that
+  // joins with it inherits that expiry — the operator never re-picks it at
+  // approval time. This guards against the joined node showing "No expiry" even
+  // though the invite carried one.
+  it("carries the invite's expiry to the joined node", async () => {
+    // The invite must still be live at approval time (preAuthKeyAllows gates it),
+    // so use a far-future expiry and assert the node inherits that same instant.
+    const inviteExpiry = "2099-01-01T00:00:00Z";
+    const { session, requests } = createFakeSession({
+      recordIds: ["member-rec", "node-rec"],
+      queryEntries: [inviteEntry({ reusable: false, expiresAt: inviteExpiry })]
+    });
+    const request = await signedInviteNodeRequest({
+      networkId: network.recordId, secret, preAuthKeyId: "invite-rec", ownerDID: "did:example:owner", roleKeys
+    });
+    expect(request.expiresAt).toBeUndefined();
+
+    await approveMeshdNodeRequest(session, network, request);
+
+    const nodeWrite = requests.find(
+      (r) => r.messageType === DwnInterface.RecordsWrite && r.messageParams?.protocolPath === "network/member/node"
+    );
+    expect(nodeWrite).toBeDefined();
+    const payload = await blobJson(nodeWrite!.dataStream);
+    expect(payload.expiresAt).toBe(inviteExpiry);
+  });
 });
