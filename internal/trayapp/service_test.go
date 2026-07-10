@@ -250,11 +250,17 @@ type countingListener struct {
 
 func privateSocketPath(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	// Darwin limits sockaddr_un paths to 104 bytes. t.TempDir includes the
+	// full test name and can exceed that limit on hosted macOS runners.
+	dir, err := os.MkdirTemp("", "meshd-tray-")
+	if err != nil {
+		t.Fatalf("MkdirTemp socket directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatalf("Chmod socket directory: %v", err)
 	}
-	return filepath.Join(dir, "meshd.sock")
+	return filepath.Join(dir, "m.sock")
 }
 
 func (l *countingListener) Accept() (net.Conn, error) {
