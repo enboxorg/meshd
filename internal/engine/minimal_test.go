@@ -27,8 +27,8 @@ import (
 	"github.com/enboxorg/meshnet/net/tsdial"
 	"github.com/enboxorg/meshnet/tsd"
 	"github.com/enboxorg/meshnet/types/key"
-	"github.com/enboxorg/meshnet/types/logid"
 	"github.com/enboxorg/meshnet/types/logger"
+	"github.com/enboxorg/meshnet/types/logid"
 	"github.com/enboxorg/meshnet/types/netmap"
 	"github.com/enboxorg/meshnet/wgengine"
 	"github.com/enboxorg/meshnet/wgengine/netstack"
@@ -289,6 +289,7 @@ type minimalStack struct {
 	ns      *netstack.Impl
 	eng     wgengine.Engine
 	nm      *netmon.Monitor
+	control *DWNControl
 }
 
 func (s *minimalStack) start(ctx context.Context) error {
@@ -400,25 +401,30 @@ func newMinimalStack(
 		return nil, fmt.Errorf("starting netstack: %w", err)
 	}
 
+	stack := &minimalStack{
+		backend: lb,
+		ns:      ns,
+		eng:     eng,
+		nm:      nm,
+	}
+
 	// Wire DWNControl with hard-coded map and disco registry.
 	dwnCfg := &DWNControlConfig{
-		MapResponseFunc: mapFn,
-		PollInterval:    30 * time.Second, // slow polling — initial push is enough for static config
-		NodePrivateKey:  nodeKey,
+		MapResponseFunc:  mapFn,
+		PollInterval:     30 * time.Second, // slow polling — initial push is enough for static config
+		NodePrivateKey:   nodeKey,
 		DiscoKeyRegistry: discoReg,
-		Logf:            logf,
+		Logf:             logf,
+		OnCreated: func(control *DWNControl) {
+			stack.control = control
+		},
 	}
 
 	lb.SetControlClientGetterForTesting(
 		NewDWNControlFactory(dwnCfg),
 	)
 
-	return &minimalStack{
-		backend: lb,
-		ns:      ns,
-		eng:     eng,
-		nm:      nm,
-	}, nil
+	return stack, nil
 }
 
 // minimalLogf logs meshnet messages at Info level so we can see important
@@ -490,8 +496,8 @@ func startLocalDERP(t *testing.T) (*control.DERPMap, func()) {
 						RegionID: 900,
 						HostName: u.Hostname(),
 						DERPPort: port,
-					// Self-signed TLS — InsecureForTests skips cert verification.
-					InsecureForTests: true,
+						// Self-signed TLS — InsecureForTests skips cert verification.
+						InsecureForTests: true,
 					},
 				},
 			},

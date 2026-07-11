@@ -2,7 +2,10 @@ package control
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -743,9 +746,10 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 		DNSConfig: c.buildDNSConfig(),
 	}
 
-	// Sort DIDs for deterministic NodeID assignment. Go map iteration
-	// order is random, and magicsock panics if the same public key
-	// appears under different NodeIDs across successive polls.
+	// Keep response ordering deterministic for logs, status output, and tests.
+	// Node IDs themselves are derived from each DID below; assigning IDs from
+	// this sorted position would renumber existing WireGuard keys whenever a
+	// peer joins or leaves, which magicsock explicitly rejects.
 	dids := make([]string, 0, len(c.nodes))
 	for did := range c.nodes {
 		dids = append(dids, did)
@@ -753,7 +757,6 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 	sort.Strings(dids)
 
 	now := time.Now().UTC()
-	var nodeID int64 = 1
 	for _, did := range dids {
 		rec := c.nodes[did]
 		if nodeRecordExpired(rec, now) {
@@ -770,8 +773,9 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 			)
 			continue
 		}
+		nodeID, stableID := nodeIdentityForDID(c.networkRecordID, did)
 		node := nodeRecordToNode(nodeID, did, rec)
-		nodeID++
+		node.StableID = stableID
 		c.applyFallbackMeshIP(node)
 
 		// Skip peers whose mesh IP cannot be read or derived. These
@@ -807,6 +811,23 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 	}
 
 	return resp
+}
+
+// nodeIdentityForDID returns meshnet identifiers that remain stable as the
+// membership set changes. The versioned input includes the immutable network
+// record ID so independent control planes have separate identity domains.
+// The NodeID is constrained to the positive 53-bit integer range so it remains
+// exactly representable anywhere it crosses a JSON/JavaScript boundary.
+// StableID uses a longer digest for diagnostics and identity lookups. A zero
+// truncated NodeID is reserved by meshnet, so map it to 1.
+func nodeIdentityForDID(networkRecordID, did string) (int64, string) {
+	digest := sha256.Sum256([]byte("meshd node identity v1\x00" + networkRecordID + "\x00" + did))
+	const maxExactInteger = uint64(1<<53) - 1
+	id := int64(binary.BigEndian.Uint64(digest[:8]) & maxExactInteger)
+	if id == 0 {
+		id = 1
+	}
+	return id, "dwn-" + hex.EncodeToString(digest[:16])
 }
 
 func nodeRecordExpired(rec *NodeRecord, now time.Time) bool {
