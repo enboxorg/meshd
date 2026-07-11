@@ -3456,9 +3456,8 @@ func supportsRealTUN(goos string) bool {
 	return goos == "darwin" || goos == "linux"
 }
 
-func shouldReexecWithSudoForTun(f upFlags, uid int, goos string, stdinTTY bool) bool {
-	guiPrompt := goos == "darwin" && os.Getenv(trayConnectEnv) == "1"
-	if uid == 0 || f.noTun || (!stdinTTY && !guiPrompt) || !supportsRealTUN(goos) {
+func shouldReexecWithSudoForTun(f upFlags, uid int, goos string) bool {
+	if uid == 0 || f.noTun || !supportsRealTUN(goos) {
 		return false
 	}
 	return true
@@ -3503,7 +3502,7 @@ func reexecUpWithSudo(args []string, flagProfile, stateDir string) error {
 	return cmd.Run()
 }
 
-func startUpInBackground(ctx context.Context, args []string, flagProfile, stateDir string, needsSudo bool) error {
+func startUpInBackground(ctx context.Context, args []string, flagProfile, stateDir string, needsSudo, requireTUN bool) error {
 	socketPath := daemon.DefaultSocketPath()
 	if daemon.NewClient(socketPath).IsRunning() {
 		fmt.Println("meshd is already running.")
@@ -3577,9 +3576,12 @@ func startUpInBackground(ctx context.Context, args []string, flagProfile, stateD
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting background meshd: %w", err)
 	}
-	_ = cmd.Process.Release()
+	childExit := make(chan error, 1)
+	go func() {
+		childExit <- cmd.Wait()
+	}()
 
-	status, err := waitForDaemonStart(ctx, socketPath, backgroundWait)
+	status, err := waitForDaemonStart(ctx, socketPath, backgroundWait, requireTUN, childExit)
 	if err != nil {
 		return fmt.Errorf("%w; see %s", err, logPath)
 	}
@@ -3604,22 +3606,63 @@ func startUpInBackground(ctx context.Context, args []string, flagProfile, stateD
 	return nil
 }
 
-func waitForDaemonStart(ctx context.Context, socketPath string, timeout time.Duration) (*daemon.Status, error) {
+func waitForDaemonStart(
+	ctx context.Context,
+	socketPath string,
+	timeout time.Duration,
+	requireTUN bool,
+	childExit <-chan error,
+) (*daemon.Status, error) {
 	client := daemon.NewClient(socketPath)
-	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
 	var lastErr error
-	for time.Now().Before(deadline) {
+	for {
 		status, err := client.GetStatus(ctx)
 		if err == nil {
+			select {
+			case exitErr := <-childExit:
+				if exitErr != nil {
+					return nil, fmt.Errorf("background meshd exited before startup completed: %w", exitErr)
+				}
+				return nil, fmt.Errorf("background meshd exited before startup completed")
+			default:
+			}
+			if err := validateDaemonStartStatus(status, requireTUN); err != nil {
+				return nil, err
+			}
 			return status, nil
 		}
 		lastErr = err
-		time.Sleep(250 * time.Millisecond)
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case exitErr := <-childExit:
+			if exitErr != nil {
+				return nil, fmt.Errorf("background meshd exited before opening its control socket: %w", exitErr)
+			}
+			return nil, fmt.Errorf("background meshd exited before opening its control socket")
+		case <-timer.C:
+			if lastErr != nil {
+				return nil, fmt.Errorf("daemon did not start within %s: %w", timeout, lastErr)
+			}
+			return nil, fmt.Errorf("daemon did not start within %s", timeout)
+		case <-ticker.C:
+		}
 	}
-	if lastErr != nil {
-		return nil, fmt.Errorf("daemon did not start within %s: %w", timeout, lastErr)
+}
+
+func validateDaemonStartStatus(status *daemon.Status, requireTUN bool) error {
+	if status == nil {
+		return fmt.Errorf("daemon returned empty startup status")
 	}
-	return nil, fmt.Errorf("daemon did not start within %s", timeout)
+	if requireTUN && status.TUNDevice == "" {
+		return fmt.Errorf("daemon started without the required TUN device")
+	}
+	return nil
 }
 
 func daemonLogPath(stateDir string) string {
@@ -3695,7 +3738,8 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 			return nil
 		}
 	}
-	shouldElevate := shouldReexecWithSudoForTun(f, os.Getuid(), runtime.GOOS, stdinIsTerminal())
+	requireTUN := f.tunName != "" || (!f.noTun && supportsRealTUN(runtime.GOOS))
+	shouldElevate := shouldReexecWithSudoForTun(f, os.Getuid(), runtime.GOOS)
 
 	// ── Step 1: Ensure identity exists ──────────────────────────────
 	stateDir, identity, err := ensureIdentityForCommand(ctx, flagProfile, f.endpoint)
@@ -3772,12 +3816,12 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	}
 	if shouldElevate {
 		if !backgroundChild && !f.foreground {
-			return startUpInBackground(ctx, args, flagProfile, stateDir, true)
+			return startUpInBackground(ctx, args, flagProfile, stateDir, true, requireTUN)
 		}
 		return reexecUpWithSudo(args, flagProfile, stateDir)
 	}
 	if !backgroundChild && !f.foreground {
-		return startUpInBackground(ctx, args, flagProfile, stateDir, false)
+		return startUpInBackground(ctx, args, flagProfile, stateDir, false, requireTUN)
 	}
 
 	// ── Step 3: Start the engine ────────────────────────────────────

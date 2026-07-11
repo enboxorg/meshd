@@ -1,9 +1,14 @@
 package engine
 
 import (
+	"errors"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/enboxorg/meshd/internal/dwn"
+	"github.com/enboxorg/meshnet/types/logger"
+	"github.com/tailscale/wireguard-go/tun"
 )
 
 func TestNewEngineValidation(t *testing.T) {
@@ -109,6 +114,53 @@ func TestEngineStartStop(t *testing.T) {
 	// Stop should be safe to call even before Start.
 	if err := eng.Stop(); err != nil {
 		t.Fatalf("Stop before Start: %v", err)
+	}
+}
+
+func TestNewEngineFailsWhenRequestedTUNUnavailable(t *testing.T) {
+	originalNewTUNDevice := newTUNDevice
+	t.Cleanup(func() {
+		newTUNDevice = originalNewTUNDevice
+	})
+
+	newTUNDevice = func(logger.Logf, string) (tun.Device, string, error) {
+		return nil, "", syscall.EBUSY
+	}
+
+	eng, err := New(Config{
+		AnchorEndpoint:  "https://example.com",
+		AnchorTenant:    "did:dht:anchor",
+		NetworkRecordID: "record123",
+		SelfDID:         "did:dht:self",
+		Signer:          &dwn.Signer{DID: "did:dht:self"},
+		TUNName:         "meshd0",
+	})
+	if eng != nil {
+		t.Fatal("New returned an engine after requested TUN creation failed")
+	}
+	if !errors.Is(err, syscall.EBUSY) {
+		t.Fatalf("New error = %v, want wrapped EBUSY", err)
+	}
+	if !strings.Contains(err.Error(), `creating TUN device "meshd0"`) {
+		t.Fatalf("New error = %q, want TUN device context", err)
+	}
+}
+
+func TestTUNCreationErrorBusyGuidance(t *testing.T) {
+	linuxErr := tunCreationError("linux", "meshd0", syscall.EBUSY)
+	if !errors.Is(linuxErr, syscall.EBUSY) {
+		t.Fatalf("Linux error = %v, want wrapped EBUSY", linuxErr)
+	}
+	if !strings.Contains(linuxErr.Error(), `"iff: meshd0" in /proc/*/fdinfo/*`) {
+		t.Fatalf("Linux error = %q, want exact TUN owner guidance", linuxErr)
+	}
+
+	darwinErr := tunCreationError("darwin", "utun", syscall.EBUSY)
+	if !errors.Is(darwinErr, syscall.EBUSY) {
+		t.Fatalf("Darwin error = %v, want wrapped EBUSY", darwinErr)
+	}
+	if strings.Contains(darwinErr.Error(), "/proc/") {
+		t.Fatalf("Darwin error contains Linux guidance: %q", darwinErr)
 	}
 }
 
