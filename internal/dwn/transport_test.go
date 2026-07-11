@@ -72,7 +72,7 @@ func TestNewJsonRpcSubscribeRequest(t *testing.T) {
 	msg, _ := buildSubscribeMessage(s, RecordsFilter{
 		Protocol:     "https://example.com/test",
 		ProtocolPath: "root",
-	}, "", MessageAuth{})
+	}, nil, MessageAuth{})
 
 	subID := "sub-test-123"
 	req := newJsonRpcSubscribeRequest("did:dht:target", msg, subID)
@@ -103,7 +103,8 @@ func TestNewJsonRpcSubscribeRequest(t *testing.T) {
 }
 
 func TestNewJsonRpcAck(t *testing.T) {
-	ack := newJsonRpcAck("sub-456", "cursor-abc")
+	cursor := ProgressToken{StreamID: "stream", Epoch: "epoch", Position: "123", MessageCID: "bafy-message"}
+	ack := newJsonRpcAck("sub-456", cursor)
 
 	t.Run("method", func(t *testing.T) {
 		if ack.Method != MethodAck {
@@ -121,8 +122,8 @@ func TestNewJsonRpcAck(t *testing.T) {
 		if ack.Params == nil {
 			t.Fatal("params should not be nil")
 		}
-		if ack.Params.Cursor != "cursor-abc" {
-			t.Errorf("params.cursor = %q, want 'cursor-abc'", ack.Params.Cursor)
+		if ack.Params.Cursor == nil || *ack.Params.Cursor != cursor {
+			t.Errorf("params.cursor = %#v, want %#v", ack.Params.Cursor, cursor)
 		}
 	})
 
@@ -150,8 +151,12 @@ func TestNewJsonRpcAck(t *testing.T) {
 		if !ok {
 			t.Fatal("params missing or not an object")
 		}
-		if params["cursor"] != "cursor-abc" {
-			t.Errorf("params.cursor = %v", params["cursor"])
+		cursorObject, ok := params["cursor"].(map[string]any)
+		if !ok {
+			t.Fatalf("params.cursor = %#v, want object", params["cursor"])
+		}
+		if cursorObject["streamId"] != "stream" || cursorObject["epoch"] != "epoch" || cursorObject["position"] != "123" || cursorObject["messageCid"] != "bafy-message" {
+			t.Errorf("params.cursor = %#v, want production ProgressToken", cursorObject)
 		}
 
 		sub, ok := parsed["subscription"].(map[string]any)
