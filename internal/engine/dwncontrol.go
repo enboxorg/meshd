@@ -12,8 +12,10 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,10 +37,7 @@ type DWNControlConfig struct {
 	// The DWN control integration implements this by reading DWN records
 	// and building a NetworkMap.
 	//
-	// This is called:
-	//   - Once on Login (initial state load)
-	//   - Periodically at PollInterval
-	//   - When explicitly triggered via Notify()
+	// Calls are serialized and coalesced by RefreshCoordinator.
 	MapResponseFunc func(ctx context.Context) (*netmap.NetworkMap, error)
 
 	// OnMapResult observes every completed map load. It is called after the
@@ -55,9 +54,20 @@ type DWNControlConfig struct {
 	// If nil, endpoint updates are not published.
 	EndpointUpdateFunc func(ctx context.Context, endpoints []tailcfg.Endpoint)
 
-	// PollInterval is how often to re-read DWN state.
-	// Default: 30 seconds.
+	// PollInterval is the fallback reconciliation interval while authoritative
+	// subscription coverage is incomplete or unhealthy. Default: 30 seconds.
 	PollInterval time.Duration
+
+	// HealthyPollInterval is the slow anti-entropy interval while topology and
+	// delivery streams are both live and repaired. Default: 5 minutes.
+	HealthyPollInterval time.Duration
+
+	// RefreshTimeout bounds one complete DWN state rebuild. Default: 2 minutes.
+	RefreshTimeout time.Duration
+
+	// StartupSubscriptionWait gives asynchronous subscription handshakes a
+	// bounded chance to establish before the initial full rebuild.
+	StartupSubscriptionWait time.Duration
 
 	// NodePrivateKey, if set, overrides the auto-generated WireGuard node
 	// key with the given key. This is essential when the WireGuard key has
@@ -118,13 +128,12 @@ type DWNControl struct {
 	logf     logger.Logf
 	clientID int64
 
-	mu           sync.Mutex
-	disco        key.DiscoPublic
-	paused       atomic.Bool
-	shutdown     chan struct{}
-	shutdownOnce sync.Once
-	cancel       context.CancelFunc
-	notify       chan struct{} // signal to re-poll immediately
+	mu                sync.Mutex
+	disco             key.DiscoPublic
+	shutdownOnce      sync.Once
+	cancel            context.CancelFunc
+	coordinator       *RefreshCoordinator
+	initialMapApplied atomic.Bool
 }
 
 // NewDWNControlFactory returns a factory function suitable for
@@ -139,6 +148,15 @@ func NewDWNControlFactory(config *DWNControlConfig) func(controlclient.Options) 
 
 // NewDWNControl creates a new DWN-backed control client.
 func NewDWNControl(config *DWNControlConfig, opts controlclient.Options) (*DWNControl, error) {
+	if config == nil {
+		return nil, fmt.Errorf("DWN control config is required")
+	}
+	if config.MapResponseFunc == nil {
+		return nil, fmt.Errorf("DWN control map response function is required")
+	}
+	if config.RefreshTimeout < 0 || config.StartupSubscriptionWait < 0 {
+		return nil, fmt.Errorf("DWN control timeouts must not be negative")
+	}
 	logf := config.Logf
 	if logf == nil {
 		logf = log.Printf
@@ -147,6 +165,14 @@ func NewDWNControl(config *DWNControlConfig, opts controlclient.Options) (*DWNCo
 	pollInterval := config.PollInterval
 	if pollInterval == 0 {
 		pollInterval = 30 * time.Second
+	}
+	healthyPollInterval := config.HealthyPollInterval
+	if healthyPollInterval == 0 {
+		healthyPollInterval = 5 * time.Minute
+	}
+	refreshTimeout := config.RefreshTimeout
+	if refreshTimeout == 0 {
+		refreshTimeout = 2 * time.Minute
 	}
 
 	p := opts.Persist.Clone()
@@ -167,22 +193,37 @@ func NewDWNControl(config *DWNControlConfig, opts controlclient.Options) (*DWNCo
 
 	cc := &DWNControl{
 		config: DWNControlConfig{
-			MapResponseFunc:    config.MapResponseFunc,
-			OnMapResult:        config.OnMapResult,
-			EndpointUpdateFunc: config.EndpointUpdateFunc,
-			PollInterval:       pollInterval,
-			NodePrivateKey:     config.NodePrivateKey,
-			DiscoKeyRegistry:   config.DiscoKeyRegistry,
-			Logf:               logf,
+			MapResponseFunc:         config.MapResponseFunc,
+			OnMapResult:             config.OnMapResult,
+			EndpointUpdateFunc:      config.EndpointUpdateFunc,
+			PollInterval:            pollInterval,
+			HealthyPollInterval:     healthyPollInterval,
+			RefreshTimeout:          refreshTimeout,
+			StartupSubscriptionWait: config.StartupSubscriptionWait,
+			NodePrivateKey:          config.NodePrivateKey,
+			DiscoKeyRegistry:        config.DiscoKeyRegistry,
+			Logf:                    logf,
 		},
 		observer: opts.Observer,
 		persist:  p,
 		logf:     logf,
 		clientID: rand.Int64(),
-		shutdown: make(chan struct{}),
 		cancel:   cancel,
-		notify:   make(chan struct{}, 1),
 	}
+	coordinator, err := NewRefreshCoordinator(RefreshCoordinatorConfig{
+		Refresh:          cc.refreshControlState,
+		FallbackInterval: pollInterval,
+		HealthyInterval:  healthyPollInterval,
+		RetryBackoff:     time.Second,
+		Debounce:         250 * time.Millisecond,
+		MaxDebounce:      time.Second,
+		MaxRetryBackoff:  time.Minute,
+	})
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	cc.coordinator = coordinator
 
 	cc.disco = opts.DiscoPublicKey
 
@@ -208,85 +249,88 @@ func NewDWNControl(config *DWNControlConfig, opts controlclient.Options) (*DWNCo
 	return cc, nil
 }
 
-// pollLoop periodically reads DWN state and pushes NetworkMap updates.
+// pollLoop gives the LocalBackend event bus time to initialize, then starts
+// the single-owner refresh coordinator.
 func (cc *DWNControl) pollLoop(ctx context.Context) {
-	// Brief startup delay to let the LocalBackend's event bus fully
-	// initialize before we send the first NetworkMap. Without this, the
-	// first SetControlClientStatus triggers authReconfigLocked which calls
-	// Reconfig → ParseEndpoint before magicsock has processed the
-	// NodeViewsUpdate event, causing "unknown peer" errors.
 	select {
 	case <-ctx.Done():
 		return
 	case <-time.After(50 * time.Millisecond):
 	}
+	cc.waitForStartupSubscriptions(ctx, cc.config.StartupSubscriptionWait)
+	if err := cc.coordinator.Start(ctx); err != nil && ctx.Err() == nil {
+		cc.logf("dwn-control: starting refresh coordinator: %v", err)
+	}
+}
 
-	// Initial login: load state and report logged-in.
-	cc.loadAndPush(ctx)
-
-	// Allow the event bus to propagate the initial NodeViewsUpdate to
-	// magicsock before any subsequent Reconfig from the notify feedback
-	// loop. The first loadAndPush publishes the netmap to the event bus
-	// (via setNetMapLocked), but authReconfigLocked runs before magicsock
-	// processes it. This sleep gives the event bus time to deliver.
-	select {
-	case <-ctx.Done():
+func (cc *DWNControl) waitForStartupSubscriptions(ctx context.Context, maximum time.Duration) {
+	if maximum <= 0 {
 		return
-	case <-time.After(200 * time.Millisecond):
 	}
-	// Drain any queued notifications from the startup burst.
-	select {
-	case <-cc.notify:
-	default:
-	}
-	// Re-push now that magicsock knows about our peers.
-	cc.loadAndPush(ctx)
-
-	ticker := time.NewTicker(cc.config.PollInterval)
-	defer ticker.Stop()
-
-	// Minimum interval between polls to avoid a feedback loop where
-	// SetControlClientStatus triggers Login/Notify, causing another
-	// loadAndPush immediately.
-	const minPollInterval = 250 * time.Millisecond
-	lastPoll := time.Now()
-
+	deadline := time.NewTimer(maximum)
+	defer deadline.Stop()
+	poll := time.NewTicker(25 * time.Millisecond)
+	defer poll.Stop()
 	for {
+		if refreshStreamsReadyForStartup(cc.coordinator.Health()) {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-cc.shutdown:
+		case <-deadline.C:
 			return
-		case <-ticker.C:
-			if cc.paused.Load() {
-				continue
-			}
-			cc.loadAndPush(ctx)
-			lastPoll = time.Now()
-		case <-cc.notify:
-			if cc.paused.Load() {
-				continue
-			}
-			// Debounce: ensure minimum interval between polls.
-			if elapsed := time.Since(lastPoll); elapsed < minPollInterval {
-				time.Sleep(minPollInterval - elapsed)
-			}
-			// Drain any queued notifications that accumulated during the sleep.
-			select {
-			case <-cc.notify:
-			default:
-			}
-			cc.loadAndPush(ctx)
-			lastPoll = time.Now()
+		case <-poll.C:
 		}
 	}
 }
 
-// loadAndPush reads DWN state and pushes a Status to the observer.
-func (cc *DWNControl) loadAndPush(ctx context.Context) {
+func refreshStreamsReadyForStartup(health RefreshCoordinatorHealth) bool {
+	covered := 0
+	for _, stream := range []RefreshStream{RefreshStreamTopology, RefreshStreamDelivery} {
+		state := health.Streams[stream]
+		if !state.Covered {
+			continue
+		}
+		covered++
+		if !state.Live {
+			return false
+		}
+	}
+	return covered > 0
+}
+
+// refreshControlState performs one bounded remote rebuild. The first usable
+// map is applied locally a second time after the event bus has observed its peer
+// views; this preserves the startup ordering workaround without a second DWN load.
+func (cc *DWNControl) refreshControlState(ctx context.Context, _ RefreshBatch) error {
+	refreshCtx := ctx
+	cancel := func() {}
+	if cc.config.RefreshTimeout > 0 {
+		refreshCtx, cancel = context.WithTimeout(ctx, cc.config.RefreshTimeout)
+	}
+	defer cancel()
+
+	replay, err := cc.loadAndPush(refreshCtx)
+	if err != nil {
+		return err
+	}
+	if replay == nil || !cc.initialMapApplied.CompareAndSwap(false, true) || cc.observer == nil {
+		return nil
+	}
+	if !waitForRefreshContext(ctx, 200*time.Millisecond) {
+		return ctx.Err()
+	}
+	cc.pushNetMap(replay)
+	return nil
+}
+
+// loadAndPush reads DWN state, applies it once, and returns an observer-safe
+// clone for the one-time startup replay.
+func (cc *DWNControl) loadAndPush(ctx context.Context) (*netmap.NetworkMap, error) {
 	if cc.config.MapResponseFunc == nil {
 		cc.logf("dwn-control: no MapResponseFunc configured")
-		return
+		return nil, nil
 	}
 
 	nm, err := cc.config.MapResponseFunc(ctx)
@@ -301,67 +345,92 @@ func (cc *DWNControl) loadAndPush(ctx context.Context) {
 		if cc.config.OnMapResult != nil {
 			cc.config.OnMapResult(ctx, nil, err)
 		}
-		return
+		return nil, err
 	}
 
 	if nm == nil {
 		if cc.config.OnMapResult != nil {
 			cc.config.OnMapResult(ctx, nil, nil)
 		}
-		return
+		return nil, nil
 	}
 
-	// Inject our node key into the NetworkMap.
-	nm.NodeKey = cc.persist.PrivateNodeKey.Public()
-
-	// If a disco key registry is available, inject disco keys into the
-	// network map. This replaces the role of the Tailscale control server
-	// which normally distributes disco keys to peers.
-	if cc.config.DiscoKeyRegistry != nil {
-		// Inject our own disco key into SelfNode.
-		cc.mu.Lock()
-		selfDisco := cc.disco
-		cc.mu.Unlock()
-		if !selfDisco.IsZero() && nm.SelfNode.Valid() {
-			sn := nm.SelfNode.AsStruct()
-			sn.DiscoKey = selfDisco
-			nm.SelfNode = sn.View()
-		}
-		// Inject peer disco keys.
-		for i, p := range nm.Peers {
-			if !p.Key().IsZero() {
-				dk := cc.config.DiscoKeyRegistry.GetDisco(p.Key())
-				if !dk.IsZero() {
-					ps := p.AsStruct()
-					ps.DiscoKey = dk
-					nm.Peers[i] = ps.View()
-				}
-			}
-		}
-	}
-
-	if cc.observer != nil {
-		s := controlclient.Status{
-			LoggedIn:  true,
-			InMapPoll: true,
-			NetMap:    nm,
-			Persist:   cc.persist.View(),
-		}
-		cc.observer.SetControlClientStatus(cc, s)
-	}
+	cc.prepareNetMap(nm)
+	replay := cloneNetMapForReplay(nm)
+	cc.pushNetMap(nm)
 	if cc.config.OnMapResult != nil {
 		cc.config.OnMapResult(ctx, nm, nil)
 	}
+	return replay, nil
 }
 
-// Notify triggers an immediate re-read of DWN state.
-// This is called by the DWN subscription handler when records change.
-func (cc *DWNControl) Notify() {
-	select {
-	case cc.notify <- struct{}{}:
-	default:
-		// Already a pending notification.
+func (cc *DWNControl) prepareNetMap(nm *netmap.NetworkMap) {
+	nm.NodeKey = cc.persist.PrivateNodeKey.Public()
+	if cc.config.DiscoKeyRegistry == nil {
+		return
 	}
+	cc.mu.Lock()
+	selfDisco := cc.disco
+	cc.mu.Unlock()
+	if !selfDisco.IsZero() && nm.SelfNode.Valid() {
+		sn := nm.SelfNode.AsStruct()
+		sn.DiscoKey = selfDisco
+		nm.SelfNode = sn.View()
+	}
+	for i, peer := range nm.Peers {
+		if peer.Key().IsZero() {
+			continue
+		}
+		disco := cc.config.DiscoKeyRegistry.GetDisco(peer.Key())
+		if disco.IsZero() {
+			continue
+		}
+		copy := peer.AsStruct()
+		copy.DiscoKey = disco
+		nm.Peers[i] = copy.View()
+	}
+}
+
+func (cc *DWNControl) pushNetMap(nm *netmap.NetworkMap) {
+	if cc.observer == nil || nm == nil {
+		return
+	}
+	cc.observer.SetControlClientStatus(cc, controlclient.Status{
+		LoggedIn:  true,
+		InMapPoll: true,
+		NetMap:    nm,
+		Persist:   cc.persist.View(),
+	})
+}
+
+func cloneNetMapForReplay(nm *netmap.NetworkMap) *netmap.NetworkMap {
+	if nm == nil {
+		return nil
+	}
+	clone := *nm
+	clone.Peers = slices.Clone(nm.Peers)
+	return &clone
+}
+
+func waitForRefreshContext(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// Notify records a manual invalidation without blocking the caller.
+func (cc *DWNControl) Notify() {
+	cc.coordinator.Notify(RefreshReasonManual)
+}
+
+// RefreshHealth returns a deep-copied view of refresh scheduling and stream health.
+func (cc *DWNControl) RefreshHealth() RefreshCoordinatorHealth {
+	return cc.coordinator.Health()
 }
 
 //
@@ -371,14 +440,14 @@ func (cc *DWNControl) Notify() {
 func (cc *DWNControl) Shutdown() {
 	cc.shutdownOnce.Do(func() {
 		cc.cancel()
-		close(cc.shutdown)
+		cc.coordinator.Stop()
 	})
 }
 
 func (cc *DWNControl) Login(flags controlclient.LoginFlags) {
-	// DWN doesn't need interactive login — the DID is the identity.
-	// Trigger an immediate state load which will report LoggedIn.
-	cc.Notify()
+	// DWN has no interactive login. The coordinator always queues startup, so
+	// treating LocalBackend login feedback as another invalidation would cause
+	// a redundant rebuild after every successful map application.
 }
 
 func (cc *DWNControl) Logout(ctx context.Context) error {
@@ -392,11 +461,7 @@ func (cc *DWNControl) Logout(ctx context.Context) error {
 }
 
 func (cc *DWNControl) SetPaused(paused bool) {
-	cc.paused.Store(paused)
-	if !paused {
-		// Unpause: trigger immediate refresh.
-		cc.Notify()
-	}
+	cc.coordinator.SetPaused(paused)
 }
 
 func (cc *DWNControl) AuthCantContinue() bool {
@@ -422,8 +487,8 @@ func (cc *DWNControl) UpdateEndpoints(endpoints []tailcfg.Endpoint) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			cc.config.EndpointUpdateFunc(ctx, endpoints)
-			// Trigger re-poll so peers pick up the new endpoints.
-			cc.Notify()
+			// Coalesce the local write with its subscription echo.
+			cc.coordinator.Notify(RefreshReasonEndpoint)
 		}()
 	}
 }

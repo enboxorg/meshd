@@ -84,10 +84,32 @@ type PeerStatus struct {
 // SnapshotStatus describes the freshness of the daemon's materialized mesh
 // snapshot. Timestamp fields are encoded as RFC3339Nano strings.
 type SnapshotStatus struct {
-	Generation    uint64 `json:"generation"`
-	RefreshedAt   string `json:"refreshedAt,omitempty"`
-	LastAttemptAt string `json:"lastAttemptAt,omitempty"`
-	LastError     string `json:"lastError,omitempty"`
+	Generation          uint64                          `json:"generation"`
+	RefreshedAt         string                          `json:"refreshedAt,omitempty"`
+	LastAttemptAt       string                          `json:"lastAttemptAt,omitempty"`
+	LastError           string                          `json:"lastError,omitempty"`
+	State               string                          `json:"state,omitempty"`
+	Mode                string                          `json:"mode,omitempty"`
+	InFlight            bool                            `json:"inFlight,omitempty"`
+	Pending             []string                        `json:"pending,omitempty"`
+	Paused              bool                            `json:"paused,omitempty"`
+	LastReasons         []string                        `json:"lastReasons,omitempty"`
+	LastDurationMS      int64                           `json:"lastDurationMs,omitempty"`
+	ConsecutiveFailures int                             `json:"consecutiveFailures,omitempty"`
+	LastSuccessAt       string                          `json:"lastSuccessAt,omitempty"`
+	RetryNotBefore      string                          `json:"retryNotBefore,omitempty"`
+	NextAttemptAt       string                          `json:"nextAttemptAt,omitempty"`
+	Streams             map[string]SnapshotStreamStatus `json:"streams,omitempty"`
+}
+
+// SnapshotStreamStatus describes whether one invalidation stream is
+// authorized, connected, and repaired through its end-of-stored-events
+// barrier. False values are intentionally retained when the stream is present
+// so operators can distinguish missing coverage from a legacy daemon.
+type SnapshotStreamStatus struct {
+	Covered  bool `json:"covered"`
+	Live     bool `json:"live"`
+	Repaired bool `json:"repaired"`
 }
 
 type peerAuthorizedContextKey struct{}
