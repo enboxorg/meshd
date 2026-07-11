@@ -42,9 +42,9 @@ curl -fsSL https://meshd.sh/install | bash -s -- up 'meshd://invite/eyJ...'
 ```
 
 The admin dashboard's invite composer copies that one-liner for you. On a
-first macOS install it also enables the menu-bar app at login after the invite
-flow completes; the invite is never passed to or stored by the tray or its
-LaunchAgent. If meshd is already installed,
+first macOS install it also enables and starts the menu-bar app after the
+invite flow completes; the invite is never passed to or stored by the tray or
+its LaunchAgent. If meshd is already installed,
 `meshd up 'meshd://invite/...'` does the same join — submit, wait for approval,
 connect. `--wait-timeout <dur>` bounds the wait (default 15m) and `--no-wait`
 restores the old submit-and-exit behavior.
@@ -56,10 +56,10 @@ daemon's connected state in the tray icon and provides Connect, Disconnect,
 Open Dashboard, Copy Mesh IP, and a live peer list; selecting a peer copies its
 mesh IP. Linux tray packaging is deferred for the first release.
 
-The curl installer enables the tray at login automatically on the first macOS
-install. Windows users, and macOS users who need to restore a removed login
-item, can enable it explicitly. For password-encrypted profiles, opt in to OS
-credential storage once from a terminal:
+The curl installer enables the tray at login and starts it immediately on the
+first macOS install. Windows users, and macOS users who need to restore a
+removed login item, can enable it explicitly. For password-encrypted profiles,
+opt in to OS credential storage once from a terminal:
 
 ```bash
 meshd vault remember       # macOS Keychain / Windows Credential Manager
