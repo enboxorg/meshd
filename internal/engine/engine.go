@@ -34,6 +34,7 @@ import (
 	"github.com/enboxorg/meshnet/types/key"
 	"github.com/enboxorg/meshnet/types/logger"
 	"github.com/enboxorg/meshnet/types/logid"
+	"github.com/enboxorg/meshnet/types/netmap"
 	"github.com/enboxorg/meshnet/wgengine"
 	"github.com/enboxorg/meshnet/wgengine/netstack"
 	"github.com/enboxorg/meshnet/wgengine/router"
@@ -63,6 +64,12 @@ type Engine struct {
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
+
+	routeApplyMu sync.Mutex
+	routeConfig  *router.Config
+
+	routingMu sync.RWMutex
+	routing   routingState
 }
 
 // Config holds the configuration for creating an Engine.
@@ -425,10 +432,16 @@ func New(cfg Config) (*Engine, error) {
 	// MapResponseFunc closes over our DWNClient and Converter to produce
 	// NetworkMaps from DWN records.
 	mapFn := MapResponseFunc(dwnClient, converter)
+	var engineRef *Engine
 	dwnControlConfig := &DWNControlConfig{
 		MapResponseFunc: mapFn,
 		PollInterval:    pollInterval,
 		Logf:            logf,
+		OnMapResult: func(ctx context.Context, nm *netmap.NetworkMap, err error) {
+			if engineRef != nil {
+				engineRef.handleControlMapResult(ctx, nm, err)
+			}
+		},
 		// Capture the DWNControl reference so the subscription watcher
 		// can call Notify() to trigger immediate re-polls.
 		OnCreated: subWatcher.SetDWNControl,
@@ -458,7 +471,7 @@ func New(cfg Config) (*Engine, error) {
 		NewDWNControlFactory(dwnControlConfig),
 	)
 
-	return &Engine{
+	engineRef = &Engine{
 		backend:    lb,
 		netMon:     nm,
 		ns:         ns,
@@ -467,7 +480,9 @@ func New(cfg Config) (*Engine, error) {
 		tunName:    tunName,
 		osRouter:   osRouter,
 		logger:     l,
-	}, nil
+	}
+	engineRef.initializeRoutingStatus(cfg.TUNName != "")
+	return engineRef, nil
 }
 
 func tunCreationError(goos, name string, err error) error {

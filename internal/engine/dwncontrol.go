@@ -41,6 +41,12 @@ type DWNControlConfig struct {
 	//   - When explicitly triggered via Notify()
 	MapResponseFunc func(ctx context.Context) (*netmap.NetworkMap, error)
 
+	// OnMapResult observes every completed map load. It is called after the
+	// control-client observer has received the result, and is useful for
+	// reconciling host routing readiness with the exact map that was loaded.
+	// A nil map and nil error means the load completed without usable state.
+	OnMapResult func(ctx context.Context, nm *netmap.NetworkMap, err error)
+
 	// EndpointUpdateFunc is called when magicsock discovers new endpoints
 	// (via STUN, local interface enumeration, etc). The implementation
 	// should write these back to the anchor DWN so peers can discover
@@ -112,9 +118,9 @@ type DWNControl struct {
 	logf     logger.Logf
 	clientID int64
 
-	mu     sync.Mutex
-	disco  key.DiscoPublic
-	paused atomic.Bool
+	mu           sync.Mutex
+	disco        key.DiscoPublic
+	paused       atomic.Bool
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
 	cancel       context.CancelFunc
@@ -162,6 +168,7 @@ func NewDWNControl(config *DWNControlConfig, opts controlclient.Options) (*DWNCo
 	cc := &DWNControl{
 		config: DWNControlConfig{
 			MapResponseFunc:    config.MapResponseFunc,
+			OnMapResult:        config.OnMapResult,
 			EndpointUpdateFunc: config.EndpointUpdateFunc,
 			PollInterval:       pollInterval,
 			NodePrivateKey:     config.NodePrivateKey,
@@ -291,10 +298,16 @@ func (cc *DWNControl) loadAndPush(ctx context.Context) {
 				Persist: cc.persist.View(),
 			})
 		}
+		if cc.config.OnMapResult != nil {
+			cc.config.OnMapResult(ctx, nil, err)
+		}
 		return
 	}
 
 	if nm == nil {
+		if cc.config.OnMapResult != nil {
+			cc.config.OnMapResult(ctx, nil, nil)
+		}
 		return
 	}
 
@@ -335,6 +348,9 @@ func (cc *DWNControl) loadAndPush(ctx context.Context) {
 			Persist:   cc.persist.View(),
 		}
 		cc.observer.SetControlClientStatus(cc, s)
+	}
+	if cc.config.OnMapResult != nil {
+		cc.config.OnMapResult(ctx, nm, nil)
 	}
 }
 

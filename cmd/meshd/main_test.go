@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -261,6 +262,60 @@ func TestPrintDoctorCheck(t *testing.T) {
 	}
 }
 
+func TestPrintDaemonRuntimeStatusIncludesRoutingState(t *testing.T) {
+	var output bytes.Buffer
+	printDaemonRuntimeStatus(&output, &daemon.Status{
+		PID:             42,
+		Uptime:          "10s",
+		TUNDevice:       "meshd0",
+		RoutingRequired: true,
+		RoutingReady:    false,
+		RoutingPhase:    "syncing",
+		RoutingError:    "waiting for network map",
+	})
+
+	for _, want := range []string{
+		"Running: yes (PID 42)",
+		"TUN device: meshd0",
+		"Routing: syncing (phase: syncing)",
+		"Last routing error: waiting for network map",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("daemon status output missing %q:\n%s", want, output.String())
+		}
+	}
+
+	output.Reset()
+	printDaemonRuntimeStatus(&output, &daemon.Status{RoutingReady: true, RoutingPhase: "userspace"})
+	if !strings.Contains(output.String(), "Routing: userspace ready") {
+		t.Fatalf("userspace status output = %q", output.String())
+	}
+
+	output.Reset()
+	printDaemonRuntimeStatus(&output, &daemon.Status{
+		RoutingRequired: true,
+		RoutingReady:    true,
+		RoutingPhase:    "error",
+		RoutingError:    "control map unavailable",
+	})
+	if !strings.Contains(output.String(), "Routing: ready (degraded; phase: error)") ||
+		!strings.Contains(output.String(), "Last routing error: control map unavailable") {
+		t.Fatalf("degraded routing status output = %q", output.String())
+	}
+
+	output.Reset()
+	printDaemonRuntimeStatus(&output, &daemon.Status{
+		RoutingRequired: true,
+		RoutingReady:    false,
+		RoutingPhase:    "error",
+		RoutingError:    "route installation failed",
+	})
+	if !strings.Contains(output.String(), "Routing: error (phase: error)") ||
+		!strings.Contains(output.String(), "Last routing error: route installation failed") {
+		t.Fatalf("failed routing status output = %q", output.String())
+	}
+}
+
 func TestBuildAdminURL(t *testing.T) {
 	rawURL := buildAdminURL("https://admin.meshd.sh/", adminContext{
 		OwnerDID:        "did:dht:wallet",
@@ -327,6 +382,81 @@ func TestCollectDoctorChecksNoProfile(t *testing.T) {
 	}
 	if !doctorHasLevel(checks, doctorFail) {
 		t.Fatal("expected doctor failure level")
+	}
+}
+
+func TestDaemonDoctorChecksReportsRoutingReadiness(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		ready     bool
+		phase     string
+		lastError string
+		level     doctorLevel
+		title     string
+	}{
+		{
+			name:      "syncing",
+			phase:     "syncing",
+			lastError: "waiting for network map",
+			level:     doctorWarn,
+			title:     "Mesh routing still syncing",
+		},
+		{
+			name:  "ready",
+			ready: true,
+			phase: "ready",
+			level: doctorOK,
+			title: "Mesh routing ready",
+		},
+		{
+			name:      "degraded",
+			ready:     true,
+			phase:     "error",
+			lastError: "loading control map: permission denied",
+			level:     doctorWarn,
+			title:     "Mesh routing ready (degraded)",
+		},
+		{
+			name:      "error",
+			phase:     "error",
+			lastError: "installing routes: permission denied",
+			level:     doctorFail,
+			title:     "Mesh routing error",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := privateDaemonSocketDir(t)
+			t.Setenv("ENBOX_HOME", home)
+			server := daemon.NewServer(daemon.DefaultSocketPath(), func() daemon.Status {
+				return daemon.Status{
+					RoutingRequired: true,
+					RoutingReady:    tc.ready,
+					RoutingPhase:    tc.phase,
+					RoutingError:    tc.lastError,
+				}
+			}, nil)
+			if err := server.Start(); err != nil {
+				t.Fatalf("Start daemon server: %v", err)
+			}
+			defer server.Stop()
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_, checks := daemonDoctorChecks(ctx, nil)
+			for _, check := range checks {
+				if check.Title != tc.title {
+					continue
+				}
+				if check.Level != tc.level || (tc.lastError != "" && !strings.Contains(check.Detail, tc.lastError)) {
+					t.Fatalf("routing check = %+v", check)
+				}
+				if tc.level != doctorOK && strings.TrimSpace(check.Next) == "" {
+					t.Fatalf("routing check has no actionable next step: %+v", check)
+				}
+				return
+			}
+			t.Fatalf("checks = %+v, want %q", checks, tc.title)
+		})
 	}
 }
 
@@ -742,7 +872,7 @@ func TestValidateDaemonStartStatusRequiresRequestedTUN(t *testing.T) {
 	if err := validateDaemonStartStatus(&daemon.Status{}, false, ""); err != nil {
 		t.Fatalf("explicit userspace status rejected: %v", err)
 	}
-	if err := validateDaemonStartStatus(&daemon.Status{TUNDevice: "meshd0"}, true, ""); err != nil {
+	if err := validateDaemonStartStatus(&daemon.Status{TUNDevice: "meshd0", RoutingRequired: true}, true, ""); err != nil {
 		t.Fatalf("TUN status rejected: %v", err)
 	}
 	if err := validateDaemonStartStatus(&daemon.Status{}, true, ""); err == nil ||
@@ -752,18 +882,212 @@ func TestValidateDaemonStartStatusRequiresRequestedTUN(t *testing.T) {
 }
 
 func TestValidateDaemonStartStatusRequiresMatchingInstance(t *testing.T) {
-	status := &daemon.Status{InstanceID: "different-instance", TUNDevice: "meshd0"}
+	status := &daemon.Status{InstanceID: "different-instance", TUNDevice: "meshd0", RoutingRequired: true}
 	err := validateDaemonStartStatus(status, true, "launched-instance")
 	if err == nil || !strings.Contains(err.Error(), "startup instance mismatch") {
 		t.Fatalf("instance mismatch error = %v", err)
 	}
 	if err := validateDaemonStartStatus(
-		&daemon.Status{InstanceID: "launched-instance", TUNDevice: "meshd0"},
+		&daemon.Status{InstanceID: "launched-instance", TUNDevice: "meshd0", RoutingRequired: true},
 		true,
 		"launched-instance",
 	); err != nil {
 		t.Fatalf("matching startup instance rejected: %v", err)
 	}
+}
+
+func TestWaitForDaemonStartWaitsForRoutingReady(t *testing.T) {
+	socket := filepath.Join(privateDaemonSocketDir(t), "meshd.sock")
+	readyAt := time.Now().Add(400 * time.Millisecond)
+	server := daemon.NewServer(socket, func() daemon.Status {
+		ready := time.Now().After(readyAt)
+		phase := "syncing"
+		if ready {
+			phase = "ready"
+		}
+		return daemon.Status{
+			TUNDevice:       "meshd0",
+			RoutingRequired: true,
+			RoutingReady:    ready,
+			RoutingPhase:    phase,
+		}
+	}, nil)
+	server.SetInstanceID("startup-instance")
+	if err := server.Start(); err != nil {
+		t.Fatalf("Start daemon server: %v", err)
+	}
+	defer server.Stop()
+
+	started := time.Now()
+	status, err := waitForDaemonStart(
+		context.Background(), socket, 2*time.Second, true, "startup-instance", make(chan error),
+	)
+	if err != nil {
+		t.Fatalf("waitForDaemonStart: %v", err)
+	}
+	if status == nil || !status.RoutingReady {
+		t.Fatalf("startup status = %+v, want routing ready", status)
+	}
+	if elapsed := time.Since(started); elapsed < 350*time.Millisecond {
+		t.Fatalf("startup returned before delayed routing readiness after %s", elapsed)
+	}
+}
+
+func TestWaitForDaemonStartReportsRunningSyncTimeout(t *testing.T) {
+	socket := filepath.Join(privateDaemonSocketDir(t), "meshd.sock")
+	server := daemon.NewServer(socket, func() daemon.Status {
+		return daemon.Status{
+			TUNDevice:       "meshd0",
+			RoutingRequired: true,
+			RoutingReady:    false,
+			RoutingPhase:    "syncing",
+			RoutingError:    "no usable network map addresses yet",
+		}
+	}, nil)
+	server.SetInstanceID("startup-instance")
+	if err := server.Start(); err != nil {
+		t.Fatalf("Start daemon server: %v", err)
+	}
+	defer server.Stop()
+	child, childExit := startStartupChildProcess(t)
+
+	_, err := waitForDaemonStart(
+		context.Background(), socket, 50*time.Millisecond, true, "startup-instance", childExit,
+	)
+	if err == nil || !strings.Contains(err.Error(), "daemon running, mesh still syncing") ||
+		!strings.Contains(err.Error(), "no usable network map addresses yet") {
+		t.Fatalf("sync timeout error = %v", err)
+	}
+	if !daemon.NewClient(socket).IsRunning() {
+		t.Fatal("startup timeout stopped the still-syncing daemon")
+	}
+	select {
+	case exitErr := <-childExit:
+		t.Fatalf("startup timeout stopped or reaped the child: %v", exitErr)
+	default:
+	}
+	alive, aliveErr := daemon.ProcessAlive(child.Process.Pid)
+	if aliveErr != nil || !alive {
+		t.Fatalf("startup child %d alive = %t, %v", child.Process.Pid, alive, aliveErr)
+	}
+}
+
+const startupChildTestEnv = "MESHD_TEST_STARTUP_CHILD"
+
+func TestWaitForDaemonStartChildProcess(t *testing.T) {
+	if os.Getenv(startupChildTestEnv) != "1" {
+		return
+	}
+	time.Sleep(30 * time.Second)
+}
+
+func startStartupChildProcess(t *testing.T) (*exec.Cmd, chan error) {
+	t.Helper()
+	child := exec.Command(os.Args[0], "-test.run=^TestWaitForDaemonStartChildProcess$")
+	child.Env = append(os.Environ(), startupChildTestEnv+"=1")
+	if err := child.Start(); err != nil {
+		t.Fatalf("start startup child: %v", err)
+	}
+	childExit := make(chan error, 1)
+	reaped := make(chan error, 1)
+	go func() {
+		err := child.Wait()
+		reaped <- err
+		childExit <- err
+	}()
+	t.Cleanup(func() {
+		_ = child.Process.Kill()
+		select {
+		case <-reaped:
+		case <-time.After(5 * time.Second):
+			t.Errorf("startup child %d was not reaped", child.Process.Pid)
+		}
+	})
+	return child, childExit
+}
+
+func TestRoutingSyncTimeoutErrorDistinguishesErrorPhase(t *testing.T) {
+	err := routingSyncTimeoutError(&daemon.Status{
+		RoutingRequired: true,
+		RoutingPhase:    "error",
+		RoutingError:    "installing routes: permission denied",
+	}, 30*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "daemon running, mesh routing failed") ||
+		strings.Contains(err.Error(), "still syncing") ||
+		!strings.Contains(err.Error(), "installing routes: permission denied") {
+		t.Fatalf("routing error timeout = %v", err)
+	}
+}
+
+func TestRoutingStillSyncingOnlyForSyncPhase(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status *daemon.Status
+		want   bool
+	}{
+		{
+			name: "syncing",
+			status: &daemon.Status{
+				RoutingRequired: true,
+				RoutingPhase:    "syncing",
+			},
+			want: true,
+		},
+		{
+			name: "error",
+			status: &daemon.Status{
+				RoutingRequired: true,
+				RoutingPhase:    "error",
+			},
+		},
+		{
+			name: "ready",
+			status: &daemon.Status{
+				RoutingRequired: true,
+				RoutingReady:    true,
+				RoutingPhase:    "syncing",
+			},
+		},
+		{name: "missing phase", status: &daemon.Status{RoutingRequired: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := routingStillSyncing(tc.status); got != tc.want {
+				t.Fatalf("routingStillSyncing(%+v) = %t, want %t", tc.status, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWaitForDaemonStartAcceptsUserspaceReadiness(t *testing.T) {
+	socket := filepath.Join(privateDaemonSocketDir(t), "meshd.sock")
+	server := daemon.NewServer(socket, func() daemon.Status {
+		return daemon.Status{
+			RoutingRequired: false,
+			RoutingReady:    true,
+			RoutingPhase:    "userspace",
+		}
+	}, nil)
+	server.SetInstanceID("startup-instance")
+	if err := server.Start(); err != nil {
+		t.Fatalf("Start daemon server: %v", err)
+	}
+	defer server.Stop()
+
+	status, err := waitForDaemonStart(
+		context.Background(), socket, time.Second, false, "startup-instance", make(chan error),
+	)
+	if err != nil || status == nil || !status.RoutingReady || status.RoutingRequired {
+		t.Fatalf("userspace startup status = %+v, %v", status, err)
+	}
+}
+
+func privateDaemonSocketDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatalf("Chmod socket directory: %v", err)
+	}
+	return dir
 }
 
 func TestResolveDaemonInstanceIDOnlyTrustsBackgroundChild(t *testing.T) {

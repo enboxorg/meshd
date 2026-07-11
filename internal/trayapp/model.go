@@ -56,12 +56,16 @@ type PeerView struct {
 
 // View builds the current menu presentation.
 func (m Model) View() View {
-	connected := m.Status != nil && m.Status.Running
+	running := m.Status != nil && m.Status.Running
+	routingError := running && strings.EqualFold(strings.TrimSpace(m.Status.RoutingPhase), "error")
+	connectionError := routingError && !m.Status.RoutingReady
+	degraded := routingError && m.Status.RoutingReady
+	connected := running && m.Status.RoutingReady
 	view := View{
 		Connected:         connected,
-		ConnectEnabled:    !connected && m.Operation == OperationNone,
-		DisconnectEnabled: connected && m.Operation == OperationNone,
-		Error:             strings.TrimSpace(m.LastError),
+		ConnectEnabled:    !running && m.Operation == OperationNone,
+		DisconnectEnabled: running && m.Operation == OperationNone,
+		Error:             modelError(m.LastError, routingError, m.Status),
 	}
 
 	switch m.Operation {
@@ -72,13 +76,23 @@ func (m Model) View() View {
 		view.StatusTitle = "Disconnecting…"
 		view.Tooltip = "meshd — Disconnecting"
 	case OperationNone:
-		if connected {
+		switch {
+		case connectionError:
+			view.StatusTitle = "Connection error"
+			view.Tooltip = "meshd — Connection error"
+		case connected:
 			view.MeshIP = strings.TrimSpace(m.Status.MeshIP)
 			view.StatusTitle = connectedTitle(m.Status.Network, view.MeshIP)
+			if degraded {
+				view.StatusTitle += " — Degraded"
+			}
 			view.Tooltip = "meshd — " + view.StatusTitle
 			view.CopyIPEnabled = view.MeshIP != ""
 			view.Peers = peerViews(m.Status.Peers)
-		} else {
+		case running:
+			view.StatusTitle = syncingTitle(m.Status.Network)
+			view.Tooltip = "meshd — " + strings.TrimSuffix(view.StatusTitle, "…")
+		default:
 			view.StatusTitle = "Disconnected"
 			view.Tooltip = "meshd — Disconnected"
 		}
@@ -87,6 +101,29 @@ func (m Model) View() View {
 		view.Tooltip += ": " + view.Error
 	}
 	return view
+}
+
+func modelError(lastError string, routingError bool, status *daemon.Status) string {
+	lastError = strings.TrimSpace(lastError)
+	if !routingError || status == nil {
+		return lastError
+	}
+	routeError := strings.TrimSpace(status.RoutingError)
+	if routeError == "" || routeError == lastError {
+		return lastError
+	}
+	if lastError == "" {
+		return routeError
+	}
+	return lastError + "; " + routeError
+}
+
+func syncingTitle(network string) string {
+	network = safeMenuLabel(network, maxNetworkNameRunes)
+	if network != "" {
+		return "Syncing " + network + "…"
+	}
+	return "Syncing…"
 }
 
 func connectedTitle(network, meshIP string) string {

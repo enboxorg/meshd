@@ -42,6 +42,8 @@ func TestServiceConnectRunsSelectedProfile(t *testing.T) {
 
 func TestServiceConnectReportsCommandOutput(t *testing.T) {
 	service := NewService("")
+	service.socket = filepath.Join(t.TempDir(), "missing.sock")
+	service.client = daemon.NewClient(service.socket)
 	service.findMeshd = func() (string, error) { return "/opt/meshd", nil }
 	service.launchConnect = func(context.Context, string, []string, []string) ([]byte, error) {
 		return []byte("vault password required\nrun meshd vault remember"), errors.New("exit status 1")
@@ -49,6 +51,83 @@ func TestServiceConnectReportsCommandOutput(t *testing.T) {
 	err := service.Connect(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "meshd vault remember") {
 		t.Fatalf("Connect error = %v", err)
+	}
+}
+
+func TestServiceConnectAcceptsDaemonHandoffAfterCommandDeadline(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  daemon.Status
+		wantErr bool
+	}{
+		{
+			name: "syncing",
+			status: daemon.Status{
+				Running:         true,
+				RoutingRequired: true,
+				RoutingReady:    false,
+				RoutingPhase:    "syncing",
+			},
+		},
+		{
+			name: "ready degraded",
+			status: daemon.Status{
+				Running:         true,
+				RoutingRequired: true,
+				RoutingReady:    true,
+				RoutingPhase:    "error",
+				RoutingError:    "refreshing control map: temporarily unavailable",
+			},
+		},
+		{
+			name: "non-ready error",
+			status: daemon.Status{
+				Running:         true,
+				RoutingRequired: true,
+				RoutingReady:    false,
+				RoutingPhase:    "error",
+				RoutingError:    "configuring OS routes: permission denied",
+			},
+		},
+		{
+			name: "daemon not running",
+			status: daemon.Status{
+				RoutingRequired: true,
+				RoutingPhase:    "syncing",
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			socket := serveTrayStatus(t, tc.status)
+			service := NewService("")
+			service.socket = socket
+			service.client = daemon.NewClient(socket)
+			service.findMeshd = func() (string, error) { return "/opt/meshd", nil }
+			service.launchConnect = func(context.Context, string, []string, []string) ([]byte, error) {
+				return []byte("mesh still syncing after 30s (phase error): route setup failed"), errors.New("exit status 1")
+			}
+
+			connectCtx, cancel := context.WithCancel(context.Background())
+			cancel()
+			err := service.Connect(connectCtx)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("Connect: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("Connect succeeded without a running daemon")
+			}
+			for _, want := range []string{"exit status 1", "route setup failed"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("Connect error = %q, want %q", err, want)
+				}
+			}
+		})
 	}
 }
 
@@ -358,6 +437,22 @@ func TestMacOSTerminalCommandKeepsPayloadOutOfScript(t *testing.T) {
 type countingListener struct {
 	net.Listener
 	accepts atomic.Int32
+}
+
+func serveTrayStatus(t *testing.T, status daemon.Status) string {
+	t.Helper()
+	socket := privateSocketPath(t)
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(status)
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+	return socket
 }
 
 func privateSocketPath(t *testing.T) string {

@@ -2819,17 +2819,44 @@ func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 			fmt.Printf("\nDaemon: running (status query failed: %v)\n", err)
 		} else {
 			fmt.Printf("\nDaemon:\n")
-			fmt.Printf("  Running: yes (PID %d)\n", live.PID)
-			fmt.Printf("  Uptime: %s\n", live.Uptime)
-			if live.TUNDevice != "" {
-				fmt.Printf("  TUN device: %s\n", live.TUNDevice)
-			}
+			printDaemonRuntimeStatus(os.Stdout, live)
 		}
 	} else {
 		fmt.Printf("\nDaemon: not running\n")
 	}
 
 	return nil
+}
+
+func printDaemonRuntimeStatus(w io.Writer, live *daemon.Status) {
+	fmt.Fprintf(w, "  Running: yes (PID %d)\n", live.PID)
+	fmt.Fprintf(w, "  Uptime: %s\n", live.Uptime)
+	if live.TUNDevice != "" {
+		fmt.Fprintf(w, "  TUN device: %s\n", live.TUNDevice)
+	}
+	if live.RoutingRequired {
+		readiness := "syncing"
+		degraded := live.RoutingReady && routingPhaseIs(live, engine.RoutingPhaseError)
+		if live.RoutingReady {
+			readiness = "ready"
+		} else if routingPhaseIs(live, engine.RoutingPhaseError) {
+			readiness = "error"
+		}
+		if phase := strings.TrimSpace(live.RoutingPhase); degraded && phase != "" {
+			fmt.Fprintf(w, "  Routing: %s (degraded; phase: %s)\n", readiness, phase)
+		} else if degraded {
+			fmt.Fprintf(w, "  Routing: %s (degraded)\n", readiness)
+		} else if phase != "" {
+			fmt.Fprintf(w, "  Routing: %s (phase: %s)\n", readiness, phase)
+		} else {
+			fmt.Fprintf(w, "  Routing: %s\n", readiness)
+		}
+		if lastError := strings.TrimSpace(live.RoutingError); lastError != "" {
+			fmt.Fprintf(w, "  Last routing error: %s\n", lastError)
+		}
+	} else if live.RoutingReady {
+		fmt.Fprintln(w, "  Routing: userspace ready")
+	}
 }
 
 type doctorLevel string
@@ -3005,6 +3032,9 @@ func collectDoctorChecks(ctx context.Context, flagProfile string) []doctorCheck 
 		})
 		return checks
 	}
+	if routingStillSyncing(live) {
+		return checks
+	}
 
 	checks = append(checks, interfaceDoctorChecks(ctx, live.TUNDevice, firstNonEmpty(live.MeshIP, ns.MeshIP))...)
 	routeChecks := peerRouteDoctorChecks(ctx, stateDir, ns, identity, meta, selfNodeDID, live.TUNDevice)
@@ -3124,7 +3154,61 @@ func daemonDoctorChecks(ctx context.Context, ns *state.NetworkState) (*daemon.St
 			Next:   "Run 'meshd down' and then 'meshd up'.",
 		})
 	}
+	if live.RoutingRequired {
+		detail := strings.TrimSpace(live.RoutingPhase)
+		if lastError := strings.TrimSpace(live.RoutingError); lastError != "" {
+			if detail != "" {
+				detail += ": "
+			}
+			detail += lastError
+		}
+		switch {
+		case live.RoutingReady && routingPhaseIs(live, engine.RoutingPhaseError):
+			checks = append(checks, doctorCheck{
+				Level:  doctorWarn,
+				Title:  "Mesh routing ready (degraded)",
+				Detail: detail,
+				Next:   "Installed routes remain active; meshd will retry the failed control refresh automatically.",
+			})
+		case live.RoutingReady:
+			checks = append(checks, doctorCheck{
+				Level:  doctorOK,
+				Title:  "Mesh routing ready",
+				Detail: detail,
+			})
+		case routingPhaseIs(live, engine.RoutingPhaseError):
+			checks = append(checks, doctorCheck{
+				Level:  doctorFail,
+				Title:  "Mesh routing error",
+				Detail: detail,
+				Next:   "Fix the reported routing error; meshd will keep retrying. After correcting it, run 'meshd down' and then 'meshd up'.",
+			})
+		case routingPhaseIs(live, engine.RoutingPhaseSyncing):
+			checks = append(checks, doctorCheck{
+				Level:  doctorWarn,
+				Title:  "Mesh routing still syncing",
+				Detail: detail,
+				Next:   "Keep meshd running and retry 'meshd doctor' after synchronization completes.",
+			})
+		default:
+			checks = append(checks, doctorCheck{
+				Level:  doctorWarn,
+				Title:  "Mesh routing not ready",
+				Detail: detail,
+				Next:   "Inspect the daemon log and retry 'meshd doctor'.",
+			})
+		}
+	}
 	return live, checks
+}
+
+func routingPhaseIs(status *daemon.Status, phase string) bool {
+	return status != nil && strings.EqualFold(strings.TrimSpace(status.RoutingPhase), phase)
+}
+
+func routingStillSyncing(status *daemon.Status) bool {
+	return status != nil && status.RoutingRequired && !status.RoutingReady &&
+		routingPhaseIs(status, engine.RoutingPhaseSyncing)
 }
 
 func interfaceDoctorChecks(ctx context.Context, tunName string, meshIP string) []doctorCheck {
@@ -3631,6 +3715,7 @@ func waitForDaemonStart(
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	var lastErr error
+	var liveStatus *daemon.Status
 	for {
 		status, err := client.GetStatus(ctx)
 		if err == nil {
@@ -3645,9 +3730,14 @@ func waitForDaemonStart(
 			if err := validateDaemonStartStatus(status, requireTUN, instanceID); err != nil {
 				return nil, err
 			}
-			return status, nil
+			liveStatus = status
+			lastErr = nil
+			if !requireTUN || status.RoutingReady {
+				return status, nil
+			}
+		} else {
+			lastErr = err
 		}
-		lastErr = err
 
 		select {
 		case <-ctx.Done():
@@ -3658,6 +3748,9 @@ func waitForDaemonStart(
 			}
 			return nil, fmt.Errorf("background meshd exited before opening its control socket")
 		case <-timer.C:
+			if liveStatus != nil && requireTUN && !liveStatus.RoutingReady {
+				return nil, routingSyncTimeoutError(liveStatus, timeout)
+			}
 			if lastErr != nil {
 				return nil, fmt.Errorf("daemon did not start within %s: %w", timeout, lastErr)
 			}
@@ -3677,7 +3770,24 @@ func validateDaemonStartStatus(status *daemon.Status, requireTUN bool, instanceI
 	if requireTUN && status.TUNDevice == "" {
 		return fmt.Errorf("daemon started without the required TUN device")
 	}
+	if requireTUN && !status.RoutingRequired {
+		return fmt.Errorf("daemon did not report the required system-routing state")
+	}
 	return nil
+}
+
+func routingSyncTimeoutError(status *daemon.Status, timeout time.Duration) error {
+	message := fmt.Sprintf("daemon running, mesh still syncing after %s", timeout)
+	if routingPhaseIs(status, engine.RoutingPhaseError) {
+		message = fmt.Sprintf("daemon running, mesh routing failed after %s", timeout)
+	}
+	if phase := strings.TrimSpace(status.RoutingPhase); phase != "" {
+		message += fmt.Sprintf(" (phase: %s)", phase)
+	}
+	if lastError := strings.TrimSpace(status.RoutingError); lastError != "" {
+		message += ": " + lastError
+	}
+	return errors.New(message)
 }
 
 func resolveDaemonInstanceID(backgroundChild bool, startupID string) (string, error) {
@@ -4026,6 +4136,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 
 	// ── Step 4: Start the daemon control socket ────────────────────
 	daemonSrv := daemon.NewServer(socketPath, func() daemon.Status {
+		routing := eng.RoutingStatus()
 		return daemon.Status{
 			TUNDevice:       eng.TUNDeviceName(),
 			MeshIP:          ns.MeshIP,
@@ -4033,6 +4144,10 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 			OwnerDID:        networkOwnerDID(ns, meta.OwnerDID),
 			NetworkRecordID: ns.NetworkRecordID,
 			Peers:           daemonPeerStatuses(eng.PeerSnapshots()),
+			RoutingRequired: routing.Required,
+			RoutingReady:    routing.Ready,
+			RoutingPhase:    routing.Phase,
+			RoutingError:    routing.LastError,
 		}
 	}, logger)
 	daemonSrv.SetInstanceID(instanceID)

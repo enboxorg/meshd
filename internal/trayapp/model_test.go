@@ -21,9 +21,11 @@ func TestModelViewDisconnected(t *testing.T) {
 
 func TestModelViewConnected(t *testing.T) {
 	model := Model{Status: &daemon.Status{
-		Running: true,
-		Network: "home",
-		MeshIP:  "10.200.0.7",
+		Running:         true,
+		Network:         "home",
+		MeshIP:          "10.200.0.7",
+		RoutingRequired: true,
+		RoutingReady:    true,
 		Peers: []daemon.PeerStatus{
 			{Name: "zeta", MeshIP: "10.200.0.9"},
 			{Name: "Alpha", MeshIP: "10.200.0.2", Online: true},
@@ -41,6 +43,115 @@ func TestModelViewConnected(t *testing.T) {
 	wantPeerTitles := []string{"● Alpha · 10.200.0.2", "○ zeta · 10.200.0.9"}
 	if !reflect.DeepEqual(gotPeerTitles, wantPeerTitles) {
 		t.Fatalf("peer titles = %v, want %v", gotPeerTitles, wantPeerTitles)
+	}
+}
+
+func TestModelViewSyncingRoutes(t *testing.T) {
+	view := (Model{Status: &daemon.Status{
+		Running:         true,
+		Network:         "home",
+		MeshIP:          "10.200.0.7",
+		RoutingRequired: true,
+		RoutingReady:    false,
+		RoutingPhase:    "syncing",
+		Peers:           []daemon.PeerStatus{{Name: "peer", MeshIP: "10.200.0.8"}},
+	}}).View()
+
+	if view.Connected || view.StatusTitle != "Syncing home…" || view.Tooltip != "meshd — Syncing home" {
+		t.Fatalf("syncing view = %+v", view)
+	}
+	if view.ConnectEnabled || !view.DisconnectEnabled || view.CopyIPEnabled || len(view.Peers) != 0 {
+		t.Fatalf("syncing actions = %+v", view)
+	}
+}
+
+func TestModelViewRoutingError(t *testing.T) {
+	view := (Model{
+		Status: &daemon.Status{
+			Running:         true,
+			Network:         "home",
+			MeshIP:          "10.200.0.7",
+			RoutingRequired: true,
+			RoutingReady:    false,
+			RoutingPhase:    "error",
+			RoutingError:    "installing peer routes: permission denied",
+			Peers:           []daemon.PeerStatus{{Name: "peer", MeshIP: "10.200.0.8"}},
+		},
+		LastError: "meshd up timed out",
+	}).View()
+
+	if view.Connected || view.StatusTitle != "Connection error" {
+		t.Fatalf("routing error view = %+v", view)
+	}
+	if view.ConnectEnabled || !view.DisconnectEnabled || view.CopyIPEnabled || len(view.Peers) != 0 {
+		t.Fatalf("routing error actions = %+v", view)
+	}
+	for _, want := range []string{"meshd up timed out", "installing peer routes: permission denied"} {
+		if !strings.Contains(view.Error, want) || !strings.Contains(view.Tooltip, want) {
+			t.Fatalf("routing error view does not surface %q: %+v", want, view)
+		}
+	}
+}
+
+func TestModelViewClearsLiveRoutingErrorAfterRecovery(t *testing.T) {
+	model := Model{Status: &daemon.Status{
+		Running:         true,
+		RoutingRequired: true,
+		RoutingPhase:    "error",
+		RoutingError:    "configuring OS routes: permission denied",
+	}}
+	if view := model.View(); view.Error == "" || view.StatusTitle != "Connection error" {
+		t.Fatalf("routing error view = %+v", view)
+	}
+
+	model.Status = &daemon.Status{
+		Running:         true,
+		RoutingRequired: true,
+		RoutingReady:    true,
+		RoutingPhase:    "ready",
+	}
+	view := model.View()
+	if !view.Connected || view.Error != "" || strings.Contains(view.Tooltip, "permission denied") {
+		t.Fatalf("recovered routing view = %+v", view)
+	}
+}
+
+func TestModelViewDegradedRouting(t *testing.T) {
+	view := (Model{Status: &daemon.Status{
+		Running:         true,
+		Network:         "home",
+		MeshIP:          "10.200.0.7",
+		RoutingRequired: true,
+		RoutingReady:    true,
+		RoutingPhase:    "error",
+		RoutingError:    "refreshing control map: temporarily unavailable",
+		Peers:           []daemon.PeerStatus{{Name: "peer", MeshIP: "10.200.0.8"}},
+	}}).View()
+
+	if !view.Connected || view.StatusTitle != "Connected to home · 10.200.0.7 — Degraded" {
+		t.Fatalf("degraded view = %+v", view)
+	}
+	if view.ConnectEnabled || !view.DisconnectEnabled || !view.CopyIPEnabled || len(view.Peers) != 1 {
+		t.Fatalf("degraded actions = %+v", view)
+	}
+	if !strings.Contains(view.Error, "temporarily unavailable") ||
+		!strings.Contains(view.Tooltip, "temporarily unavailable") {
+		t.Fatalf("degraded view does not surface routing error: %+v", view)
+	}
+}
+
+func TestModelViewUserspaceReady(t *testing.T) {
+	view := (Model{Status: &daemon.Status{
+		Running:         true,
+		Network:         "home",
+		MeshIP:          "10.200.0.7",
+		RoutingRequired: false,
+		RoutingReady:    true,
+		RoutingPhase:    "userspace",
+	}}).View()
+
+	if !view.Connected || view.StatusTitle != "Connected to home · 10.200.0.7" {
+		t.Fatalf("userspace view = %+v", view)
 	}
 }
 
@@ -72,8 +183,9 @@ func TestModelViewIncludesErrorInTooltip(t *testing.T) {
 func TestModelViewSanitizesAndCapsLabels(t *testing.T) {
 	longName := "peer\n\t\u202e" + strings.Repeat("界", maxPeerNameRunes+20)
 	view := (Model{Status: &daemon.Status{
-		Running: true,
-		Network: "home\n\u202e network",
+		Running:      true,
+		Network:      "home\n\u202e network",
+		RoutingReady: true,
 		Peers: []daemon.PeerStatus{{
 			Name:   longName,
 			MeshIP: "10.200.0.8",
