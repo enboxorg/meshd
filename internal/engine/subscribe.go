@@ -165,11 +165,20 @@ func (w *SubscriptionWatcher) SetRefreshCoordinator(coordinator subscriptionRefr
 	w.coordinator = coordinator
 }
 
-func (w *SubscriptionWatcher) refreshCoordinator() subscriptionRefreshCoordinator {
+func (w *SubscriptionWatcher) invalidateStream(stream RefreshStream, reason RefreshReason) {
 	w.coordinatorMu.RLock()
-	coordinator := w.coordinator
-	w.coordinatorMu.RUnlock()
-	return coordinator
+	defer w.coordinatorMu.RUnlock()
+	if w.coordinator != nil {
+		w.coordinator.InvalidateStream(stream, reason)
+	}
+}
+
+func (w *SubscriptionWatcher) notify(reason RefreshReason) {
+	w.coordinatorMu.RLock()
+	defer w.coordinatorMu.RUnlock()
+	if w.coordinator != nil {
+		w.coordinator.Notify(reason)
+	}
 }
 
 func (w *SubscriptionWatcher) setStreamLive(stream RefreshStream, live, needsFullRefresh bool) {
@@ -197,9 +206,7 @@ func (w *SubscriptionWatcher) handleSubscriptionMessage(stream RefreshStream, me
 			slog.String("source", string(stream)),
 			slog.Any("cursor", message.Cursor),
 		)
-		if coordinator := w.refreshCoordinator(); coordinator != nil {
-			coordinator.InvalidateStream(stream, reasonForStream(stream))
-		}
+		w.invalidateStream(stream, reasonForStream(stream))
 	case "eose":
 		// EOSE is only a replay barrier. The lifecycle callback establishes the
 		// stream after replay and lets the coordinator release pending repairs.
@@ -252,9 +259,7 @@ func (w *SubscriptionWatcher) handleSubscriptionLifecycle(stream RefreshStream, 
 			slog.Any("error", event.Err),
 		)
 		w.setStreamLive(stream, false, false)
-		if coordinator := w.refreshCoordinator(); coordinator != nil {
-			coordinator.Notify(reasonForStream(stream))
-		}
+		w.notify(reasonForStream(stream))
 	default:
 		w.logger.Debug("ignoring unknown subscription lifecycle event",
 			slog.String("source", string(stream)),

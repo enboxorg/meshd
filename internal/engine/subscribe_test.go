@@ -165,6 +165,29 @@ func (c *blockingReplacementCoordinator) SetStreamCovered(stream RefreshStream, 
 	c.recordingRefreshCoordinator.SetStreamCovered(stream, covered)
 }
 
+type blockingInvalidationCoordinator struct {
+	*recordingRefreshCoordinator
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingInvalidationCoordinator() *blockingInvalidationCoordinator {
+	return &blockingInvalidationCoordinator{
+		recordingRefreshCoordinator: newRecordingRefreshCoordinator(),
+		entered:                     make(chan struct{}),
+		release:                     make(chan struct{}),
+	}
+}
+
+func (c *blockingInvalidationCoordinator) InvalidateStream(stream RefreshStream, reason RefreshReason) {
+	c.once.Do(func() {
+		close(c.entered)
+		<-c.release
+	})
+	c.recordingRefreshCoordinator.InvalidateStream(stream, reason)
+}
+
 func requireRefreshCoordinatorCalls(t *testing.T, coordinator *recordingRefreshCoordinator, want []refreshCoordinatorCall) {
 	t.Helper()
 	if got := coordinator.takeCalls(); !reflect.DeepEqual(got, want) {
@@ -341,6 +364,60 @@ func TestSubscriptionWatcherReplacementHandoffDoesNotOverwriteConcurrentDisconne
 	if got := replacement.streamHealth(RefreshStreamTopology); got.Live {
 		t.Fatalf("replacement topology health = %+v, want disconnected", got)
 	}
+}
+
+func TestSubscriptionWatcherEventIsFencedByCoordinatorHandoff(t *testing.T) {
+	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{})
+	first := newBlockingInvalidationCoordinator()
+	w.SetRefreshCoordinator(first)
+	w.initializeStreamCoverage(true)
+	w.handleSubscriptionLifecycle(RefreshStreamTopology, dwn.SubscriptionLifecycleEvent{
+		Kind: dwn.SubscriptionLifecycleEstablished,
+	})
+	w.handleSubscriptionLifecycle(RefreshStreamDelivery, dwn.SubscriptionLifecycleEvent{
+		Kind: dwn.SubscriptionLifecycleEstablished,
+	})
+	first.takeCalls()
+
+	eventDone := make(chan struct{})
+	go func() {
+		_ = w.handleSubscriptionMessage(RefreshStreamTopology, &dwn.SubscriptionMessage{Type: "event"})
+		close(eventDone)
+	}()
+	<-first.entered
+
+	replacement := newRecordingRefreshCoordinator()
+	handoffDone := make(chan struct{})
+	go func() {
+		w.SetRefreshCoordinator(replacement)
+		close(handoffDone)
+	}()
+	select {
+	case <-handoffDone:
+		t.Fatal("coordinator handoff interleaved with event invalidation")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(first.release)
+	select {
+	case <-eventDone:
+	case <-time.After(time.Second):
+		t.Fatal("event invalidation did not finish")
+	}
+	select {
+	case <-handoffDone:
+	case <-time.After(time.Second):
+		t.Fatal("coordinator handoff did not finish")
+	}
+	requireRefreshCoordinatorCalls(t, first.recordingRefreshCoordinator, []refreshCoordinatorCall{{
+		method: "invalidate", stream: RefreshStreamTopology, reason: RefreshReasonTopology,
+	}})
+	requireRefreshCoordinatorCalls(t, replacement, []refreshCoordinatorCall{
+		{method: "covered", stream: RefreshStreamTopology, covered: true},
+		{method: "covered", stream: RefreshStreamDelivery, covered: true},
+		{method: "live", stream: RefreshStreamTopology, live: true, needsFullRefresh: true},
+		{method: "live", stream: RefreshStreamDelivery, live: true, needsFullRefresh: true},
+	})
 }
 
 func TestDWNControlPublishesInitialDiscoKey(t *testing.T) {
