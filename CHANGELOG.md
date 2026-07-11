@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.6](https://github.com/enboxorg/meshd/compare/v0.21.5...v0.21.6) (2026-07-11)
+
+
+### Bug Fixes
+
+* cache audience delivery keys ([#250](https://github.com/enboxorg/meshd/issues/250)) ([3c211a6](https://github.com/enboxorg/meshd/commit/3c211a66c3adf4f13a5d57ed23922777ba58eeb0))
+
 ## [0.21.5](https://github.com/enboxorg/meshd/compare/v0.21.4...v0.21.5) (2026-07-11)
 
 
