@@ -49,28 +49,45 @@ func DefaultSocketPath() string {
 
 // Status is the JSON response from GET /api/v0/status.
 type Status struct {
-	Running         bool         `json:"running"`
-	InstanceID      string       `json:"instanceID,omitempty"`
-	TUNDevice       string       `json:"tunDevice,omitempty"`
-	MeshIP          string       `json:"meshIP,omitempty"`
-	Network         string       `json:"network,omitempty"`
-	OwnerDID        string       `json:"ownerDID,omitempty"`
-	NetworkRecordID string       `json:"networkRecordID,omitempty"`
-	Peers           []PeerStatus `json:"peers,omitempty"`
-	RoutingRequired bool         `json:"routingRequired"`
-	RoutingReady    bool         `json:"routingReady"`
-	RoutingPhase    string       `json:"routingPhase,omitempty"`
-	RoutingError    string       `json:"routingError,omitempty"`
-	Uptime          string       `json:"uptime,omitempty"`
-	PID             int          `json:"pid"`
+	Running         bool            `json:"running"`
+	InstanceID      string          `json:"instanceID,omitempty"`
+	TUNDevice       string          `json:"tunDevice,omitempty"`
+	MeshIP          string          `json:"meshIP,omitempty"`
+	Network         string          `json:"network,omitempty"`
+	OwnerDID        string          `json:"ownerDID,omitempty"`
+	NetworkRecordID string          `json:"networkRecordID,omitempty"`
+	Peers           []PeerStatus    `json:"peers,omitempty"`
+	Self            *PeerStatus     `json:"self,omitempty"`
+	Snapshot        *SnapshotStatus `json:"snapshot,omitempty"`
+	RoutingRequired bool            `json:"routingRequired"`
+	RoutingReady    bool            `json:"routingReady"`
+	RoutingPhase    string          `json:"routingPhase,omitempty"`
+	RoutingError    string          `json:"routingError,omitempty"`
+	Uptime          string          `json:"uptime,omitempty"`
+	PID             int             `json:"pid"`
 }
 
 // PeerStatus is the status-facing view of a peer from the engine's latest
 // network map.
 type PeerStatus struct {
-	Name   string `json:"name"`
-	MeshIP string `json:"meshIP"`
-	Online bool   `json:"online"`
+	Name           string `json:"name"`
+	MeshIP         string `json:"meshIP"`
+	Online         bool   `json:"online"`
+	NodeDID        string `json:"nodeDID,omitempty"`
+	OwnerDID       string `json:"ownerDID,omitempty"`
+	MemberRecordID string `json:"memberRecordID,omitempty"`
+	Label          string `json:"label,omitempty"`
+	ExpiresAt      string `json:"expiresAt,omitempty"`
+	LastSeen       string `json:"lastSeen,omitempty"`
+}
+
+// SnapshotStatus describes the freshness of the daemon's materialized mesh
+// snapshot. Timestamp fields are encoded as RFC3339Nano strings.
+type SnapshotStatus struct {
+	Generation    uint64 `json:"generation"`
+	RefreshedAt   string `json:"refreshedAt,omitempty"`
+	LastAttemptAt string `json:"lastAttemptAt,omitempty"`
+	LastError     string `json:"lastError,omitempty"`
 }
 
 type peerAuthorizedContextKey struct{}

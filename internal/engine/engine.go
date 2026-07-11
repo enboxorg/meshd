@@ -70,6 +70,8 @@ type Engine struct {
 
 	routingMu sync.RWMutex
 	routing   routingState
+
+	snapshots *meshSnapshotStore
 }
 
 // Config holds the configuration for creating an Engine.
@@ -451,7 +453,8 @@ func New(cfg Config) (*Engine, error) {
 	// Wire the DWN control client into the LocalBackend.
 	// MapResponseFunc closes over our DWNClient and Converter to produce
 	// NetworkMaps from DWN records.
-	mapFn := MapResponseFunc(dwnClient, converter)
+	snapshots := &meshSnapshotStore{}
+	mapFn := mapResponseFunc(dwnClient.LoadState, converter, snapshots.record)
 	var engineRef *Engine
 	dwnControlConfig := &DWNControlConfig{
 		MapResponseFunc: mapFn,
@@ -500,6 +503,7 @@ func New(cfg Config) (*Engine, error) {
 		tunName:    tunName,
 		osRouter:   osRouter,
 		logger:     l,
+		snapshots:  snapshots,
 	}
 	engineRef.initializeRoutingStatus(cfg.TUNName != "")
 	return engineRef, nil
