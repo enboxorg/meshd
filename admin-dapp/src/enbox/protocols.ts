@@ -1,6 +1,6 @@
 import { defineProtocol } from "@enbox/browser";
 import type { Enbox } from "@enbox/browser";
-import type { ConnectPermissionRequest } from "@enbox/agent";
+import type { ConnectPermissionRequest } from "@enbox/browser";
 
 import { MESHD_PROTOCOL_URI, MeshProtocolDefinition } from "./config";
 
