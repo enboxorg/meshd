@@ -8,20 +8,32 @@ import (
 	"github.com/enboxorg/meshnet/types/netmap"
 )
 
-// PeerSnapshot is the tray- and status-facing view of a peer in the latest
-// network map. MeshIP is the first valid address assigned directly to the
-// peer. LastSeen is nil when the control plane has never observed the peer.
+// PeerSnapshot is the tray- and status-facing view of a node in the latest
+// successful control-plane snapshot. MeshIP is the node's assigned mesh
+// address. LastSeen is nil when the control plane has never observed it.
 type PeerSnapshot struct {
-	Name     string
-	MeshIP   string
-	Online   bool
-	LastSeen *time.Time
+	NodeDID        string
+	Name           string
+	MeshIP         string
+	OwnerDID       string
+	MemberRecordID string
+	Label          string
+	ExpiresAt      string
+	Online         bool
+	LastSeen       *time.Time
 }
 
-// PeerSnapshots returns peers from the latest network map received by the
-// engine. It returns nil until a network map is available.
+// PeerSnapshots returns peers from the latest successful control-plane
+// snapshot. Before the first materialized snapshot is available, it falls back
+// to the latest network map for compatibility.
 func (e *Engine) PeerSnapshots() []PeerSnapshot {
-	if e == nil || e.backend == nil {
+	if e == nil {
+		return nil
+	}
+	if snapshot := e.MeshSnapshot(); snapshot != nil && snapshot.Generation > 0 {
+		return snapshot.Peers
+	}
+	if e.backend == nil {
 		return nil
 	}
 	return peerSnapshotsFromNetMap(e.backend.NetMap())

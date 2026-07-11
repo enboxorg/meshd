@@ -422,12 +422,28 @@ func (c *Converter) convertFilterRules(rules []control.FilterRule) []tailcfg.Fil
 // This function is the bridge between meshd's DWN control client and
 // meshnet's DWNControl polling loop. It is passed to DWNControlConfig.MapResponseFunc.
 func MapResponseFunc(client *control.DWNClient, converter *Converter) func(context.Context) (*netmap.NetworkMap, error) {
+	return mapResponseFunc(client.LoadState, converter, nil)
+}
+
+func mapResponseFunc(
+	load func(context.Context) (*control.MapResponse, error),
+	converter *Converter,
+	onResult func(*control.MapResponse, error),
+) func(context.Context) (*netmap.NetworkMap, error) {
 	return func(ctx context.Context) (*netmap.NetworkMap, error) {
-		resp, err := client.LoadState(ctx)
+		resp, err := load(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("loading DWN state: %w", err)
+			err = fmt.Errorf("loading DWN state: %w", err)
+			if onResult != nil {
+				onResult(nil, err)
+			}
+			return nil, err
 		}
 
-		return converter.Convert(resp)
+		nm, err := converter.Convert(resp)
+		if onResult != nil {
+			onResult(resp, err)
+		}
+		return nm, err
 	}
 }

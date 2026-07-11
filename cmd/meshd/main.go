@@ -1997,13 +1997,23 @@ func parseJoinCommandArgs(args []string) (inviteURL string, ownerDID string, noS
 	return inviteURL, ownerDID, noStartHint, nil
 }
 
+const peerListDaemonLookupTimeout = 750 * time.Millisecond
+
+type peerListCommandDependencies struct {
+	loadIdentity     func(string) (*did.DID, error)
+	loadDaemonStatus func(context.Context, string) (*daemon.Status, error)
+}
+
 // cmdPeerList lists all peers in the current mesh network.
 func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
+	return cmdPeerListWithDependencies(ctx, args, flagProfile, peerListCommandDependencies{
+		loadIdentity:     loadIdentity,
+		loadDaemonStatus: loadPeerListDaemonStatus,
+	})
+}
+
+func cmdPeerListWithDependencies(ctx context.Context, args []string, flagProfile string, deps peerListCommandDependencies) error {
 	stateDir, err := resolveStateDir(flagProfile)
-	if err != nil {
-		return err
-	}
-	identity, err := loadIdentity(stateDir)
 	if err != nil {
 		return err
 	}
@@ -2014,6 +2024,31 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 	}
 	if ns == nil {
 		return fmt.Errorf("not in a network. Use 'meshd network join' first.")
+	}
+
+	// The running daemon already owns a materialized, last-good view of the
+	// mesh. Prefer it before unlocking identity state or contacting the DWN.
+	// Legacy daemon responses and snapshots for another profile/network are
+	// deliberately ignored and fall through to the remote path below.
+	if deps.loadDaemonStatus != nil {
+		if status, statusErr := deps.loadDaemonStatus(ctx, daemon.DefaultSocketPath()); statusErr == nil {
+			if rows, warning, ok := peerListRowsFromDaemonStatus(ns, status); ok {
+				if warning != "" {
+					fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
+				}
+				printPeerListRows(ns.NetworkName, rows)
+				return nil
+			}
+		}
+	}
+
+	identityLoader := deps.loadIdentity
+	if identityLoader == nil {
+		identityLoader = loadIdentity
+	}
+	identity, err := identityLoader(stateDir)
+	if err != nil {
+		return err
 	}
 	selfNodeDID := networkNodeDID(ns, identity.URI)
 	meta := resolveIdentityMetadata(flagProfile, identity.URI)
@@ -2142,6 +2177,12 @@ func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 	return nil
 }
 
+func loadPeerListDaemonStatus(ctx context.Context, socketPath string) (*daemon.Status, error) {
+	lookupCtx, cancel := context.WithTimeout(ctx, peerListDaemonLookupTimeout)
+	defer cancel()
+	return daemon.NewClient(socketPath).GetStatus(lookupCtx)
+}
+
 func loadControlStateForCLI(ctx context.Context, ns *state.NetworkState, identity *did.DID, signerIdentity *did.DID, encMgr *dwncrypto.EncryptionKeyManager, readAuth dwn.MessageAuth, delegateSession *mesh.DelegateSession) (*control.MapResponse, error) {
 	if ns == nil || identity == nil {
 		return nil, fmt.Errorf("network state and identity are required")
@@ -2265,6 +2306,76 @@ func peerListRowsFromMapResponse(ns *state.NetworkState, resp *control.MapRespon
 		})
 	}
 	return rows
+}
+
+func peerListRowsFromDaemonStatus(ns *state.NetworkState, status *daemon.Status) ([]peerListRow, string, bool) {
+	if ns == nil || status == nil || !status.Running {
+		return nil, "", false
+	}
+
+	// NodeDID was added to network.json after the first releases. Without it
+	// there is no identity-free way to prove that the daemon snapshot belongs
+	// to this profile, so legacy state must use the existing identity path.
+	selfNodeDID := strings.TrimSpace(ns.NodeDID)
+	if selfNodeDID == "" || strings.TrimSpace(ns.NetworkRecordID) == "" {
+		return nil, "", false
+	}
+	if status.NetworkRecordID != ns.NetworkRecordID || status.Self == nil || status.Self.NodeDID != selfNodeDID {
+		return nil, "", false
+	}
+
+	snapshot := status.Snapshot
+	if snapshot == nil || snapshot.Generation == 0 || strings.TrimSpace(snapshot.RefreshedAt) == "" {
+		return nil, "", false
+	}
+	if _, err := time.Parse(time.RFC3339Nano, snapshot.RefreshedAt); err != nil {
+		return nil, "", false
+	}
+
+	selfOwnerDID := firstNonEmpty(status.OwnerDID, ns.EffectiveOwnerDID(selfNodeDID))
+	peers := make([]daemon.PeerStatus, 0, 1+len(status.Peers))
+	peers = append(peers, *status.Self)
+	peers = append(peers, status.Peers...)
+
+	rows := make([]peerListRow, 0, len(peers))
+	seen := make(map[string]struct{}, len(peers))
+	for _, peer := range peers {
+		nodeDID := strings.TrimSpace(peer.NodeDID)
+		if nodeDID == "" {
+			continue
+		}
+		if _, duplicate := seen[nodeDID]; duplicate {
+			continue
+		}
+		seen[nodeDID] = struct{}{}
+
+		path := "network/node"
+		if peer.MemberRecordID != "" {
+			path = "network/member/node"
+		}
+		rows = append(rows, peerListRow{
+			NodeDID: nodeDID,
+			MeshIP:  peerListMeshIP(ns.MeshCIDR, nodeDID, peer.MeshIP),
+			Device:  peerListDevice(nodeDID, selfNodeDID),
+			Owner:   peerListOwner(nodeDID, peer.OwnerDID, selfNodeDID, selfOwnerDID),
+			Label:   firstNonEmpty(peer.Label, peer.Name),
+			Expires: peer.ExpiresAt,
+			Path:    path,
+		})
+	}
+	if len(rows) == 0 || rows[0].NodeDID != selfNodeDID {
+		return nil, "", false
+	}
+
+	warning := ""
+	if lastError := strings.TrimSpace(snapshot.LastError); lastError != "" {
+		warning = fmt.Sprintf(
+			"showing last known peer snapshot from %s; latest refresh failed: %s",
+			snapshot.RefreshedAt,
+			lastError,
+		)
+	}
+	return rows, warning, true
 }
 
 func printPeerListRows(networkName string, rows []peerListRow) {
@@ -4137,13 +4248,23 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	// ── Step 4: Start the daemon control socket ────────────────────
 	daemonSrv := daemon.NewServer(socketPath, func() daemon.Status {
 		routing := eng.RoutingStatus()
+		meshSnapshot := eng.MeshSnapshot()
+		selfStatus, peerStatuses, snapshotStatus := daemonStatusesFromMeshSnapshot(meshSnapshot)
+		if meshSnapshot == nil {
+			// Preserve the legacy tray/status view before the first materialized
+			// snapshot attempt. The peer-list fast path requires Snapshot+Self
+			// and will correctly fall back while this compatibility view is used.
+			peerStatuses = daemonPeerStatuses(eng.PeerSnapshots())
+		}
 		return daemon.Status{
 			TUNDevice:       eng.TUNDeviceName(),
 			MeshIP:          ns.MeshIP,
 			Network:         ns.NetworkName,
 			OwnerDID:        networkOwnerDID(ns, meta.OwnerDID),
 			NetworkRecordID: ns.NetworkRecordID,
-			Peers:           daemonPeerStatuses(eng.PeerSnapshots()),
+			Self:            selfStatus,
+			Peers:           peerStatuses,
+			Snapshot:        snapshotStatus,
 			RoutingRequired: routing.Required,
 			RoutingReady:    routing.Ready,
 			RoutingPhase:    routing.Phase,
@@ -4200,19 +4321,58 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	return nil
 }
 
+func daemonStatusesFromMeshSnapshot(snapshot *engine.MeshSnapshot) (*daemon.PeerStatus, []daemon.PeerStatus, *daemon.SnapshotStatus) {
+	if snapshot == nil {
+		return nil, nil, nil
+	}
+
+	var self *daemon.PeerStatus
+	if snapshot.Self != nil {
+		status := daemonPeerStatus(*snapshot.Self)
+		self = &status
+	}
+	return self, daemonPeerStatuses(snapshot.Peers), &daemon.SnapshotStatus{
+		Generation:    snapshot.Generation,
+		RefreshedAt:   daemonSnapshotTimestamp(snapshot.RefreshedAt),
+		LastAttemptAt: daemonSnapshotTimestamp(snapshot.LastAttemptAt),
+		LastError:     snapshot.LastError,
+	}
+}
+
 func daemonPeerStatuses(peers []engine.PeerSnapshot) []daemon.PeerStatus {
 	if len(peers) == 0 {
 		return nil
 	}
 	status := make([]daemon.PeerStatus, 0, len(peers))
 	for _, peer := range peers {
-		status = append(status, daemon.PeerStatus{
-			Name:   peer.Name,
-			MeshIP: peer.MeshIP,
-			Online: peer.Online,
-		})
+		status = append(status, daemonPeerStatus(peer))
 	}
 	return status
+}
+
+func daemonPeerStatus(peer engine.PeerSnapshot) daemon.PeerStatus {
+	lastSeen := ""
+	if peer.LastSeen != nil {
+		lastSeen = daemonSnapshotTimestamp(*peer.LastSeen)
+	}
+	return daemon.PeerStatus{
+		NodeDID:        peer.NodeDID,
+		Name:           peer.Name,
+		MeshIP:         peer.MeshIP,
+		OwnerDID:       peer.OwnerDID,
+		MemberRecordID: peer.MemberRecordID,
+		Label:          peer.Label,
+		ExpiresAt:      peer.ExpiresAt,
+		Online:         peer.Online,
+		LastSeen:       lastSeen,
+	}
+}
+
+func daemonSnapshotTimestamp(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 // ensureIdentity creates a new identity profile when none exists.
