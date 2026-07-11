@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -34,10 +35,25 @@ func TestStatusEndpointRichSnapshot(t *testing.T) {
 		LastSeen:       "2026-07-11T17:40:06.987654321Z",
 	}
 	wantSnapshot := SnapshotStatus{
-		Generation:    42,
-		RefreshedAt:   "2026-07-11T17:40:06.987654321Z",
-		LastAttemptAt: "2026-07-11T17:40:07.123456789Z",
-		LastError:     "refresh deferred by rate limit",
+		Generation:          42,
+		RefreshedAt:         "2026-07-11T17:40:06.987654321Z",
+		LastAttemptAt:       "2026-07-11T17:40:07.123456789Z",
+		LastError:           "refresh deferred by rate limit",
+		State:               "degraded",
+		Mode:                "fallback",
+		InFlight:            true,
+		Pending:             []string{"delivery", "endpoint"},
+		Paused:              true,
+		LastReasons:         []string{"topology"},
+		LastDurationMS:      1250,
+		ConsecutiveFailures: 3,
+		LastSuccessAt:       "2026-07-11T17:39:06.987654321Z",
+		RetryNotBefore:      "2026-07-11T17:40:09.123456789Z",
+		NextAttemptAt:       "2026-07-11T17:40:09.123456789Z",
+		Streams: map[string]SnapshotStreamStatus{
+			"delivery": {Covered: true, Live: false, Repaired: false},
+			"topology": {Covered: true, Live: true, Repaired: true},
+		},
 	}
 
 	srv := NewServer(sock, func() Status {
@@ -68,7 +84,7 @@ func TestStatusEndpointRichSnapshot(t *testing.T) {
 	if status.Self == nil || *status.Self != wantSelf {
 		t.Fatalf("Self = %+v, want %+v", status.Self, wantSelf)
 	}
-	if status.Snapshot == nil || *status.Snapshot != wantSnapshot {
+	if status.Snapshot == nil || !reflect.DeepEqual(*status.Snapshot, wantSnapshot) {
 		t.Fatalf("Snapshot = %+v, want %+v", status.Snapshot, wantSnapshot)
 	}
 }
@@ -110,6 +126,23 @@ func TestClientGetStatusLegacyResponse(t *testing.T) {
 	wantPeer := PeerStatus{Name: "peer-a", MeshIP: "10.200.0.2", Online: true}
 	if len(status.Peers) != 1 || status.Peers[0] != wantPeer {
 		t.Fatalf("legacy Peers = %+v, want %+v", status.Peers, []PeerStatus{wantPeer})
+	}
+}
+
+func TestSnapshotStatusLegacyJSONShape(t *testing.T) {
+	snapshot := SnapshotStatus{
+		Generation:    7,
+		RefreshedAt:   "2026-07-11T17:40:06Z",
+		LastAttemptAt: "2026-07-11T17:40:07Z",
+		LastError:     "temporary failure",
+	}
+	got, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+	want := `{"generation":7,"refreshedAt":"2026-07-11T17:40:06Z","lastAttemptAt":"2026-07-11T17:40:07Z","lastError":"temporary failure"}`
+	if string(got) != want {
+		t.Fatalf("legacy SnapshotStatus JSON = %s, want %s", got, want)
 	}
 }
 

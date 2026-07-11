@@ -14,7 +14,7 @@ import (
 )
 
 func TestMeshSnapshotStorePublishesRichSnapshotAndDeepCopies(t *testing.T) {
-	lastSeen := time.Date(2026, 7, 11, 14, 30, 0, 0, time.UTC)
+	lastSeen := time.Now().UTC().Add(-time.Minute)
 	resp := &control.MapResponse{
 		Node: &control.Node{
 			DID:            "did:example:self",
@@ -111,6 +111,96 @@ func TestMeshSnapshotStorePublishesRichSnapshotAndDeepCopies(t *testing.T) {
 	}
 	if again.Peers[0].LastSeen == nil || !again.Peers[0].LastSeen.Equal(lastSeen.Add(-time.Minute)) {
 		t.Fatalf("stored peer LastSeen = %v", again.Peers[0].LastSeen)
+	}
+}
+
+func TestMeshSnapshotLivenessIsDerivedFromLastSeenAtReadTime(t *testing.T) {
+	now := time.Now().UTC()
+	fresh := now.Add(-control.DefaultPeerStaleThreshold + time.Minute)
+	stale := now.Add(-control.DefaultPeerStaleThreshold - time.Minute)
+	store := &meshSnapshotStore{}
+	store.record(&control.MapResponse{
+		Node: &control.Node{
+			DID:      "did:example:self",
+			Online:   false,
+			LastSeen: fresh,
+		},
+		Peers: []*control.Node{
+			{
+				DID:      "did:example:fresh",
+				Online:   false,
+				LastSeen: fresh,
+			},
+			{
+				DID:      "did:example:stale",
+				Online:   true,
+				LastSeen: stale,
+			},
+			{
+				DID:    "did:example:never-seen",
+				Online: true,
+			},
+		},
+	}, nil)
+
+	engine := &Engine{snapshots: store}
+	snapshot := engine.MeshSnapshot()
+	if snapshot == nil || snapshot.Self == nil || !snapshot.Self.Online {
+		t.Fatalf("fresh self liveness = %#v, want online", snapshot)
+	}
+	if len(snapshot.Peers) != 3 {
+		t.Fatalf("Peers length = %d, want 3", len(snapshot.Peers))
+	}
+	if !snapshot.Peers[0].Online || snapshot.Peers[1].Online || snapshot.Peers[2].Online {
+		t.Fatalf("peer liveness = %#v, want fresh only online", snapshot.Peers)
+	}
+
+	peers := engine.PeerSnapshots()
+	if len(peers) != 3 || !peers[0].Online || peers[1].Online || peers[2].Online {
+		t.Fatalf("PeerSnapshots liveness = %#v, want fresh only online", peers)
+	}
+
+	// The same materialized snapshot ages offline without another remote
+	// refresh; only the daemon-facing copy is changed.
+	refreshSnapshotLiveness(snapshot, now.Add(2*control.DefaultPeerStaleThreshold))
+	if snapshot.Self.Online || snapshot.Peers[0].Online {
+		t.Fatalf("aged snapshot remained online: Self=%#v Peers=%#v", snapshot.Self, snapshot.Peers)
+	}
+}
+
+func TestMeshSnapshotProjectionAppliesMembershipExpiry(t *testing.T) {
+	now := time.Now().UTC()
+	freshSeen := now.Add(-time.Minute)
+	store := &meshSnapshotStore{}
+	store.record(&control.MapResponse{
+		Node: &control.Node{
+			DID:       "did:example:self",
+			ExpiresAt: now.Add(-time.Minute).Format(time.RFC3339Nano),
+			LastSeen:  freshSeen,
+			Online:    true,
+		},
+		Peers: []*control.Node{
+			{
+				DID:       "did:example:expired",
+				ExpiresAt: now.Add(-time.Second).Format(time.RFC3339Nano),
+				LastSeen:  freshSeen,
+				Online:    true,
+			},
+			{
+				DID:       "did:example:active",
+				ExpiresAt: now.Add(time.Hour).Format(time.RFC3339Nano),
+				LastSeen:  freshSeen,
+				Online:    true,
+			},
+		},
+	}, nil)
+
+	snapshot := store.load()
+	if snapshot == nil || snapshot.Self == nil || snapshot.Self.Online {
+		t.Fatalf("expired self projection = %#v, want retained but offline", snapshot)
+	}
+	if len(snapshot.Peers) != 1 || snapshot.Peers[0].NodeDID != "did:example:active" || !snapshot.Peers[0].Online {
+		t.Fatalf("expiry-filtered peers = %#v, want only active peer", snapshot.Peers)
 	}
 }
 

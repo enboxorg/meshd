@@ -90,7 +90,8 @@ Up flags:
   --tun [name]      Create a real TUN device (default; asks sudo when needed)
   --no-tun          Use userspace mode without OS routes
   --port <n>        WireGuard UDP listen port (default: auto)
-  --poll-interval   DWN poll interval (default: 30s)
+  --poll-interval <dur>
+                    Override refresh cadence (fallback: 30s; healthy: 5m)
   --wait-timeout <dur>
                     How long to wait for dashboard approval (default: 15m)
   --no-wait         Exit immediately when the join request is still pending
@@ -3590,7 +3591,7 @@ func parseUpFlags(args []string) upFlags {
 			}
 		case "--poll-interval":
 			if i+1 < len(args) {
-				if d, err := time.ParseDuration(args[i+1]); err == nil {
+				if d, err := time.ParseDuration(args[i+1]); err == nil && d > 0 {
 					f.pollInterval = d
 				}
 				i++
@@ -4249,7 +4250,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	daemonSrv := daemon.NewServer(socketPath, func() daemon.Status {
 		routing := eng.RoutingStatus()
 		meshSnapshot := eng.MeshSnapshot()
-		selfStatus, peerStatuses, snapshotStatus := daemonStatusesFromMeshSnapshot(meshSnapshot)
+		selfStatus, peerStatuses, snapshotStatus := daemonStatusesFromMeshSnapshot(meshSnapshot, eng.RefreshHealth())
 		if meshSnapshot == nil {
 			// Preserve the legacy tray/status view before the first materialized
 			// snapshot attempt. The peer-list fast path requires Snapshot+Self
@@ -4321,22 +4322,86 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	return nil
 }
 
-func daemonStatusesFromMeshSnapshot(snapshot *engine.MeshSnapshot) (*daemon.PeerStatus, []daemon.PeerStatus, *daemon.SnapshotStatus) {
-	if snapshot == nil {
+func daemonStatusesFromMeshSnapshot(snapshot *engine.MeshSnapshot, refresh *engine.RefreshCoordinatorHealth) (*daemon.PeerStatus, []daemon.PeerStatus, *daemon.SnapshotStatus) {
+	if snapshot == nil && refresh == nil {
 		return nil, nil, nil
 	}
 
 	var self *daemon.PeerStatus
-	if snapshot.Self != nil {
-		status := daemonPeerStatus(*snapshot.Self)
-		self = &status
+	var peers []daemon.PeerStatus
+	status := &daemon.SnapshotStatus{}
+	if snapshot != nil {
+		if snapshot.Self != nil {
+			peerStatus := daemonPeerStatus(*snapshot.Self)
+			self = &peerStatus
+		}
+		peers = daemonPeerStatuses(snapshot.Peers)
+		status.Generation = snapshot.Generation
+		status.RefreshedAt = daemonSnapshotTimestamp(snapshot.RefreshedAt)
+		status.LastAttemptAt = daemonSnapshotTimestamp(snapshot.LastAttemptAt)
+		status.LastError = snapshot.LastError
 	}
-	return self, daemonPeerStatuses(snapshot.Peers), &daemon.SnapshotStatus{
-		Generation:    snapshot.Generation,
-		RefreshedAt:   daemonSnapshotTimestamp(snapshot.RefreshedAt),
-		LastAttemptAt: daemonSnapshotTimestamp(snapshot.LastAttemptAt),
-		LastError:     snapshot.LastError,
+	applyDaemonRefreshHealth(status, snapshot, refresh)
+	return self, peers, status
+}
+
+func applyDaemonRefreshHealth(status *daemon.SnapshotStatus, snapshot *engine.MeshSnapshot, refresh *engine.RefreshCoordinatorHealth) {
+	if refresh == nil {
+		return
 	}
+
+	status.State = daemonRefreshState(snapshot, refresh)
+	status.Mode = string(refresh.Mode)
+	status.InFlight = refresh.InFlight
+	status.Pending = daemonRefreshReasons(refresh.PendingReasons)
+	status.Paused = refresh.Paused
+	status.LastReasons = daemonRefreshReasons(refresh.LastReasons)
+	status.LastDurationMS = refresh.LastDuration.Milliseconds()
+	status.ConsecutiveFailures = refresh.ConsecutiveFailures
+	status.LastSuccessAt = daemonSnapshotTimestamp(refresh.LastSuccessAt)
+	status.RetryNotBefore = daemonSnapshotTimestamp(refresh.RetryNotBefore)
+	status.NextAttemptAt = daemonSnapshotTimestamp(refresh.NextAttemptAt)
+	if !refresh.LastAttemptAt.IsZero() {
+		status.LastAttemptAt = daemonSnapshotTimestamp(refresh.LastAttemptAt)
+	}
+	if status.LastError == "" {
+		status.LastError = refresh.LastError
+	}
+	if len(refresh.Streams) != 0 {
+		status.Streams = make(map[string]daemon.SnapshotStreamStatus, len(refresh.Streams))
+		for stream, health := range refresh.Streams {
+			status.Streams[string(stream)] = daemon.SnapshotStreamStatus{
+				Covered:  health.Covered,
+				Live:     health.Live,
+				Repaired: health.Repaired,
+			}
+		}
+	}
+}
+
+func daemonRefreshState(snapshot *engine.MeshSnapshot, refresh *engine.RefreshCoordinatorHealth) string {
+	hasSuccessfulRefresh := !refresh.LastSuccessAt.IsZero() || (snapshot != nil && snapshot.Generation > 0)
+	if !hasSuccessfulRefresh {
+		if refresh.ConsecutiveFailures > 0 || refresh.LastError != "" || refresh.Paused {
+			return "degraded"
+		}
+		return "starting"
+	}
+	if !refresh.Running || refresh.Paused || !refresh.StreamsHealthy || refresh.ConsecutiveFailures > 0 || refresh.LastError != "" {
+		return "degraded"
+	}
+	return "healthy"
+}
+
+func daemonRefreshReasons(reasons []engine.RefreshReason) []string {
+	if len(reasons) == 0 {
+		return nil
+	}
+	result := make([]string, len(reasons))
+	for i, reason := range reasons {
+		result[i] = string(reason)
+	}
+	return result
 }
 
 func daemonPeerStatuses(peers []engine.PeerSnapshot) []daemon.PeerStatus {

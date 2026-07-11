@@ -40,7 +40,42 @@ func (s *meshSnapshotStore) load() *MeshSnapshot {
 	if s == nil {
 		return nil
 	}
-	return cloneMeshSnapshot(s.current.Load())
+	snapshot := cloneMeshSnapshot(s.current.Load())
+	refreshSnapshotLiveness(snapshot, time.Now())
+	return snapshot
+}
+
+func refreshSnapshotLiveness(snapshot *MeshSnapshot, now time.Time) {
+	if snapshot == nil {
+		return
+	}
+	if snapshot.Self != nil {
+		snapshot.Self.Online = peerSnapshotOnline(*snapshot.Self, now)
+	}
+	peers := snapshot.Peers[:0]
+	for _, peer := range snapshot.Peers {
+		if peerSnapshotExpired(peer, now) {
+			continue
+		}
+		peer.Online = peerSnapshotOnline(peer, now)
+		peers = append(peers, peer)
+	}
+	snapshot.Peers = peers
+}
+
+func peerSnapshotOnline(snapshot PeerSnapshot, now time.Time) bool {
+	return !peerSnapshotExpired(snapshot, now) &&
+		snapshot.LastSeen != nil &&
+		!snapshot.LastSeen.IsZero() &&
+		now.Sub(*snapshot.LastSeen) <= control.DefaultPeerStaleThreshold
+}
+
+func peerSnapshotExpired(snapshot PeerSnapshot, now time.Time) bool {
+	if snapshot.ExpiresAt == "" {
+		return false
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, snapshot.ExpiresAt)
+	return err == nil && !now.Before(expiresAt)
 }
 
 func (s *meshSnapshotStore) record(resp *control.MapResponse, err error) {

@@ -219,7 +219,7 @@ func TestDaemonStatusesFromMeshSnapshot(t *testing.T) {
 		}},
 	}
 
-	self, peers, freshness := daemonStatusesFromMeshSnapshot(snapshot)
+	self, peers, freshness := daemonStatusesFromMeshSnapshot(snapshot, nil)
 	if self == nil {
 		t.Fatal("self status = nil")
 	}
@@ -240,8 +240,118 @@ func TestDaemonStatusesFromMeshSnapshot(t *testing.T) {
 		t.Fatalf("freshness = %+v", freshness)
 	}
 
-	if self, peers, freshness := daemonStatusesFromMeshSnapshot(nil); self != nil || peers != nil || freshness != nil {
+	if self, peers, freshness := daemonStatusesFromMeshSnapshot(nil, nil); self != nil || peers != nil || freshness != nil {
 		t.Fatalf("nil snapshot = (%+v, %+v, %+v), want nils", self, peers, freshness)
+	}
+}
+
+func TestDaemonRefreshHealthMapping(t *testing.T) {
+	base := time.Date(2026, 7, 11, 12, 0, 0, 987654321, time.FixedZone("offset", -7*60*60))
+	snapshot := &engine.MeshSnapshot{
+		Generation:    12,
+		RefreshedAt:   base,
+		LastAttemptAt: base,
+	}
+	health := &engine.RefreshCoordinatorHealth{
+		Running:        true,
+		Paused:         true,
+		InFlight:       true,
+		Mode:           engine.RefreshModeFallback,
+		StreamsHealthy: false,
+		Streams: map[engine.RefreshStream]engine.RefreshStreamHealth{
+			engine.RefreshStreamTopology: {Covered: true, Live: true, Repaired: true},
+			engine.RefreshStreamDelivery: {Covered: true, Live: false, Repaired: false},
+		},
+		PendingReasons:      []engine.RefreshReason{engine.RefreshReasonDelivery, engine.RefreshReasonEndpoint},
+		ConsecutiveFailures: 2,
+		LastAttemptAt:       base.Add(2 * time.Minute),
+		LastSuccessAt:       base.Add(-time.Minute),
+		LastReasons:         []engine.RefreshReason{engine.RefreshReasonTopology},
+		LastDuration:        1500*time.Millisecond + 250*time.Microsecond,
+		LastError:           "refresh failed",
+		RetryNotBefore:      base.Add(3 * time.Minute),
+		NextAttemptAt:       base.Add(3 * time.Minute),
+	}
+
+	_, _, got := daemonStatusesFromMeshSnapshot(snapshot, health)
+	if got == nil {
+		t.Fatal("snapshot status = nil")
+	}
+	if got.State != "degraded" || got.Mode != "fallback" || !got.InFlight || !got.Paused {
+		t.Fatalf("scheduler state = %+v", got)
+	}
+	if !reflect.DeepEqual(got.Pending, []string{"delivery", "endpoint"}) ||
+		!reflect.DeepEqual(got.LastReasons, []string{"topology"}) {
+		t.Fatalf("refresh reasons = pending %v, last %v", got.Pending, got.LastReasons)
+	}
+	if got.LastDurationMS != 1500 || got.ConsecutiveFailures != 2 || got.LastError != "refresh failed" {
+		t.Fatalf("refresh failure status = %+v", got)
+	}
+	if got.LastAttemptAt != health.LastAttemptAt.UTC().Format(time.RFC3339Nano) ||
+		got.LastSuccessAt != health.LastSuccessAt.UTC().Format(time.RFC3339Nano) ||
+		got.RetryNotBefore != health.RetryNotBefore.UTC().Format(time.RFC3339Nano) ||
+		got.NextAttemptAt != health.NextAttemptAt.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("refresh timestamps = %+v", got)
+	}
+	if len(got.Streams) != 2 || !got.Streams["topology"].Covered || !got.Streams["topology"].Live ||
+		!got.Streams["topology"].Repaired || !got.Streams["delivery"].Covered || got.Streams["delivery"].Live ||
+		got.Streams["delivery"].Repaired {
+		t.Fatalf("stream status = %+v", got.Streams)
+	}
+}
+
+func TestDaemonRefreshState(t *testing.T) {
+	tests := []struct {
+		name     string
+		snapshot *engine.MeshSnapshot
+		health   engine.RefreshCoordinatorHealth
+		want     string
+	}{
+		{
+			name: "starting before first success",
+			health: engine.RefreshCoordinatorHealth{
+				Running: true,
+				Mode:    engine.RefreshModeFallback,
+			},
+			want: "starting",
+		},
+		{
+			name:     "healthy after success with repaired streams",
+			snapshot: &engine.MeshSnapshot{Generation: 1},
+			health: engine.RefreshCoordinatorHealth{
+				Running:        true,
+				Mode:           engine.RefreshModeHealthy,
+				StreamsHealthy: true,
+			},
+			want: "healthy",
+		},
+		{
+			name:     "degraded while subscriptions use fallback",
+			snapshot: &engine.MeshSnapshot{Generation: 1},
+			health: engine.RefreshCoordinatorHealth{
+				Running:        true,
+				Mode:           engine.RefreshModeFallback,
+				StreamsHealthy: false,
+			},
+			want: "degraded",
+		},
+		{
+			name: "degraded when initial refresh fails",
+			health: engine.RefreshCoordinatorHealth{
+				Running:             true,
+				ConsecutiveFailures: 1,
+				LastError:           "unavailable",
+			},
+			want: "degraded",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := daemonRefreshState(tc.snapshot, &tc.health); got != tc.want {
+				t.Fatalf("daemonRefreshState() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -821,6 +821,17 @@ func TestParseUpFlagsForeground(t *testing.T) {
 	}
 }
 
+func TestParseUpFlagsPollIntervalOverride(t *testing.T) {
+	if got := parseUpFlags([]string{"--poll-interval", "2m"}).pollInterval; got != 2*time.Minute {
+		t.Fatalf("poll interval = %v, want 2m", got)
+	}
+	for _, value := range []string{"0s", "-1s", "invalid"} {
+		if got := parseUpFlags([]string{"--poll-interval", value}).pollInterval; got != 0 {
+			t.Fatalf("poll interval for %q = %v, want unset", value, got)
+		}
+	}
+}
+
 func TestShouldReexecWithSudoForTun(t *testing.T) {
 	t.Setenv(trayConnectEnv, "")
 	if !shouldReexecWithSudoForTun(upFlags{}, 501, "darwin") {

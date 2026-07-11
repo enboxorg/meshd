@@ -33,6 +33,7 @@ type recordingSubscriptionManager struct {
 	mu        sync.Mutex
 	calls     []recordedSubscription
 	failCall  int
+	closeHook func()
 	closeCall atomic.Int32
 }
 
@@ -64,7 +65,134 @@ func (m *recordingSubscriptionManager) SubscribeWithAuthAndLifecycle(
 }
 
 func (m *recordingSubscriptionManager) CloseAll() {
+	if m.closeHook != nil {
+		m.closeHook()
+	}
 	m.closeCall.Add(1)
+}
+
+type refreshCoordinatorCall struct {
+	method           string
+	stream           RefreshStream
+	covered          bool
+	live             bool
+	needsFullRefresh bool
+	reason           RefreshReason
+}
+
+type recordingRefreshCoordinator struct {
+	mu      sync.Mutex
+	calls   []refreshCoordinatorCall
+	streams map[RefreshStream]RefreshStreamHealth
+}
+
+func newRecordingRefreshCoordinator() *recordingRefreshCoordinator {
+	return &recordingRefreshCoordinator{streams: make(map[RefreshStream]RefreshStreamHealth)}
+}
+
+func (c *recordingRefreshCoordinator) SetStreamCovered(stream RefreshStream, covered bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	health := c.streams[stream]
+	health.Covered = covered
+	if !covered {
+		health.Live = false
+	}
+	c.streams[stream] = health
+	c.calls = append(c.calls, refreshCoordinatorCall{method: "covered", stream: stream, covered: covered})
+}
+
+func (c *recordingRefreshCoordinator) SetStreamLive(stream RefreshStream, live, needsFullRefresh bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	health := c.streams[stream]
+	health.Live = live
+	c.streams[stream] = health
+	c.calls = append(c.calls, refreshCoordinatorCall{
+		method:           "live",
+		stream:           stream,
+		live:             live,
+		needsFullRefresh: needsFullRefresh,
+	})
+}
+
+func (c *recordingRefreshCoordinator) InvalidateStream(stream RefreshStream, reason RefreshReason) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, refreshCoordinatorCall{method: "invalidate", stream: stream, reason: reason})
+}
+
+func (c *recordingRefreshCoordinator) Notify(reason RefreshReason) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, refreshCoordinatorCall{method: "notify", reason: reason})
+}
+
+func (c *recordingRefreshCoordinator) takeCalls() []refreshCoordinatorCall {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	calls := append([]refreshCoordinatorCall(nil), c.calls...)
+	c.calls = nil
+	return calls
+}
+
+func (c *recordingRefreshCoordinator) streamHealth(stream RefreshStream) RefreshStreamHealth {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.streams[stream]
+}
+
+type blockingReplacementCoordinator struct {
+	*recordingRefreshCoordinator
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingReplacementCoordinator() *blockingReplacementCoordinator {
+	return &blockingReplacementCoordinator{
+		recordingRefreshCoordinator: newRecordingRefreshCoordinator(),
+		entered:                     make(chan struct{}),
+		release:                     make(chan struct{}),
+	}
+}
+
+func (c *blockingReplacementCoordinator) SetStreamCovered(stream RefreshStream, covered bool) {
+	c.once.Do(func() {
+		close(c.entered)
+		<-c.release
+	})
+	c.recordingRefreshCoordinator.SetStreamCovered(stream, covered)
+}
+
+type blockingInvalidationCoordinator struct {
+	*recordingRefreshCoordinator
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingInvalidationCoordinator() *blockingInvalidationCoordinator {
+	return &blockingInvalidationCoordinator{
+		recordingRefreshCoordinator: newRecordingRefreshCoordinator(),
+		entered:                     make(chan struct{}),
+		release:                     make(chan struct{}),
+	}
+}
+
+func (c *blockingInvalidationCoordinator) InvalidateStream(stream RefreshStream, reason RefreshReason) {
+	c.once.Do(func() {
+		close(c.entered)
+		<-c.release
+	})
+	c.recordingRefreshCoordinator.InvalidateStream(stream, reason)
+}
+
+func requireRefreshCoordinatorCalls(t *testing.T, coordinator *recordingRefreshCoordinator, want []refreshCoordinatorCall) {
+	t.Helper()
+	if got := coordinator.takeCalls(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("coordinator calls = %#v, want %#v", got, want)
+	}
 }
 
 type blockingCloseSubscriptionManager struct {
@@ -148,84 +276,148 @@ func TestSubscriptionWatcherDoubleStop(t *testing.T) {
 	w.Stop()
 }
 
-func TestSubscriptionWatcherSetDWNControl(t *testing.T) {
-	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{
-		AnchorEndpoint:  "https://example.com",
-		AnchorTenant:    "did:dht:anchor",
-		NetworkRecordID: "record123",
-		SelfDID:         "did:dht:self",
-		Signer:          &dwn.Signer{DID: "did:dht:self"},
-	})
+func TestSubscriptionWatcherSetRefreshCoordinator(t *testing.T) {
+	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{})
 
-	// Before setting, notify should not panic (no-op).
-	w.notify()
-
-	// Create a DWNControl with SkipStartForTests to avoid the poll loop.
-	cc, err := NewDWNControl(
-		&DWNControlConfig{
-			MapResponseFunc: func(ctx context.Context) (*netmap.NetworkMap, error) {
-				return nil, nil
-			},
-			PollInterval: time.Hour,
-		},
-		controlclient.Options{SkipStartForTests: true},
-	)
-	if err != nil {
-		t.Fatalf("NewDWNControl: %v", err)
+	// Callbacks are harmless until engine startup supplies a coordinator.
+	if err := w.handleSubscriptionMessage(RefreshStreamTopology, &dwn.SubscriptionMessage{Type: "event"}); err != nil {
+		t.Fatalf("event without coordinator: %v", err)
 	}
-	defer cc.Shutdown()
 
-	// Set the DWNControl on the watcher.
-	w.SetDWNControl(cc)
-
-	// Now notify should trigger the DWNControl's notify channel.
-	// This is a smoke test — we just verify it doesn't panic.
-	w.notify()
+	coordinator := newRecordingRefreshCoordinator()
+	w.SetRefreshCoordinator(coordinator)
+	if err := w.handleSubscriptionMessage(RefreshStreamTopology, &dwn.SubscriptionMessage{Type: "event"}); err != nil {
+		t.Fatalf("event with coordinator: %v", err)
+	}
+	requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{{
+		method: "invalidate", stream: RefreshStreamTopology, reason: RefreshReasonTopology,
+	}})
 }
 
-func TestSubscriptionWatcherOnCreatedCallback(t *testing.T) {
-	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{
-		AnchorEndpoint:  "https://example.com",
-		AnchorTenant:    "did:dht:anchor",
-		NetworkRecordID: "record123",
-		SelfDID:         "did:dht:self",
-		Signer:          &dwn.Signer{DID: "did:dht:self"},
+func TestSubscriptionWatcherReplacementCoordinatorReplaysLiveCoverage(t *testing.T) {
+	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{})
+	first := newRecordingRefreshCoordinator()
+	w.SetRefreshCoordinator(first)
+	w.initializeStreamCoverage(true)
+	w.handleSubscriptionLifecycle(RefreshStreamTopology, dwn.SubscriptionLifecycleEvent{
+		Kind: dwn.SubscriptionLifecycleEstablished,
+	})
+	w.handleSubscriptionLifecycle(RefreshStreamDelivery, dwn.SubscriptionLifecycleEvent{
+		Kind: dwn.SubscriptionLifecycleEstablished,
+	})
+	first.takeCalls()
+
+	replacement := newRecordingRefreshCoordinator()
+	w.SetRefreshCoordinator(replacement)
+	requireRefreshCoordinatorCalls(t, replacement, []refreshCoordinatorCall{
+		{method: "covered", stream: RefreshStreamTopology, covered: true},
+		{method: "covered", stream: RefreshStreamDelivery, covered: true},
+		{method: "live", stream: RefreshStreamTopology, live: true, needsFullRefresh: true},
+		{method: "live", stream: RefreshStreamDelivery, live: true, needsFullRefresh: true},
+	})
+}
+
+func TestSubscriptionWatcherReplacementHandoffDoesNotOverwriteConcurrentDisconnect(t *testing.T) {
+	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{})
+	first := newRecordingRefreshCoordinator()
+	w.SetRefreshCoordinator(first)
+	w.initializeStreamCoverage(true)
+	w.handleSubscriptionLifecycle(RefreshStreamTopology, dwn.SubscriptionLifecycleEvent{
+		Kind: dwn.SubscriptionLifecycleEstablished,
+	})
+	w.handleSubscriptionLifecycle(RefreshStreamDelivery, dwn.SubscriptionLifecycleEvent{
+		Kind: dwn.SubscriptionLifecycleEstablished,
 	})
 
-	// Simulate the factory calling OnCreated.
-	var called atomic.Bool
-	config := &DWNControlConfig{
-		MapResponseFunc: func(ctx context.Context) (*netmap.NetworkMap, error) {
-			return nil, nil
-		},
-		PollInterval: time.Hour,
-		OnCreated: func(cc *DWNControl) {
-			called.Store(true)
-			w.SetDWNControl(cc)
-		},
+	replacement := newBlockingReplacementCoordinator()
+	handoffDone := make(chan struct{})
+	go func() {
+		w.SetRefreshCoordinator(replacement)
+		close(handoffDone)
+	}()
+	<-replacement.entered
+
+	disconnectDone := make(chan struct{})
+	go func() {
+		w.handleSubscriptionLifecycle(RefreshStreamTopology, dwn.SubscriptionLifecycleEvent{
+			Kind: dwn.SubscriptionLifecycleRetrying,
+		})
+		close(disconnectDone)
+	}()
+	select {
+	case <-disconnectDone:
+		t.Fatal("disconnect interleaved with an incomplete coordinator handoff")
+	case <-time.After(50 * time.Millisecond):
 	}
 
-	cc, err := NewDWNControl(
-		config,
-		controlclient.Options{SkipStartForTests: true},
-	)
-	if err != nil {
-		t.Fatalf("NewDWNControl: %v", err)
+	close(replacement.release)
+	select {
+	case <-handoffDone:
+	case <-time.After(time.Second):
+		t.Fatal("coordinator handoff did not finish")
 	}
-	defer cc.Shutdown()
+	select {
+	case <-disconnectDone:
+	case <-time.After(time.Second):
+		t.Fatal("disconnect did not reach replacement coordinator")
+	}
+	if got := replacement.streamHealth(RefreshStreamTopology); got.Live {
+		t.Fatalf("replacement topology health = %+v, want disconnected", got)
+	}
+}
 
-	if !called.Load() {
-		t.Error("OnCreated callback was not called")
+func TestSubscriptionWatcherEventIsFencedByCoordinatorHandoff(t *testing.T) {
+	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{})
+	first := newBlockingInvalidationCoordinator()
+	w.SetRefreshCoordinator(first)
+	w.initializeStreamCoverage(true)
+	w.handleSubscriptionLifecycle(RefreshStreamTopology, dwn.SubscriptionLifecycleEvent{
+		Kind: dwn.SubscriptionLifecycleEstablished,
+	})
+	w.handleSubscriptionLifecycle(RefreshStreamDelivery, dwn.SubscriptionLifecycleEvent{
+		Kind: dwn.SubscriptionLifecycleEstablished,
+	})
+	first.takeCalls()
+
+	eventDone := make(chan struct{})
+	go func() {
+		_ = w.handleSubscriptionMessage(RefreshStreamTopology, &dwn.SubscriptionMessage{Type: "event"})
+		close(eventDone)
+	}()
+	<-first.entered
+
+	replacement := newRecordingRefreshCoordinator()
+	handoffDone := make(chan struct{})
+	go func() {
+		w.SetRefreshCoordinator(replacement)
+		close(handoffDone)
+	}()
+	select {
+	case <-handoffDone:
+		t.Fatal("coordinator handoff interleaved with event invalidation")
+	case <-time.After(50 * time.Millisecond):
 	}
 
-	// The watcher should now have the DWNControl reference.
-	w.controlMu.Lock()
-	hasControl := w.dwnControl != nil
-	w.controlMu.Unlock()
-
-	if !hasControl {
-		t.Error("watcher does not have DWNControl reference after OnCreated")
+	close(first.release)
+	select {
+	case <-eventDone:
+	case <-time.After(time.Second):
+		t.Fatal("event invalidation did not finish")
 	}
+	select {
+	case <-handoffDone:
+	case <-time.After(time.Second):
+		t.Fatal("coordinator handoff did not finish")
+	}
+	requireRefreshCoordinatorCalls(t, first.recordingRefreshCoordinator, []refreshCoordinatorCall{{
+		method: "invalidate", stream: RefreshStreamTopology, reason: RefreshReasonTopology,
+	}})
+	requireRefreshCoordinatorCalls(t, replacement, []refreshCoordinatorCall{
+		{method: "covered", stream: RefreshStreamTopology, covered: true},
+		{method: "covered", stream: RefreshStreamDelivery, covered: true},
+		{method: "live", stream: RefreshStreamTopology, live: true, needsFullRefresh: true},
+		{method: "live", stream: RefreshStreamDelivery, live: true, needsFullRefresh: true},
+	})
 }
 
 func TestDWNControlPublishesInitialDiscoKey(t *testing.T) {
@@ -356,6 +548,7 @@ func TestBroadSubscriptionAuth(t *testing.T) {
 func TestSubscriptionWatcherStartUsesReadGrantAndRecipientDeliveryFilter(t *testing.T) {
 	signer := &dwn.Signer{DID: "did:dht:self"}
 	manager := &recordingSubscriptionManager{}
+	coordinator := newRecordingRefreshCoordinator()
 	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{
 		AnchorEndpoint:  "https://example.com",
 		AnchorTenant:    "did:dht:anchor",
@@ -368,11 +561,18 @@ func TestSubscriptionWatcherStartUsesReadGrantAndRecipientDeliveryFilter(t *test
 		},
 	})
 	w.newManager = func(_ string, _ *slog.Logger) subscriptionManager { return manager }
+	w.SetRefreshCoordinator(coordinator)
 
 	if err := w.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer w.Stop()
+	requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{
+		{method: "live", stream: RefreshStreamTopology},
+		{method: "live", stream: RefreshStreamDelivery},
+		{method: "covered", stream: RefreshStreamTopology, covered: true},
+		{method: "covered", stream: RefreshStreamDelivery, covered: true},
+	})
 
 	if len(manager.calls) != 2 {
 		t.Fatalf("subscription calls = %d, want 2", len(manager.calls))
@@ -401,8 +601,7 @@ func TestSubscriptionWatcherStartUsesReadGrantAndRecipientDeliveryFilter(t *test
 		ProtocolPath: dwncrypto.EncryptionControlDeliveryPath,
 		Recipient:    "did:dht:self",
 		Tags: map[string]any{
-			"protocol":  protocols.MeshProtocolURI,
-			"contextId": "network-record",
+			"protocol": protocols.MeshProtocolURI,
 		},
 	}
 	if !reflect.DeepEqual(deliveryCall.filter, wantDeliveryFilter) {
@@ -418,6 +617,7 @@ func TestSubscriptionWatcherStartUsesReadGrantAndRecipientDeliveryFilter(t *test
 
 func TestSubscriptionWatcherRoleOnlyUsesDeliveryAndPolling(t *testing.T) {
 	manager := &recordingSubscriptionManager{}
+	coordinator := newRecordingRefreshCoordinator()
 	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{
 		AnchorEndpoint:  "https://example.com",
 		AnchorTenant:    "did:dht:anchor",
@@ -427,11 +627,18 @@ func TestSubscriptionWatcherRoleOnlyUsesDeliveryAndPolling(t *testing.T) {
 		ReadAuth:        dwn.MessageAuth{ProtocolRole: "network/node"},
 	})
 	w.newManager = func(_ string, _ *slog.Logger) subscriptionManager { return manager }
+	w.SetRefreshCoordinator(coordinator)
 
 	if err := w.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	defer w.Stop()
+	requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{
+		{method: "live", stream: RefreshStreamTopology},
+		{method: "live", stream: RefreshStreamDelivery},
+		{method: "covered", stream: RefreshStreamTopology, covered: false},
+		{method: "covered", stream: RefreshStreamDelivery, covered: true},
+	})
 
 	if len(manager.calls) != 1 {
 		t.Fatalf("subscription calls = %d, want delivery only", len(manager.calls))
@@ -443,6 +650,7 @@ func TestSubscriptionWatcherRoleOnlyUsesDeliveryAndPolling(t *testing.T) {
 
 func TestSubscriptionWatcherSetupFailureClosesPartialSubscriptions(t *testing.T) {
 	manager := &recordingSubscriptionManager{failCall: 2}
+	coordinator := newRecordingRefreshCoordinator()
 	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{
 		AnchorEndpoint:  "https://example.com",
 		AnchorTenant:    "did:dht:anchor",
@@ -451,6 +659,13 @@ func TestSubscriptionWatcherSetupFailureClosesPartialSubscriptions(t *testing.T)
 		Signer:          &dwn.Signer{DID: "did:dht:self"},
 	})
 	w.newManager = func(_ string, _ *slog.Logger) subscriptionManager { return manager }
+	w.SetRefreshCoordinator(coordinator)
+	manager.closeHook = func() {
+		manager.mu.Lock()
+		lifecycle := manager.calls[0].lifecycle
+		manager.mu.Unlock()
+		lifecycle(dwn.SubscriptionLifecycleEvent{Kind: dwn.SubscriptionLifecycleEstablished})
+	}
 
 	if err := w.Start(context.Background()); err == nil {
 		t.Fatal("Start succeeded despite delivery subscription failure")
@@ -461,160 +676,171 @@ func TestSubscriptionWatcherSetupFailureClosesPartialSubscriptions(t *testing.T)
 	if w.cancel != nil || w.manager != nil || w.done != nil {
 		t.Fatal("failed Start retained running watcher state")
 	}
-}
-
-func newWatcherTestControl(t *testing.T) *DWNControl {
-	t.Helper()
-	cc, err := NewDWNControl(
-		&DWNControlConfig{
-			MapResponseFunc: func(context.Context) (*netmap.NetworkMap, error) {
-				return nil, nil
-			},
-			PollInterval: time.Hour,
-		},
-		controlclient.Options{SkipStartForTests: true},
-	)
-	if err != nil {
-		t.Fatalf("NewDWNControl: %v", err)
-	}
-	t.Cleanup(cc.Shutdown)
-	return cc
-}
-
-func expectWatcherNotification(t *testing.T, cc *DWNControl, want bool) {
-	t.Helper()
-	select {
-	case <-cc.notify:
-		if !want {
-			t.Fatal("unexpected refresh notification")
-		}
-	default:
-		if want {
-			t.Fatal("refresh notification was not queued")
+	for _, stream := range []RefreshStream{RefreshStreamTopology, RefreshStreamDelivery} {
+		health := coordinator.streamHealth(stream)
+		if health.Covered || health.Live {
+			t.Fatalf("%s stream remained available after failed Start: %#v", stream, health)
 		}
 	}
 }
 
-func TestSubscriptionWatcherDefersReplayUntilEstablished(t *testing.T) {
-	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{})
-	cc := newWatcherTestControl(t)
-	w.SetDWNControl(cc)
-
-	if err := w.handleSubscriptionMessage("mesh", &dwn.SubscriptionMessage{Type: "event"}); err != nil {
-		t.Fatalf("pre-establishment event: %v", err)
-	}
-	if err := w.handleSubscriptionMessage("mesh", &dwn.SubscriptionMessage{Type: "eose"}); err != nil {
-		t.Fatalf("pre-establishment EOSE: %v", err)
-	}
-	expectWatcherNotification(t, cc, false)
-
-	w.handleSubscriptionLifecycle("mesh", dwn.SubscriptionLifecycleEvent{
-		Kind:             dwn.SubscriptionLifecycleEstablished,
-		NeedsFullRefresh: false,
-	})
-	expectWatcherNotification(t, cc, true)
-
-	if err := w.handleSubscriptionMessage("mesh", &dwn.SubscriptionMessage{Type: "event"}); err != nil {
-		t.Fatalf("live event: %v", err)
-	}
-	expectWatcherNotification(t, cc, true)
-
-	w.handleSubscriptionLifecycle("mesh", dwn.SubscriptionLifecycleEvent{
-		Kind:    dwn.SubscriptionLifecycleRetrying,
-		Attempt: 1,
-	})
-	if err := w.handleSubscriptionMessage("mesh", &dwn.SubscriptionMessage{Type: "event"}); err != nil {
-		t.Fatalf("replay event: %v", err)
-	}
-	expectWatcherNotification(t, cc, false)
-	w.handleSubscriptionLifecycle("mesh", dwn.SubscriptionLifecycleEvent{
-		Kind:             dwn.SubscriptionLifecycleEstablished,
-		NeedsFullRefresh: false,
-	})
-	expectWatcherNotification(t, cc, true)
-}
-
-func TestSubscriptionWatcherEOSEBarrierRefreshesOnlyAfterReplay(t *testing.T) {
+func TestSubscriptionWatcherMessageCallbacks(t *testing.T) {
 	tests := []struct {
-		name        string
-		replayEvent bool
-		wantRefresh bool
+		name    string
+		stream  RefreshStream
+		message *dwn.SubscriptionMessage
+		want    []refreshCoordinatorCall
 	}{
-		{name: "empty replay", wantRefresh: false},
-		{name: "replayed event", replayEvent: true, wantRefresh: true},
+		{name: "nil message", stream: RefreshStreamTopology},
+		{
+			name:    "topology event",
+			stream:  RefreshStreamTopology,
+			message: &dwn.SubscriptionMessage{Type: dwn.SubscriptionEventType},
+			want: []refreshCoordinatorCall{{
+				method: "invalidate", stream: RefreshStreamTopology, reason: RefreshReasonTopology,
+			}},
+		},
+		{
+			name:    "delivery event",
+			stream:  RefreshStreamDelivery,
+			message: &dwn.SubscriptionMessage{Type: dwn.SubscriptionEventType},
+			want: []refreshCoordinatorCall{{
+				method: "invalidate", stream: RefreshStreamDelivery, reason: RefreshReasonDelivery,
+			}},
+		},
+		{
+			name:    "end of stored events",
+			stream:  RefreshStreamTopology,
+			message: &dwn.SubscriptionMessage{Type: dwn.SubscriptionEOSEType},
+		},
+		{
+			name:   "error frame is lifecycle owned",
+			stream: RefreshStreamTopology,
+			message: &dwn.SubscriptionMessage{
+				Type:  "error",
+				Error: &dwn.SubscriptionError{Code: "SubscriptionFailed", Detail: "closed"},
+			},
+		},
+		{name: "unknown frame", stream: RefreshStreamDelivery, message: &dwn.SubscriptionMessage{Type: "future"}},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			coordinator := newRecordingRefreshCoordinator()
 			w := NewSubscriptionWatcher(SubscriptionWatcherConfig{})
-			cc := newWatcherTestControl(t)
-			w.SetDWNControl(cc)
-
-			if test.replayEvent {
-				if err := w.handleSubscriptionMessage("mesh", &dwn.SubscriptionMessage{Type: dwn.SubscriptionEventType}); err != nil {
-					t.Fatalf("replay event: %v", err)
-				}
+			w.SetRefreshCoordinator(coordinator)
+			if err := w.handleSubscriptionMessage(test.stream, test.message); err != nil {
+				t.Fatalf("handleSubscriptionMessage: %v", err)
 			}
-			if err := w.handleSubscriptionMessage("mesh", &dwn.SubscriptionMessage{Type: dwn.SubscriptionEOSEType}); err != nil {
-				t.Fatalf("EOSE: %v", err)
-			}
-			expectWatcherNotification(t, cc, false)
-
-			w.handleSubscriptionLifecycle("mesh", dwn.SubscriptionLifecycleEvent{
-				Kind:             dwn.SubscriptionLifecycleEstablished,
-				NeedsFullRefresh: false,
-			})
-			expectWatcherNotification(t, cc, test.wantRefresh)
-			// Replay event + EOSE is one invalidation batch, never two.
-			expectWatcherNotification(t, cc, false)
+			requireRefreshCoordinatorCalls(t, coordinator, test.want)
 		})
 	}
 }
 
-func TestSubscriptionWatcherGapWaitsForFreshEstablishment(t *testing.T) {
-	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{})
-	cc := newWatcherTestControl(t)
-	w.SetDWNControl(cc)
+func TestSubscriptionWatcherLifecycleCallbacks(t *testing.T) {
+	tests := []struct {
+		name   string
+		stream RefreshStream
+		event  dwn.SubscriptionLifecycleEvent
+		want   []refreshCoordinatorCall
+	}{
+		{
+			name:   "established",
+			stream: RefreshStreamTopology,
+			event:  dwn.SubscriptionLifecycleEvent{Kind: dwn.SubscriptionLifecycleEstablished},
+			want:   []refreshCoordinatorCall{{method: "live", stream: RefreshStreamTopology, live: true}},
+		},
+		{
+			name:   "established requires full refresh",
+			stream: RefreshStreamDelivery,
+			event: dwn.SubscriptionLifecycleEvent{
+				Kind:             dwn.SubscriptionLifecycleEstablished,
+				NeedsFullRefresh: true,
+			},
+			want: []refreshCoordinatorCall{{
+				method: "live", stream: RefreshStreamDelivery, live: true, needsFullRefresh: true,
+			}},
+		},
+		{
+			name:   "progress gap",
+			stream: RefreshStreamDelivery,
+			event: dwn.SubscriptionLifecycleEvent{
+				Kind: dwn.SubscriptionLifecycleProgressGap,
+				Gap:  &dwn.ProgressGapInfo{Reason: "compacted"},
+			},
+			want: []refreshCoordinatorCall{{
+				method: "live", stream: RefreshStreamDelivery, needsFullRefresh: true,
+			}},
+		},
+		{
+			name:   "retrying preserves pending invalidation",
+			stream: RefreshStreamTopology,
+			event: dwn.SubscriptionLifecycleEvent{
+				Kind: dwn.SubscriptionLifecycleRetrying, Attempt: 2, Err: errors.New("offline"),
+			},
+			want: []refreshCoordinatorCall{{method: "live", stream: RefreshStreamTopology}},
+		},
+		{
+			name:   "terminal reconciles once",
+			stream: RefreshStreamTopology,
+			event: dwn.SubscriptionLifecycleEvent{
+				Kind: dwn.SubscriptionLifecycleTerminal, Err: errors.New("denied"),
+			},
+			want: []refreshCoordinatorCall{
+				{method: "live", stream: RefreshStreamTopology},
+				{method: "notify", reason: RefreshReasonTopology},
+			},
+		},
+		{name: "unknown lifecycle", stream: RefreshStreamDelivery, event: dwn.SubscriptionLifecycleEvent{Kind: "future"}},
+	}
 
-	w.handleSubscriptionLifecycle("delivery", dwn.SubscriptionLifecycleEvent{
-		Kind:             dwn.SubscriptionLifecycleEstablished,
-		NeedsFullRefresh: false,
-	})
-	expectWatcherNotification(t, cc, false)
-	w.handleSubscriptionLifecycle("delivery", dwn.SubscriptionLifecycleEvent{
-		Kind: dwn.SubscriptionLifecycleProgressGap,
-		Gap:  &dwn.ProgressGapInfo{Reason: "compacted"},
-	})
-	expectWatcherNotification(t, cc, false)
-	w.handleSubscriptionLifecycle("delivery", dwn.SubscriptionLifecycleEvent{
-		Kind:             dwn.SubscriptionLifecycleEstablished,
-		NeedsFullRefresh: true,
-	})
-	expectWatcherNotification(t, cc, true)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			coordinator := newRecordingRefreshCoordinator()
+			w := NewSubscriptionWatcher(SubscriptionWatcherConfig{})
+			w.SetRefreshCoordinator(coordinator)
+			w.handleSubscriptionLifecycle(test.stream, test.event)
+			requireRefreshCoordinatorCalls(t, coordinator, test.want)
+		})
+	}
 }
 
-func TestSubscriptionWatcherLiveErrorAndTerminalReconcile(t *testing.T) {
-	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{})
-	cc := newWatcherTestControl(t)
-	w.SetDWNControl(cc)
-
-	w.handleSubscriptionLifecycle("mesh", dwn.SubscriptionLifecycleEvent{
-		Kind:             dwn.SubscriptionLifecycleEstablished,
-		NeedsFullRefresh: false,
+func TestSubscriptionWatcherStopFencesLifecycleCallbacks(t *testing.T) {
+	manager := &recordingSubscriptionManager{}
+	coordinator := newRecordingRefreshCoordinator()
+	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{
+		AnchorEndpoint:  "https://example.com",
+		AnchorTenant:    "did:dht:anchor",
+		NetworkRecordID: "network-record",
+		SelfDID:         "did:dht:self",
+		Signer:          &dwn.Signer{DID: "did:dht:self"},
 	})
-	if err := w.handleSubscriptionMessage("mesh", &dwn.SubscriptionMessage{
-		Type:  "error",
-		Error: &dwn.SubscriptionError{Code: "SubscriptionFailed", Detail: "closed"},
-	}); err != nil {
-		t.Fatalf("live error: %v", err)
+	w.newManager = func(_ string, _ *slog.Logger) subscriptionManager { return manager }
+	w.SetRefreshCoordinator(coordinator)
+	if err := w.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
-	expectWatcherNotification(t, cc, true)
+	coordinator.takeCalls()
 
-	w.handleSubscriptionLifecycle("mesh", dwn.SubscriptionLifecycleEvent{
-		Kind: dwn.SubscriptionLifecycleTerminal,
-		Err:  errors.New("stream terminated"),
-	})
-	expectWatcherNotification(t, cc, true)
+	manager.closeHook = func() {
+		manager.mu.Lock()
+		calls := append([]recordedSubscription(nil), manager.calls...)
+		manager.mu.Unlock()
+		for _, call := range calls {
+			call.lifecycle(dwn.SubscriptionLifecycleEvent{Kind: dwn.SubscriptionLifecycleEstablished})
+		}
+	}
+	w.Stop()
+
+	if manager.closeCall.Load() != 1 {
+		t.Fatalf("CloseAll calls = %d, want 1", manager.closeCall.Load())
+	}
+	for _, stream := range []RefreshStream{RefreshStreamTopology, RefreshStreamDelivery} {
+		health := coordinator.streamHealth(stream)
+		if health.Covered || health.Live {
+			t.Fatalf("%s stream remained available after Stop: %#v", stream, health)
+		}
+	}
 }
 
 func TestSubscriptionWatcherStartFailsGracefully(t *testing.T) {

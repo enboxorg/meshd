@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"sort"
+	"time"
 
 	"github.com/enboxorg/meshd/internal/control"
 
@@ -181,6 +182,19 @@ func (c *Converter) convertNode(n *control.Node) (*tailcfg.Node, error) {
 	if !n.LastSeen.IsZero() {
 		lastSeen := n.LastSeen
 		node.LastSeen = &lastSeen
+	}
+
+	if n.ExpiresAt != "" {
+		keyExpiry, err := time.Parse(time.RFC3339Nano, n.ExpiresAt)
+		if err != nil {
+			c.logger.Debug("skipping invalid node expiry",
+				slog.String("node", n.Name),
+				slog.String("expiresAt", n.ExpiresAt),
+				slog.Any("error", err),
+			)
+		} else {
+			node.KeyExpiry = keyExpiry
+		}
 	}
 
 	// Parse WireGuard public key. The key is stored as base64 in DWN records.

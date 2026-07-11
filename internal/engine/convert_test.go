@@ -4,10 +4,50 @@ import (
 	"encoding/base64"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/enboxorg/meshd/internal/control"
 	"github.com/enboxorg/meshnet/types/key"
 )
+
+func TestConvertNodeKeyExpiry(t *testing.T) {
+	standard := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	nanosecond := time.Date(2026, 8, 1, 2, 30, 0, 123456789, time.FixedZone("UTC+02:30", 2*60*60+30*60))
+
+	tests := map[string]struct {
+		expiresAt string
+		want      time.Time
+	}{
+		"RFC3339": {
+			expiresAt: "2026-08-01T00:00:00Z",
+			want:      standard,
+		},
+		"RFC3339Nano": {
+			expiresAt: "2026-08-01T02:30:00.123456789+02:30",
+			want:      nanosecond,
+		},
+		"empty": {},
+		"invalid": {
+			expiresAt: "not-a-timestamp",
+		},
+	}
+
+	converter := NewConverter("test")
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			node, err := converter.convertNode(&control.Node{
+				Name:      "peer",
+				ExpiresAt: tc.expiresAt,
+			})
+			if err != nil {
+				t.Fatalf("convertNode: %v", err)
+			}
+			if !node.KeyExpiry.Equal(tc.want) {
+				t.Fatalf("KeyExpiry = %v, want %v", node.KeyExpiry, tc.want)
+			}
+		})
+	}
+}
 
 // testWireGuardKey returns a valid base64-encoded 32-byte key for testing.
 func testWireGuardKey() string {

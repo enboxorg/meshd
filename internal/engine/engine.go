@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -71,7 +72,8 @@ type Engine struct {
 	routingMu sync.RWMutex
 	routing   routingState
 
-	snapshots *meshSnapshotStore
+	snapshots          *meshSnapshotStore
+	refreshCoordinator atomic.Pointer[RefreshCoordinator]
 }
 
 // Config holds the configuration for creating an Engine.
@@ -104,8 +106,17 @@ type Config struct {
 	// ListenPort is the WireGuard UDP port. 0 = auto-select.
 	ListenPort uint16
 
-	// PollInterval is how often to re-read DWN state. Default: 30s.
+	// PollInterval is the fallback reconciliation cadence. Default: 30s.
+	// When explicitly set, it also remains the healthy anti-entropy cadence
+	// unless HealthyPollInterval is provided.
 	PollInterval time.Duration
+
+	// HealthyPollInterval is the anti-entropy cadence while all required
+	// subscription streams are live and repaired. Default: 5m.
+	HealthyPollInterval time.Duration
+
+	// RefreshTimeout bounds one complete DWN state rebuild. Default: 2m.
+	RefreshTimeout time.Duration
 
 	// EncryptionKeyManager manages derived encryption keys for decrypting
 	// protocol records. If nil, encrypted records cannot be read.
@@ -233,9 +244,21 @@ func New(cfg Config) (*Engine, error) {
 		l = slog.Default()
 	}
 
+	pollConfigured := cfg.PollInterval != 0
 	pollInterval := cfg.PollInterval
 	if pollInterval == 0 {
 		pollInterval = 30 * time.Second
+	}
+	healthyPollInterval := cfg.HealthyPollInterval
+	if healthyPollInterval == 0 {
+		healthyPollInterval = 5 * time.Minute
+		if pollConfigured {
+			healthyPollInterval = pollInterval
+		}
+	}
+	refreshTimeout := cfg.RefreshTimeout
+	if refreshTimeout == 0 {
+		refreshTimeout = 2 * time.Minute
 	}
 
 	magicDNS := cfg.MagicDNSSuffix
@@ -457,17 +480,25 @@ func New(cfg Config) (*Engine, error) {
 	mapFn := mapResponseFunc(dwnClient.LoadState, converter, snapshots.record)
 	var engineRef *Engine
 	dwnControlConfig := &DWNControlConfig{
-		MapResponseFunc: mapFn,
-		PollInterval:    pollInterval,
-		Logf:            logf,
+		MapResponseFunc:         mapFn,
+		PollInterval:            pollInterval,
+		HealthyPollInterval:     healthyPollInterval,
+		RefreshTimeout:          refreshTimeout,
+		StartupSubscriptionWait: time.Second,
+		Logf:                    logf,
 		OnMapResult: func(ctx context.Context, nm *netmap.NetworkMap, err error) {
 			if engineRef != nil {
 				engineRef.handleControlMapResult(ctx, nm, err)
 			}
 		},
-		// Capture the DWNControl reference so the subscription watcher
-		// can call Notify() to trigger immediate re-polls.
-		OnCreated: subWatcher.SetDWNControl,
+		// Share the single coordinator with subscription invalidation and
+		// daemon health readers before its worker starts.
+		OnCreated: func(cc *DWNControl) {
+			subWatcher.SetRefreshCoordinator(cc.coordinator)
+			if engineRef != nil {
+				engineRef.refreshCoordinator.Store(cc.coordinator)
+			}
+		},
 	}
 
 	// If the caller provided a WireGuard private key (already published to
@@ -551,13 +582,9 @@ func (e *Engine) Start(ctx context.Context) error {
 		cancel()
 		return fmt.Errorf("starting backend: %w", err)
 	}
-	e.waitForInitialTUNRoutes(runCtx, 5*time.Second)
-	go e.runTUNRouteReconciler(runCtx)
-
-	// Start the subscription watcher for real-time updates.
-	// This is best-effort: if the DWN server doesn't support WebSocket
-	// subscriptions, we fall back to polling only. The watcher will
-	// auto-reconnect on transient failures.
+	// Establish subscriptions before the coordinator's delayed startup load
+	// whenever possible. Events received during that load remain pending and
+	// produce one trailing repair, closing the startup lost-update window.
 	if e.subWatcher != nil {
 		if err := e.subWatcher.Start(runCtx); err != nil {
 			e.logger.Warn("failed to start subscription watcher, falling back to polling",
@@ -565,6 +592,9 @@ func (e *Engine) Start(ctx context.Context) error {
 			)
 		}
 	}
+
+	e.waitForInitialTUNRoutes(runCtx, 5*time.Second)
+	go e.runTUNRouteReconciler(runCtx)
 
 	e.running = true
 	e.logger.InfoContext(ctx, "meshd engine started")
@@ -582,13 +612,13 @@ func (e *Engine) Stop() error {
 
 	e.logger.Info("stopping meshd engine")
 
-	if e.cancel != nil {
-		e.cancel()
-	}
-
 	// Stop subscription watcher first (stops WebSocket connections).
 	if e.subWatcher != nil {
 		e.subWatcher.Stop()
+	}
+
+	if e.cancel != nil {
+		e.cancel()
 	}
 
 	// Shutdown order matters: backend first (stops control polling),
@@ -617,6 +647,20 @@ func (e *Engine) Running() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.running
+}
+
+// RefreshHealth returns the coordinator scheduler and subscription health.
+// It returns nil before the LocalBackend creates its control client.
+func (e *Engine) RefreshHealth() *RefreshCoordinatorHealth {
+	if e == nil {
+		return nil
+	}
+	coordinator := e.refreshCoordinator.Load()
+	if coordinator == nil {
+		return nil
+	}
+	health := coordinator.Health()
+	return &health
 }
 
 // Backend returns the underlying meshnet LocalBackend for advanced use.
