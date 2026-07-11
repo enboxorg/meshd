@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
 	"net"
 	"net/netip"
+	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/enboxorg/meshd/internal/control"
@@ -167,7 +170,8 @@ type Config struct {
 	// applications (ping, ssh, curl) to route through the mesh tunnel.
 	//
 	// Requires root or CAP_NET_ADMIN. If the TUN device cannot be created,
-	// the engine falls back to userspace-only mode with a warning.
+	// engine creation fails. Callers that want userspace-only mode must leave
+	// TUNName empty explicitly.
 	//
 	// When empty (default), the engine runs in userspace-only mode where
 	// only netstack-internal code can communicate through the mesh.
@@ -176,6 +180,8 @@ type Config struct {
 	// Logger is the structured logger. Nil = default.
 	Logger *slog.Logger
 }
+
+var newTUNDevice = tstun.New
 
 // New creates a new Engine from the given config.
 //
@@ -284,7 +290,8 @@ func New(cfg Config) (*Engine, error) {
 	// Two modes:
 	//   1. Real TUN mode (cfg.TUNName set): creates a kernel TUN device so
 	//      regular applications can route through the mesh. Requires root
-	//      or CAP_NET_ADMIN. Falls back to userspace mode on failure.
+	//      or CAP_NET_ADMIN. Creation failure is fatal because silently using
+	//      netstack would leave host ping, SSH, and routing non-functional.
 	//   2. Userspace mode (default): fake TUN + netstack. Only code using
 	//      the netstack dialer can communicate through the mesh tunnel.
 	var tunDev tun.Device
@@ -294,25 +301,22 @@ func New(cfg Config) (*Engine, error) {
 	userspaceOnly := true
 
 	if cfg.TUNName != "" {
-		dev, devName, tunErr := tstun.New(logf, cfg.TUNName)
+		dev, devName, tunErr := newTUNDevice(logf, cfg.TUNName)
 		if tunErr != nil {
-			l.Warn("failed to create TUN device, falling back to userspace mode",
-				slog.String("tunName", cfg.TUNName),
-				slog.Any("error", tunErr),
-			)
-		} else {
-			tunDev = dev
-			tunName = devName
-			userspaceOnly = false
-			l.Info("created TUN device", slog.String("name", tunName))
+			nm.Close()
+			return nil, tunCreationError(runtime.GOOS, cfg.TUNName, tunErr)
+		}
+		tunDev = dev
+		tunName = devName
+		userspaceOnly = false
+		l.Info("created TUN device", slog.String("name", tunName))
 
-			// Create an OS router to manage addresses and routes on the
-			// TUN interface. Unsupported platforms return nil and fall back
-			// to the fake router (no OS routing).
-			if rtr := newOSRouter(logf, tunName); rtr != nil {
-				osRouter = newSynchronizedRouter(rtr)
-				wgRouter = osRouter
-			}
+		// Create an OS router to manage addresses and routes on the
+		// TUN interface. Unsupported platforms return nil and fall back
+		// to the fake router (no OS routing).
+		if rtr := newOSRouter(logf, tunName); rtr != nil {
+			osRouter = newSynchronizedRouter(rtr)
+			wgRouter = osRouter
 		}
 	}
 
@@ -464,6 +468,19 @@ func New(cfg Config) (*Engine, error) {
 		osRouter:   osRouter,
 		logger:     l,
 	}, nil
+}
+
+func tunCreationError(goos, name string, err error) error {
+	if goos == "linux" && errors.Is(err, syscall.EBUSY) {
+		return fmt.Errorf(
+			"creating TUN device %q: %w; another process or persistent interface already owns %q; identify the exact owner by finding %q in /proc/*/fdinfo/*",
+			name,
+			err,
+			name,
+			"iff: "+name,
+		)
+	}
+	return fmt.Errorf("creating TUN device %q: %w", name, err)
 }
 
 // Start brings up the WireGuard tunnel.

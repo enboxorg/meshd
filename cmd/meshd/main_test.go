@@ -693,30 +693,60 @@ func TestParseUpFlagsForeground(t *testing.T) {
 
 func TestShouldReexecWithSudoForTun(t *testing.T) {
 	t.Setenv(trayConnectEnv, "")
-	if !shouldReexecWithSudoForTun(upFlags{}, 501, "darwin", true) {
-		t.Fatal("expected interactive non-root darwin up to reexec with sudo")
+	if !shouldReexecWithSudoForTun(upFlags{}, 501, "darwin") {
+		t.Fatal("expected non-root darwin up to reexec with sudo")
 	}
-	if !shouldReexecWithSudoForTun(upFlags{}, 1000, "linux", true) {
-		t.Fatal("expected interactive non-root linux up to reexec with sudo")
+	if !shouldReexecWithSudoForTun(upFlags{}, 1000, "linux") {
+		t.Fatal("expected non-root linux up to reexec with sudo")
 	}
-	if shouldReexecWithSudoForTun(upFlags{}, 0, "linux", true) {
+	if shouldReexecWithSudoForTun(upFlags{}, 0, "linux") {
 		t.Fatal("did not expect root to reexec with sudo")
 	}
-	if shouldReexecWithSudoForTun(upFlags{noTun: true}, 1000, "linux", true) {
+	if shouldReexecWithSudoForTun(upFlags{noTun: true}, 1000, "linux") {
 		t.Fatal("did not expect --no-tun to reexec with sudo")
 	}
-	if shouldReexecWithSudoForTun(upFlags{}, 1000, "linux", false) {
-		t.Fatal("did not expect non-interactive up to reexec with sudo")
-	}
-	if shouldReexecWithSudoForTun(upFlags{}, 1000, "freebsd", true) {
+	if shouldReexecWithSudoForTun(upFlags{}, 1000, "freebsd") {
 		t.Fatal("did not expect unsupported OS to reexec with sudo")
 	}
 	t.Setenv(trayConnectEnv, "1")
-	if !shouldReexecWithSudoForTun(upFlags{}, 501, "darwin", false) {
+	if !shouldReexecWithSudoForTun(upFlags{}, 501, "darwin") {
 		t.Fatal("expected non-interactive tray connect on darwin to request GUI elevation")
 	}
-	if shouldReexecWithSudoForTun(upFlags{}, 1000, "linux", false) {
-		t.Fatal("did not expect the macOS tray marker to elevate on linux")
+	if !shouldReexecWithSudoForTun(upFlags{}, 1000, "linux") {
+		t.Fatal("expected Linux TUN elevation to be independent of stdin TTY")
+	}
+}
+
+func TestWaitForDaemonStartReturnsWhenChildExits(t *testing.T) {
+	childExit := make(chan error, 1)
+	childExit <- errors.New("TUN startup failed")
+
+	started := time.Now()
+	_, err := waitForDaemonStart(
+		context.Background(),
+		filepath.Join(t.TempDir(), "missing.sock"),
+		30*time.Second,
+		true,
+		childExit,
+	)
+	if err == nil || !strings.Contains(err.Error(), "TUN startup failed") {
+		t.Fatalf("waitForDaemonStart error = %v, want child failure", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("waitForDaemonStart took %s after child exit", elapsed)
+	}
+}
+
+func TestValidateDaemonStartStatusRequiresRequestedTUN(t *testing.T) {
+	if err := validateDaemonStartStatus(&daemon.Status{}, false); err != nil {
+		t.Fatalf("explicit userspace status rejected: %v", err)
+	}
+	if err := validateDaemonStartStatus(&daemon.Status{TUNDevice: "meshd0"}, true); err != nil {
+		t.Fatalf("TUN status rejected: %v", err)
+	}
+	if err := validateDaemonStartStatus(&daemon.Status{}, true); err == nil ||
+		!strings.Contains(err.Error(), "required TUN device") {
+		t.Fatalf("missing TUN error = %v", err)
 	}
 }
 
