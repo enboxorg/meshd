@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.21.1](https://github.com/enboxorg/meshd/compare/v0.21.0...v0.21.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* enable macOS tray during curl onboarding ([#226](https://github.com/enboxorg/meshd/issues/226)) ([6ebb7d0](https://github.com/enboxorg/meshd/commit/6ebb7d0d4447b6ceb0ae509bc27240fc66c76d9b))
+* stabilize tray peer refresh ([#232](https://github.com/enboxorg/meshd/issues/232)) ([bd4d32b](https://github.com/enboxorg/meshd/commit/bd4d32b18a0bd99b179fc92a77e93dda0d6ca60b))
+* start macOS tray after onboarding ([#231](https://github.com/enboxorg/meshd/issues/231)) ([adf639f](https://github.com/enboxorg/meshd/commit/adf639f5c6e60286d4e6f671303e037885abcb9b))
+
 ## [0.21.0](https://github.com/enboxorg/meshd/compare/v0.20.0...v0.21.0) (2026-07-10)
 
 
