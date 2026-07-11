@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.3](https://github.com/enboxorg/meshd/compare/v0.21.2...v0.21.3) (2026-07-11)
+
+
+### Bug Fixes
+
+* fail when required TUN cannot start ([#240](https://github.com/enboxorg/meshd/issues/240)) ([a7b452d](https://github.com/enboxorg/meshd/commit/a7b452d7b75659c60311c9c7667d58524407cd57))
+
 ## [0.21.2](https://github.com/enboxorg/meshd/compare/v0.21.1...v0.21.2) (2026-07-11)
 
 
