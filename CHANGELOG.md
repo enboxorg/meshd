@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.21.7](https://github.com/enboxorg/meshd/compare/v0.21.6...v0.21.7) (2026-07-11)
+
+
+### Bug Fixes
+
+* align DWN subscription protocol ([#254](https://github.com/enboxorg/meshd/issues/254)) ([d717cf0](https://github.com/enboxorg/meshd/commit/d717cf089a4de4a3191b4c26a9cd9d87649beb8d))
+* coordinate event-driven mesh refreshes ([#259](https://github.com/enboxorg/meshd/issues/259)) ([a0ff8d7](https://github.com/enboxorg/meshd/commit/a0ff8d7356fad16884d3d72af92feb006833581f))
+* serve peer list from daemon snapshot ([#257](https://github.com/enboxorg/meshd/issues/257)) ([0f14a35](https://github.com/enboxorg/meshd/commit/0f14a3532f440dcee1ab4158f1faef927ec8ffee))
+
 ## [0.21.6](https://github.com/enboxorg/meshd/compare/v0.21.5...v0.21.6) (2026-07-11)
 
 
