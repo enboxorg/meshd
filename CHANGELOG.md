@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.5](https://github.com/enboxorg/meshd/compare/v0.21.4...v0.21.5) (2026-07-11)
+
+
+### Bug Fixes
+
+* wait for mesh routing readiness ([#247](https://github.com/enboxorg/meshd/issues/247)) ([8bf9d6d](https://github.com/enboxorg/meshd/commit/8bf9d6db53fc5a476e7bf9ad4556375c20bd068e))
+
 ## [0.21.4](https://github.com/enboxorg/meshd/compare/v0.21.3...v0.21.4) (2026-07-11)
 
 
