@@ -315,11 +315,11 @@ func (cc *DWNControl) refreshControlState(ctx context.Context, _ RefreshBatch) e
 	if err != nil {
 		return err
 	}
-	if replay == nil || !cc.initialMapApplied.CompareAndSwap(false, true) || cc.observer == nil {
+	if replay == nil || cc.observer == nil || !cc.initialMapApplied.CompareAndSwap(false, true) {
 		return nil
 	}
-	if !waitForRefreshContext(ctx, 200*time.Millisecond) {
-		return ctx.Err()
+	if !waitForRefreshContext(refreshCtx, 200*time.Millisecond) {
+		return refreshCtx.Err()
 	}
 	cc.pushNetMap(replay)
 	return nil

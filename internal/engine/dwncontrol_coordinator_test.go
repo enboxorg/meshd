@@ -272,6 +272,46 @@ func TestDWNControlCoordinatorBoundsRefreshWithTimeout(t *testing.T) {
 	}
 }
 
+func TestDWNControlCoordinatorBoundsStartupReplayWithTimeout(t *testing.T) {
+	var applies atomic.Int32
+	observer := dwnControlObserverFunc(func(_ controlclient.Client, status controlclient.Status) {
+		if status.NetMap != nil {
+			applies.Add(1)
+		}
+	})
+
+	cc, err := NewDWNControl(&DWNControlConfig{
+		MapResponseFunc: func(context.Context) (*netmap.NetworkMap, error) {
+			return &netmap.NetworkMap{}, nil
+		},
+		PollInterval:   time.Hour,
+		RefreshTimeout: 20 * time.Millisecond,
+		Logf:           func(string, ...any) {},
+	}, controlclient.Options{Observer: observer, SkipStartForTests: true})
+	if err != nil {
+		t.Fatalf("NewDWNControl: %v", err)
+	}
+	defer cc.Shutdown()
+
+	err = cc.refreshControlState(context.Background(), RefreshBatch{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("refreshControlState error = %v, want deadline exceeded", err)
+	}
+	if got := applies.Load(); got != 1 {
+		t.Fatalf("observer applications = %d, want one initial application and no replay", got)
+	}
+	if !cc.initialMapApplied.Load() {
+		t.Fatal("timed-out replay did not reserve the one-time startup replay")
+	}
+
+	if err := cc.refreshControlState(context.Background(), RefreshBatch{}); err != nil {
+		t.Fatalf("retry refreshControlState: %v", err)
+	}
+	if got := applies.Load(); got != 2 {
+		t.Fatalf("observer applications after retry = %d, want retry application to complete the deferred replay", got)
+	}
+}
+
 func TestDWNControlCoordinatorCoalescesPreStartAndMidFlightNotify(t *testing.T) {
 	var loads atomic.Int32
 	var applies atomic.Int32
