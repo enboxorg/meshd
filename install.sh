@@ -9,6 +9,7 @@ TRAY_APP_DIR="${HOME}/.${APP}/meshd-tray.app"
 TRAY_APP_BACKUP="${TRAY_APP_DIR}.previous"
 TRAY_SWAP_ACTIVE=false
 TRAY_LAUNCH_AGENT_LABEL='org.enbox.meshd-tray'
+TRAY_AUTOSTART_MARKER="${HOME}/.${APP}/.tray-autostart-initialized"
 LAUNCHCTL="${MESHD_INSTALL_LAUNCHCTL:-/bin/launchctl}"
 MESHD_WINDOWS_RESTART=false
 REQUESTED_VERSION="${VERSION:-}"
@@ -41,7 +42,8 @@ Options:
 
 Everything after 'up' is passed to 'meshd up', so one command can install
 meshd, request to join a network, wait for dashboard approval, and start
-the mesh.
+the mesh. On the first macOS install, the menu-bar app is also enabled at
+login after setup completes.
 
 Examples:
   curl -fsSL https://meshd.sh/install | bash
@@ -53,6 +55,26 @@ EOF
 fail() {
   printf 'error: %s\n' "$*" >&2
   exit 1
+}
+
+print_shell_command() {
+  local arg
+  printf '  '
+  for arg in "$@"; do
+    printf '%q ' "$arg"
+  done
+  printf '\n'
+}
+
+profile_arg_from() {
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = '--profile' ] && [ "$#" -gt 1 ]; then
+      printf '%s' "$2"
+      return 0
+    fi
+    shift
+  done
+  return 0
 }
 
 has_command() {
@@ -262,6 +284,39 @@ install_macos_tray() {
   restart_macos_tray_if_loaded
 }
 
+enable_macos_tray_at_login() {
+  local tray="${INSTALL_DIR}/meshd-tray"
+  local profile="${1:-}"
+  local tray_args=(install)
+  if [ -n "$profile" ]; then
+    tray_args+=(--profile "$profile")
+  fi
+
+  printf '\n==> Enabling meshd-tray at login\n'
+  if "$tray" "${tray_args[@]}"; then
+    if ! (
+      umask 077
+      printf 'initialized\n' > "${TRAY_AUTOSTART_MARKER}.new" &&
+        mv -f "${TRAY_AUTOSTART_MARKER}.new" "$TRAY_AUTOSTART_MARKER"
+    ); then
+      printf 'warning: could not record meshd-tray login setup; a later installer run may retry it\n' >&2
+      rm -f "${TRAY_AUTOSTART_MARKER}.new" || true
+    fi
+    return
+  fi
+
+  # launchctl requires an interactive Aqua session. A headless/SSH install
+  # must still be allowed to finish the invite flow; leave an actionable retry
+  # without retaining the invite in a LaunchAgent argument or environment.
+  printf 'warning: meshd-tray could not be enabled at login; retry with:\n' >&2
+  if [ -n "$profile" ]; then
+    print_shell_command "$tray" install --profile "$profile" >&2
+  else
+    print_shell_command "$tray" install >&2
+  fi
+  return 0
+}
+
 windows_native_path() {
   if has_command cygpath; then
     cygpath -w "$1"
@@ -384,7 +439,8 @@ restart_windows_meshd_after_upgrade() {
 # password and sudo prompts working.
 run_meshd_up() {
   local bin="$1"
-  shift
+  local profile="$2"
+  shift 2
 
   # ${1+"$@"} instead of bare "$@": bash <= 4.3 (macOS ships 3.2) treats an
   # empty "$@" as unbound under set -u.
@@ -397,13 +453,14 @@ run_meshd_up() {
   fi
 
   if [ "$code" -ne 0 ]; then
-    local resume_args=''
-    if [ "$#" -gt 0 ]; then
-      resume_args=" $*"
+    printf '\nmeshd up did not complete. Re-run the original command to retry.\n' >&2
+    printf 'If its join request is already pending, resume without repeating the invite:\n' >&2
+    if [ -n "$profile" ]; then
+      print_shell_command "$bin" up --profile "$profile" >&2
+    else
+      print_shell_command "$bin" up >&2
     fi
-    printf '\nmeshd up did not complete. Any join request stays pending; resume with:\n' >&2
-    printf '  %s up%s\n' "$bin" "$resume_args" >&2
-    exit "$code"
+    return "$code"
   fi
 }
 
@@ -482,7 +539,16 @@ main() {
   mv -f "${INSTALL_DIR}/meshd${suffix}.new" "${INSTALL_DIR}/meshd${suffix}"
 
   local tray_installed=false
+  local macos_tray_needs_autostart=false
+  local up_profile
+  up_profile="$(profile_arg_from ${RUN_UP_ARGS[@]+"${RUN_UP_ARGS[@]}"})"
   if [ "$os" = 'darwin' ] && [ -d "${TMP_DIR}/meshd-tray.app" ]; then
+    # Installer-owned one-time state lets existing tray users receive this
+    # behavior once, while a later explicit tray uninstall remains respected
+    # across upgrades.
+    if [ ! -e "$TRAY_AUTOSTART_MARKER" ]; then
+      macos_tray_needs_autostart=true
+    fi
     install_macos_tray "${TMP_DIR}/meshd-tray.app"
     tray_installed=true
   elif [ "$os" = 'windows' ] && [ -f "${TMP_DIR}/meshd-tray.exe" ]; then
@@ -501,7 +567,7 @@ main() {
   printf '==> Installed to %s\n' "$INSTALL_DIR"
   "${INSTALL_DIR}/meshd${suffix}" --version || true
 
-  if [ "$tray_installed" = true ]; then
+  if [ "$tray_installed" = true ] && [ "$os" != 'darwin' ]; then
     printf 'Enable the menu-bar app at login with: meshd-tray install\n'
   fi
 
@@ -510,8 +576,19 @@ main() {
     # scratch dir before handing off.
     cleanup
     TMP_DIR=''
-    run_meshd_up "${INSTALL_DIR}/meshd${suffix}" ${RUN_UP_ARGS[@]+"${RUN_UP_ARGS[@]}"}
+    local up_code=0
+    run_meshd_up "${INSTALL_DIR}/meshd${suffix}" "$up_profile" ${RUN_UP_ARGS[@]+"${RUN_UP_ARGS[@]}"} || up_code=$?
+    if [ "$macos_tray_needs_autostart" = true ]; then
+      enable_macos_tray_at_login "$up_profile"
+    fi
+    if [ "$up_code" -ne 0 ]; then
+      exit "$up_code"
+    fi
     return
+  fi
+
+  if [ "$macos_tray_needs_autostart" = true ]; then
+    enable_macos_tray_at_login "$up_profile"
   fi
 
   printf 'Run: meshd up\n'

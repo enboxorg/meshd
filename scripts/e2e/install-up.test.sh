@@ -83,17 +83,18 @@ expected="$(printf 'up\nmeshd://invite/test-token\n--no-tun\n--wait-timeout\n1h\
 [ "$(cat "${home2}/argv.txt")" = "$expected" ] || rc=1
 check "up passthrough forwards args verbatim" "$rc"
 
-# 3. Exit codes from meshd up propagate, with a resume hint on stderr that
-# keeps the original arguments (a resume without the invite dead-ends when
-# the join request was never submitted).
+# 3. Exit codes from meshd up propagate, with a resume hint that never repeats
+# the bearer invite into terminal or CI logs.
 home3="${WORK}/home3"; mkdir -p "$home3"
 rc=0
 stderr3="${WORK}/stderr3.txt"
-MESHD_FAKE_EXIT=7 run_install "$home3" up 'meshd://invite/x' >/dev/null 2>"$stderr3" || rc=$?
+MESHD_FAKE_EXIT=7 run_install "$home3" up 'meshd://invite/x' --profile work >/dev/null 2>"$stderr3" || rc=$?
 check "meshd up exit code propagates" "$([ "$rc" -eq 7 ]; echo $?)"
 rc=0
-grep -q "resume with" "$stderr3" && grep -q "up meshd://invite/x" "$stderr3" || rc=1
-check "failure prints a resume hint with the original args" "$rc"
+grep -q "resume without repeating the invite" "$stderr3" || rc=1
+grep -q -- "--profile work" "$stderr3" || rc=1
+! grep -q "meshd://invite/x" "$stderr3" || rc=1
+check "failure prints a redacted resume hint" "$rc"
 
 # 4. Unknown options still fail hard (guards against silently swallowing
 # typos like 'pu' or a bare invite URL).
