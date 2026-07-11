@@ -57,6 +57,10 @@ type Status struct {
 	OwnerDID        string       `json:"ownerDID,omitempty"`
 	NetworkRecordID string       `json:"networkRecordID,omitempty"`
 	Peers           []PeerStatus `json:"peers,omitempty"`
+	RoutingRequired bool         `json:"routingRequired"`
+	RoutingReady    bool         `json:"routingReady"`
+	RoutingPhase    string       `json:"routingPhase,omitempty"`
+	RoutingError    string       `json:"routingError,omitempty"`
 	Uptime          string       `json:"uptime,omitempty"`
 	PID             int          `json:"pid"`
 }

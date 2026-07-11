@@ -201,6 +201,10 @@ func TestStatusEndpoint(t *testing.T) {
 			OwnerDID:        "did:example:owner",
 			NetworkRecordID: "network-1",
 			Peers:           []PeerStatus{{Name: "peer-a", MeshIP: "10.200.0.2", Online: true}},
+			RoutingRequired: true,
+			RoutingReady:    false,
+			RoutingPhase:    "syncing",
+			RoutingError:    "waiting for a usable network map",
 		}
 	}, nil)
 
@@ -241,6 +245,9 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 	if len(status.Peers) != 1 || status.Peers[0].Name != "peer-a" || status.Peers[0].MeshIP != "10.200.0.2" || !status.Peers[0].Online {
 		t.Fatalf("Peers = %+v, want peer-a online at 10.200.0.2", status.Peers)
+	}
+	if !status.RoutingRequired || status.RoutingReady || status.RoutingPhase != "syncing" || status.RoutingError != "waiting for a usable network map" {
+		t.Fatalf("routing status = required=%t ready=%t phase=%q error=%q", status.RoutingRequired, status.RoutingReady, status.RoutingPhase, status.RoutingError)
 	}
 	if status.Uptime == "" {
 		t.Error("expected non-empty Uptime")

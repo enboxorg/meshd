@@ -16,7 +16,10 @@ import (
 	"github.com/enboxorg/meshd/internal/openurl"
 )
 
-const defaultDisconnectPoll = 150 * time.Millisecond
+const (
+	defaultDisconnectPoll       = 150 * time.Millisecond
+	connectHandoffStatusTimeout = 2 * time.Second
+)
 
 type commandRunner func(context.Context, string, []string, []string) ([]byte, error)
 type processWaiter func(context.Context, int, time.Duration) error
@@ -75,6 +78,17 @@ func (s *Service) Connect(ctx context.Context) error {
 	}
 	output, err := s.launchConnect(ctx, executable, args, os.Environ())
 	if err != nil {
+		// meshd up intentionally stops waiting after its routing-readiness
+		// deadline while leaving the daemon alive to finish syncing. The command
+		// therefore exits non-zero even though ownership of the connection has
+		// successfully moved to the daemon. Confirm that handoff independently:
+		// the command context may already be expired by the time it returns.
+		statusCtx, cancel := context.WithTimeout(context.Background(), connectHandoffStatusTimeout)
+		status, statusErr := s.client.GetStatus(statusCtx)
+		cancel()
+		if statusErr == nil && connectHandoffAccepted(status) {
+			return nil
+		}
 		detail := compactOutput(output)
 		if detail != "" {
 			return fmt.Errorf("meshd up: %w: %s", err, detail)
@@ -82,6 +96,10 @@ func (s *Service) Connect(ctx context.Context) error {
 		return fmt.Errorf("meshd up: %w", err)
 	}
 	return nil
+}
+
+func connectHandoffAccepted(status *daemon.Status) bool {
+	return status != nil && status.Running
 }
 
 // Disconnect requests a graceful shutdown of the observed daemon instance and

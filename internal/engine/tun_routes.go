@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/netip"
 	"sort"
 	"time"
@@ -69,26 +68,61 @@ func routerConfigFromNetMap(nm *netmap.NetworkMap) (*router.Config, bool) {
 }
 
 func (e *Engine) reconcileTUNRoutes(ctx context.Context) error {
-	if e.osRouter == nil {
+	if !e.RoutingStatus().Required {
 		return nil
 	}
-	nm := e.backend.NetMap()
-	cfg, ok := routerConfigFromNetMap(nm)
-	if !ok {
-		return fmt.Errorf("no usable network map addresses yet")
+
+	e.routeApplyMu.Lock()
+	defer e.routeApplyMu.Unlock()
+	return e.applyTUNRouteConfigLocked(ctx, e.routeConfig, e.routeConfig != nil, false)
+}
+
+func (e *Engine) handleControlMapResult(ctx context.Context, nm *netmap.NetworkMap, err error) {
+	if !e.RoutingStatus().Required {
+		return
 	}
-	if err := e.osRouter.Set(cfg); err != nil {
+
+	e.routeApplyMu.Lock()
+	defer e.routeApplyMu.Unlock()
+	if err != nil {
+		e.recordControlMapError(ctx, err)
+		return
+	}
+
+	cfg, ok := routerConfigFromNetMap(nm)
+	if ok {
+		e.routeConfig = cfg
+	} else {
+		e.routeConfig = nil
+	}
+	_ = e.applyTUNRouteConfigLocked(ctx, cfg, ok, true)
+}
+
+// applyTUNRouteConfigLocked installs a route snapshot and updates readiness.
+// Callers must hold routeApplyMu so an older retry cannot land after a newer
+// control result and overwrite either the OS routes or their reported state.
+func (e *Engine) applyTUNRouteConfigLocked(ctx context.Context, cfg *router.Config, usable bool, freshControlResult bool) error {
+	if e.osRouter == nil {
+		err := fmt.Errorf("OS router is unavailable")
+		e.recordRouteResult(ctx, err, RoutingPhaseError, freshControlResult)
 		return err
 	}
-	e.logger.DebugContext(ctx, "TUN routes reconciled",
-		slog.Int("localAddrs", len(cfg.LocalAddrs)),
-		slog.Int("routes", len(cfg.Routes)),
-	)
+	if !usable {
+		err := fmt.Errorf("no usable network map addresses yet")
+		e.recordRouteResult(ctx, err, RoutingPhaseSyncing, freshControlResult)
+		return err
+	}
+	if err := e.osRouter.Set(cfg); err != nil {
+		err = fmt.Errorf("configuring OS routes: %w", err)
+		e.recordRouteResult(ctx, err, RoutingPhaseError, freshControlResult)
+		return err
+	}
+	e.recordRouteResult(ctx, nil, RoutingPhaseReady, freshControlResult)
 	return nil
 }
 
 func (e *Engine) waitForInitialTUNRoutes(ctx context.Context, timeout time.Duration) {
-	if e.osRouter == nil {
+	if !e.RoutingStatus().Required {
 		return
 	}
 
@@ -97,21 +131,15 @@ func (e *Engine) waitForInitialTUNRoutes(ctx context.Context, timeout time.Durat
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
-	var lastErr error
 	for {
 		if err := e.reconcileTUNRoutes(ctx); err == nil {
 			return
-		} else {
-			lastErr = err
 		}
 
 		select {
 		case <-ctx.Done():
 			return
 		case <-deadline.C:
-			e.logger.WarnContext(ctx, "TUN routes not ready yet; will keep retrying in background",
-				slog.Any("error", lastErr),
-			)
 			return
 		case <-ticker.C:
 		}
@@ -119,7 +147,7 @@ func (e *Engine) waitForInitialTUNRoutes(ctx context.Context, timeout time.Durat
 }
 
 func (e *Engine) runTUNRouteReconciler(ctx context.Context) {
-	if e.osRouter == nil {
+	if !e.RoutingStatus().Required {
 		return
 	}
 
@@ -131,11 +159,7 @@ func (e *Engine) runTUNRouteReconciler(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := e.reconcileTUNRoutes(ctx); err != nil {
-				e.logger.DebugContext(ctx, "TUN route reconcile skipped",
-					slog.Any("error", err),
-				)
-			}
+			_ = e.reconcileTUNRoutes(ctx)
 		}
 	}
 }
