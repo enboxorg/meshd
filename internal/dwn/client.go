@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -158,6 +159,9 @@ func (c *Client) RecordsQueryWithAuth(ctx context.Context, target string, filter
 	if err != nil {
 		return nil, err
 	}
+	if result.Reply != nil && result.Reply.Status.Code == http.StatusTooManyRequests {
+		return nil, queryRateLimitError(result.Reply.Status)
+	}
 
 	return result.Reply, nil
 }
@@ -221,6 +225,9 @@ func QueryEntries(reply *DwnReply) ([]json.RawMessage, error) {
 	if reply == nil {
 		return nil, fmt.Errorf("nil reply")
 	}
+	if reply.Status.Code == http.StatusTooManyRequests {
+		return nil, queryRateLimitError(reply.Status)
+	}
 	if reply.Status.Code != 200 {
 		return nil, fmt.Errorf("query failed: %d %s", reply.Status.Code, reply.Status.Detail)
 	}
@@ -233,6 +240,38 @@ func QueryEntries(reply *DwnReply) ([]json.RawMessage, error) {
 		return nil, fmt.Errorf("unmarshaling entries: %w", err)
 	}
 	return entries, nil
+}
+
+func queryRateLimitError(status Status) *RateLimitError {
+	retryAfter := defaultRateLimitRetryAfter
+	if parsed, ok := retryAfterFromStatusDetail(status.Detail); ok {
+		retryAfter = parsed
+	}
+	detail := fmt.Sprintf("query failed: %d", status.Code)
+	if trimmed := strings.TrimSpace(status.Detail); trimmed != "" {
+		detail += " " + trimmed
+	}
+	return &RateLimitError{RetryAfter: retryAfter, Detail: detail}
+}
+
+func retryAfterFromStatusDetail(detail string) (time.Duration, bool) {
+	const marker = "retry after "
+	lowerDetail := strings.ToLower(detail)
+	markerIndex := strings.LastIndex(lowerDetail, marker)
+	if markerIndex < 0 {
+		return 0, false
+	}
+	tail := strings.TrimSpace(detail[markerIndex+len(marker):])
+	fields := strings.Fields(tail)
+	if len(fields) == 0 {
+		return 0, false
+	}
+	durationText := strings.TrimRight(fields[0], ".,;")
+	retryAfter, err := time.ParseDuration(durationText)
+	if err != nil || retryAfter < 0 {
+		return 0, false
+	}
+	return retryAfter, true
 }
 
 // ReadEntry extracts the entry from a read reply.
