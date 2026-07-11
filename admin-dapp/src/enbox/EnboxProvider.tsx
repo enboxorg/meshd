@@ -1,9 +1,7 @@
 import React, { createContext, useCallback, useEffect, useRef, useState } from "react";
 
-import { AuthManager, BrowserConnectHandler, Enbox } from "@enbox/browser";
-import type { AuthManagerOptions, AuthSession } from "@enbox/browser";
-import { BrowserStorage } from "@enbox/auth";
-import type { ProviderAuthParams, ProviderAuthResult } from "@enbox/auth";
+import { AuthManager, BrowserConnectHandler, BrowserStorage, Enbox } from "@enbox/browser";
+import type { AuthManagerOptions, AuthSession, ProviderAuthParams, ProviderAuthResult } from "@enbox/browser";
 
 import {
   AUTH_DATA_PATH,

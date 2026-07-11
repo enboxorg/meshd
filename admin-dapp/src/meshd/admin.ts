@@ -1,4 +1,4 @@
-import { DwnInterface } from "@enbox/agent";
+import { DwnInterface } from "@enbox/browser";
 import { Ed25519 } from "@enbox/crypto";
 import { DidJwk } from "@enbox/dids";
 

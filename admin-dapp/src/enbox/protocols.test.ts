@@ -1,6 +1,5 @@
-import { normalizeProtocolRequests } from "@enbox/auth";
 import type { Enbox } from "@enbox/browser";
-import { DwnInterfaceName, DwnMethodName } from "@enbox/dwn-sdk-js";
+import { DwnInterfaceName, DwnMethodName, normalizeProtocolRequests } from "@enbox/browser";
 import { describe, expect, it, vi } from "vitest";
 
 import rawMeshProtocolDefinition from "../../../protocols/wireguard-mesh.json";
