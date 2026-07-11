@@ -70,6 +70,9 @@ func (c *Converter) Convert(resp *control.MapResponse) (*netmap.NetworkMap, erro
 	if resp == nil {
 		return nil, fmt.Errorf("nil MapResponse")
 	}
+	if err := validateNodeIdentities(resp); err != nil {
+		return nil, fmt.Errorf("validating node identities: %w", err)
+	}
 
 	nm := &netmap.NetworkMap{
 		Domain: c.Domain,
@@ -162,7 +165,7 @@ func (c *Converter) Convert(resp *control.MapResponse) (*netmap.NetworkMap, erro
 func (c *Converter) convertNode(n *control.Node) (*tailcfg.Node, error) {
 	node := &tailcfg.Node{
 		ID:       tailcfg.NodeID(n.ID),
-		StableID: tailcfg.StableNodeID(fmt.Sprintf("dwn-%d", n.ID)),
+		StableID: tailcfg.StableNodeID(nodeStableID(n)),
 		Name:     c.fqdn(n.Name),
 		HomeDERP: n.PreferredDERP,
 		Hostinfo: (&tailcfg.Hostinfo{
@@ -235,6 +238,62 @@ func (c *Converter) convertNode(n *control.Node) (*tailcfg.Node, error) {
 	}
 
 	return node, nil
+}
+
+func validateNodeIdentities(resp *control.MapResponse) error {
+	type candidate struct {
+		label string
+		node  *control.Node
+	}
+
+	nodes := make([]candidate, 0, 1+len(resp.Peers))
+	if resp.Node != nil {
+		nodes = append(nodes, candidate{label: "self node", node: resp.Node})
+	}
+	for i, peer := range resp.Peers {
+		if peer == nil {
+			return fmt.Errorf("peer %d is nil", i)
+		}
+		nodes = append(nodes, candidate{
+			label: fmt.Sprintf("peer %d", i),
+			node:  peer,
+		})
+	}
+
+	seenIDs := make(map[int64]string, len(nodes))
+	seenStableIDs := make(map[string]string, len(nodes))
+	for _, candidate := range nodes {
+		node := candidate.node
+		label := candidate.label
+		if node.DID != "" {
+			label += fmt.Sprintf(" (DID=%s)", node.DID)
+		} else if node.Name != "" {
+			label += fmt.Sprintf(" (name=%s)", node.Name)
+		}
+		if node.ID <= 0 {
+			return fmt.Errorf("%s has invalid NodeID %d; NodeIDs must be positive", label, node.ID)
+		}
+		if previous, ok := seenIDs[node.ID]; ok {
+			return fmt.Errorf("duplicate NodeID %d for %s and %s", node.ID, previous, label)
+		}
+		stableID := nodeStableID(node)
+		if previous, ok := seenStableIDs[stableID]; ok {
+			return fmt.Errorf("duplicate StableID %q for %s and %s", stableID, previous, label)
+		}
+		seenIDs[node.ID] = label
+		seenStableIDs[stableID] = label
+	}
+	return nil
+}
+
+func nodeStableID(n *control.Node) string {
+	if n.StableID != "" {
+		return n.StableID
+	}
+	// Static/embedded callers may construct control.Node directly. Preserve
+	// their existing behavior while production DWN nodes provide the immutable
+	// network-and-DID-derived StableID.
+	return fmt.Sprintf("dwn-%d", n.ID)
 }
 
 // parseWireGuardKey parses a base64-encoded WireGuard public key (32 bytes)

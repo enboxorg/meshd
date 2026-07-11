@@ -17,8 +17,13 @@ import (
 // Node represents a peer in the mesh network.
 // Maps to tailcfg.Node in meshnet.
 type Node struct {
-	// ID is a unique identifier for this node (derived from record ID).
+	// ID is a unique, immutable identifier derived from the network and node DID.
 	ID int64
+
+	// StableID is the immutable identity meshnet uses for this node across
+	// network-map updates. It must not change when other nodes join or leave.
+	// Static callers may omit it; the engine then derives "dwn-<ID>".
+	StableID string
 
 	// Name is the hostname or label for this node.
 	Name string
