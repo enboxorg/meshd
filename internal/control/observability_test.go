@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/enboxorg/meshd/internal/did"
+	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 )
 
@@ -29,7 +34,7 @@ func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
 }
 
 func (h *captureHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *captureHandler) WithGroup(string) slog.Handler       { return h }
+func (h *captureHandler) WithGroup(string) slog.Handler      { return h }
 
 // warnFor reports whether a WARN record was emitted whose attributes include
 // nodeDID/did == wantDID.
@@ -131,5 +136,105 @@ func TestBuildMapResponseCountsDroppedPeer(t *testing.T) {
 	}
 	if !strings.HasPrefix(resp.Node.DID, "did:jwk:self") {
 		t.Fatalf("self node = %+v, want self retained", resp.Node)
+	}
+}
+
+func (h *captureHandler) count(level slog.Level, message string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	count := 0
+	for _, record := range h.records {
+		if record.Level == level && record.Message == message {
+			count++
+		}
+	}
+	return count
+}
+
+func TestLoadEndpointEntryWarnsOnceAndReportsRecovery(t *testing.T) {
+	handler := &captureHandler{}
+	const (
+		peerDID      = "did:jwk:endpoint-peer"
+		nodeRecordID = "node-record"
+	)
+	c := &DWNClient{
+		logger: slog.New(handler),
+		nodes: map[string]*NodeRecord{
+			peerDID: {DID: peerDID, RecordID: nodeRecordID},
+		},
+	}
+
+	entry := json.RawMessage(`{"recordsWrite":{"recordId":"endpoint-record","descriptor":{"recipient":"` +
+		peerDID + `","parentId":"` + nodeRecordID + `"},"encodedData":"AAAA","encryption":{}}}`)
+	wantErr := errors.New("delivery query failed")
+	failing := func([]byte, *dwncrypto.Encryption) ([]byte, error) {
+		return nil, wantErr
+	}
+
+	for range 2 {
+		if err := c.loadEndpointEntry(context.Background(), entry, failing); !errors.Is(err, wantErr) {
+			t.Fatalf("loadEndpointEntry error = %v, want %v", err, wantErr)
+		}
+	}
+	if got := c.UnreadableEndpointCount(); got != 2 {
+		t.Fatalf("UnreadableEndpointCount = %d, want 2", got)
+	}
+	if !handler.warnFor(peerDID) {
+		t.Fatalf("expected endpoint warning naming %q", peerDID)
+	}
+	if got := handler.count(slog.LevelWarn, "endpoint record could not be loaded; peer connectivity may be degraded"); got != 1 {
+		t.Fatalf("endpoint warnings = %d, want 1 for repeated identical failure", got)
+	}
+
+	recovered := func([]byte, *dwncrypto.Encryption) ([]byte, error) {
+		return []byte(`{"localEndpoints":["192.0.2.1:1234"],"discoKey":"disco","updatedAt":"2026-07-11T00:00:00Z"}`), nil
+	}
+	if err := c.loadEndpointEntry(context.Background(), entry, recovered); err != nil {
+		t.Fatalf("recovered loadEndpointEntry: %v", err)
+	}
+	if got := len(c.nodes[peerDID].Endpoints); got != 1 {
+		t.Fatalf("peer endpoints = %d, want 1 after recovery", got)
+	}
+	if got := handler.count(slog.LevelInfo, "endpoint record is readable again"); got != 1 {
+		t.Fatalf("endpoint recovery logs = %d, want 1", got)
+	}
+}
+
+func TestLoadChildRecordsPropagatesRateLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		sealedMockReply(t, w, "query", dwn.Status{Code: http.StatusOK, Detail: "OK"}, []json.RawMessage{
+			json.RawMessage(`{"recordId":"endpoint-record"}`),
+		})
+	}))
+	defer server.Close()
+
+	identity, err := did.Generate()
+	if err != nil {
+		t.Fatalf("generate query signer: %v", err)
+	}
+	signer := &dwn.Signer{DID: identity.URI, PrivateKey: identity.SigningKey}
+	client := NewDWNClient(
+		server.URL,
+		identity.URI,
+		"network-record",
+		identity.URI,
+		signer,
+	)
+	wantErr := fmt.Errorf("delivery lookup: %w", dwn.ErrRateLimited)
+	count, err := client.loadChildRecords(
+		context.Background(),
+		"network/node/endpoint",
+		"network-record/node-record",
+		"",
+		func(context.Context, json.RawMessage, EntryDecryptor) error {
+			return wantErr
+		},
+	)
+	if !errors.Is(err, dwn.ErrRateLimited) {
+		t.Fatalf("loadChildRecords error = %v, want ErrRateLimited", err)
+	}
+	if count != 0 {
+		t.Fatalf("loadChildRecords count = %d, want 0 for incomplete snapshot", count)
 	}
 }

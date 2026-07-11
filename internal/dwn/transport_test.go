@@ -3,11 +3,13 @@ package dwn
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewJsonRpcRequest(t *testing.T) {
@@ -393,11 +395,8 @@ func TestHTTPTransportSend(t *testing.T) {
 		}
 
 		var rpcErr *JsonRpcError
-		if ok := errorAs(err, &rpcErr); !ok {
-			// The error might not unwrap directly, check the message.
-			if !strings.Contains(err.Error(), "missing required field") {
-				t.Errorf("error = %v, should mention 'missing required field'", err)
-			}
+		if !errors.As(err, &rpcErr) {
+			t.Fatalf("error = %T %v, want *JsonRpcError", err, err)
 		}
 	})
 
@@ -416,8 +415,15 @@ func TestHTTPTransportSend(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for rate limit")
 		}
-		if !strings.Contains(err.Error(), "rate limit") {
-			t.Errorf("error = %v, should mention rate limit", err)
+		if !errors.Is(err, ErrRateLimited) {
+			t.Fatalf("errors.Is(%v, ErrRateLimited) = false", err)
+		}
+		var rateErr *RateLimitError
+		if !errors.As(err, &rateErr) {
+			t.Fatalf("error = %T %v, want *RateLimitError", err, err)
+		}
+		if rateErr.RetryAfter != 5*time.Second {
+			t.Errorf("RetryAfter = %v, want 5s", rateErr.RetryAfter)
 		}
 	})
 }
@@ -455,11 +461,6 @@ func TestHTTPTransportNoTenantInURL(t *testing.T) {
 	}
 }
 
-// errorAs is a helper to match errors.As with a pointer type.
-func errorAs(err error, target any) bool {
-	return false // JsonRpcError implements error interface but may not unwrap directly
-}
-
 func TestJsonRpcErrorInterface(t *testing.T) {
 	err := &JsonRpcError{
 		Code:    JsonRpcInvalidParams,
@@ -470,5 +471,119 @@ func TestJsonRpcErrorInterface(t *testing.T) {
 	var e error = err
 	if e.Error() != "JSON-RPC error -32602: test error" {
 		t.Errorf("Error() = %q", e.Error())
+	}
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, time.July, 11, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+		ok    bool
+	}{
+		{name: "delay seconds", value: "5", want: 5 * time.Second, ok: true},
+		{name: "trimmed delay seconds", value: " 5 ", want: 5 * time.Second, ok: true},
+		{name: "zero", value: "0", want: 0, ok: true},
+		{name: "HTTP date", value: now.Add(7 * time.Second).Format(http.TimeFormat), want: 7 * time.Second, ok: true},
+		{name: "past HTTP date", value: now.Add(-time.Second).Format(http.TimeFormat), want: 0, ok: true},
+		{name: "empty", value: "", ok: false},
+		{name: "negative", value: "-1", ok: false},
+		{name: "fraction", value: "1.5", ok: false},
+		{name: "malformed", value: "later", ok: false},
+		{name: "duration overflow", value: "9223372037", ok: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseRetryAfter(tc.value, now)
+			if ok != tc.ok {
+				t.Fatalf("parseRetryAfter(%q) ok = %v, want %v", tc.value, ok, tc.ok)
+			}
+			if tc.ok && got != tc.want {
+				t.Errorf("parseRetryAfter(%q) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHTTPTransportRateLimitClassification(t *testing.T) {
+	signer := newTestSigner(t)
+
+	tests := []struct {
+		name      string
+		status    int
+		header    string
+		rpcErr    *JsonRpcError
+		wantRetry time.Duration
+		wantRate  bool
+	}{
+		{name: "JSON-RPC retry data", status: http.StatusOK, rpcErr: &JsonRpcError{Code: JsonRpcTooManyRequests, Message: "tenant limited", Data: json.RawMessage(`{"retryAfterSec":2}`)}, wantRetry: 2 * time.Second, wantRate: true},
+		{name: "header overrides JSON-RPC data", status: http.StatusTooManyRequests, header: "5", rpcErr: &JsonRpcError{Code: JsonRpcTooManyRequests, Message: "tenant limited", Data: json.RawMessage(`{"retryAfterSec":2}`)}, wantRetry: 5 * time.Second, wantRate: true},
+		{name: "JSON-RPC default delay", status: http.StatusOK, rpcErr: &JsonRpcError{Code: JsonRpcTooManyRequests, Message: "tenant limited"}, wantRetry: time.Second, wantRate: true},
+		{name: "message text alone is not rate limit", status: http.StatusOK, rpcErr: &JsonRpcError{Code: JsonRpcInvalidParams, Message: "RateLimitExceeded: not actually a 429"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.header != "" {
+					w.Header().Set("Retry-After", tc.header)
+				}
+				w.WriteHeader(tc.status)
+				if err := json.NewEncoder(w).Encode(JsonRpcResponse{JSONRPC: "2.0", ID: "test", Error: tc.rpcErr}); err != nil {
+					t.Errorf("encoding response: %v", err)
+				}
+			}))
+			defer server.Close()
+
+			transport := NewHTTPTransport(server.URL)
+			msg, _ := BuildRecordsQuery(signer, RecordsFilter{Protocol: "test"}, "", nil, "")
+
+			_, err := transport.Send(context.Background(), "did:dht:target", msg, nil)
+			if err == nil {
+				t.Fatal("expected transport error")
+			}
+
+			gotRate := errors.Is(err, ErrRateLimited)
+			if gotRate != tc.wantRate {
+				t.Fatalf("errors.Is(%v, ErrRateLimited) = %v, want %v", err, gotRate, tc.wantRate)
+			}
+			if !tc.wantRate {
+				var rpcErr *JsonRpcError
+				if !errors.As(err, &rpcErr) {
+					t.Fatalf("error = %T %v, want *JsonRpcError", err, err)
+				}
+				return
+			}
+
+			var rateErr *RateLimitError
+			if !errors.As(err, &rateErr) {
+				t.Fatalf("error = %T %v, want *RateLimitError", err, err)
+			}
+			if rateErr.RetryAfter != tc.wantRetry {
+				t.Errorf("RetryAfter = %v, want %v", rateErr.RetryAfter, tc.wantRetry)
+			}
+		})
+	}
+}
+
+func TestHTTPTransportPreservesCanceledContext(t *testing.T) {
+	signer := newTestSigner(t)
+	msg, err := BuildRecordsQuery(signer, RecordsFilter{Protocol: "test"}, "", nil, "")
+	if err != nil {
+		t.Fatalf("BuildRecordsQuery: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	transport := NewHTTPTransport("http://127.0.0.1:1")
+	_, err = transport.Send(ctx, "did:dht:target", msg, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Send error = %v, want context canceled", err)
+	}
+	if !errors.Is(err, ErrTransport) {
+		t.Fatalf("Send error = %v, want ErrTransport", err)
 	}
 }

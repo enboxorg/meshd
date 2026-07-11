@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,16 +29,37 @@ var (
 	ErrRateLimited = errors.New("rate limited")
 )
 
+// RateLimitError reports a DWN rate-limit response and carries the delay the
+// server asked the caller to observe before retrying.
+//
+// It unwraps to ErrRateLimited so callers can use errors.Is without depending
+// on transport-specific response details.
+type RateLimitError struct {
+	RetryAfter time.Duration
+	Detail     string
+}
+
+func (e *RateLimitError) Error() string {
+	if e == nil || e.Detail == "" {
+		return ErrRateLimited.Error()
+	}
+	return fmt.Sprintf("%s: %s", ErrRateLimited, e.Detail)
+}
+
+func (e *RateLimitError) Unwrap() error {
+	return ErrRateLimited
+}
+
 //
 // --- JSON-RPC 2.0 types ---
 //
 
 // JsonRpcRequest is a JSON-RPC 2.0 request per the DWN server wire protocol.
 type JsonRpcRequest struct {
-	JSONRPC      string              `json:"jsonrpc"`
-	ID           string              `json:"id,omitempty"`
-	Method       string              `json:"method"`
-	Params       *JsonRpcParams      `json:"params,omitempty"`
+	JSONRPC      string               `json:"jsonrpc"`
+	ID           string               `json:"id,omitempty"`
+	Method       string               `json:"method"`
+	Params       *JsonRpcParams       `json:"params,omitempty"`
 	Subscription *JsonRpcSubscription `json:"subscription,omitempty"`
 }
 
@@ -55,10 +78,10 @@ type JsonRpcSubscription struct {
 
 // JsonRpcResponse is a JSON-RPC 2.0 response.
 type JsonRpcResponse struct {
-	JSONRPC string           `json:"jsonrpc"`
-	ID      string           `json:"id,omitempty"`
-	Result  *JsonRpcResult   `json:"result,omitempty"`
-	Error   *JsonRpcError    `json:"error,omitempty"`
+	JSONRPC string         `json:"jsonrpc"`
+	ID      string         `json:"id,omitempty"`
+	Result  *JsonRpcResult `json:"result,omitempty"`
+	Error   *JsonRpcError  `json:"error,omitempty"`
 }
 
 // JsonRpcResult wraps the DWN reply.
@@ -97,7 +120,9 @@ func (e *JsonRpcError) Error() string {
 
 // JSON-RPC error codes matching the DWN server.
 const (
-	JsonRpcInvalidParams = -32602
+	JsonRpcInvalidParams       = -32602
+	JsonRpcTooManyRequests     = -50429
+	defaultRateLimitRetryAfter = time.Second
 )
 
 // JSON-RPC method names.
@@ -262,7 +287,7 @@ func (t *HTTPTransport) Send(ctx context.Context, target string, msg *Message, d
 
 	resp, err := t.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("%w: sending HTTP request: %v", ErrTransport, err)
+		return nil, fmt.Errorf("%w: sending HTTP request: %w", ErrTransport, err)
 	}
 	defer resp.Body.Close()
 
@@ -283,7 +308,13 @@ func (t *HTTPTransport) parseResponse(resp *http.Response) (*SendResult, error) 
 		}
 
 		if rpcResp.Error != nil {
+			if rpcResp.Error.Code == JsonRpcTooManyRequests || resp.StatusCode == http.StatusTooManyRequests {
+				return nil, newRateLimitError(resp, rpcResp.Error, "")
+			}
 			return nil, rpcResp.Error
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return nil, newRateLimitError(resp, nil, "HTTP 429")
 		}
 
 		// Read the binary data from the body.
@@ -305,23 +336,32 @@ func (t *HTTPTransport) parseResponse(resp *http.Response) (*SendResult, error) 
 		return nil, fmt.Errorf("%w: reading response body: %v", ErrTransport, err)
 	}
 
-	// Handle non-JSON-RPC error responses (e.g., per-IP rate limit).
+	var rpcResp JsonRpcResponse
+	parseErr := json.Unmarshal(respBody, &rpcResp)
+
+	// HTTP 429 is authoritative even when a per-IP limiter returns plain JSON
+	// instead of a JSON-RPC envelope.
 	if resp.StatusCode == http.StatusTooManyRequests {
-		// Try to parse as JSON-RPC first.
-		var rpcResp JsonRpcResponse
-		if err := json.Unmarshal(respBody, &rpcResp); err == nil && rpcResp.Error != nil {
-			return nil, fmt.Errorf("%w: %s", ErrRateLimited, rpcResp.Error.Message)
+		var rpcErr *JsonRpcError
+		if parseErr == nil {
+			rpcErr = rpcResp.Error
 		}
-		return nil, fmt.Errorf("%w: HTTP 429: %s", ErrRateLimited, string(respBody))
+		detail := "HTTP 429"
+		if rpcErr == nil && len(strings.TrimSpace(string(respBody))) > 0 {
+			detail += ": " + strings.TrimSpace(string(respBody))
+		}
+		return nil, newRateLimitError(resp, rpcErr, detail)
 	}
 
-	var rpcResp JsonRpcResponse
-	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
+	if parseErr != nil {
 		return nil, fmt.Errorf("%w: parsing response body (HTTP %d): %s: %v",
-			ErrTransport, resp.StatusCode, string(respBody), err)
+			ErrTransport, resp.StatusCode, string(respBody), parseErr)
 	}
 
 	if rpcResp.Error != nil {
+		if rpcResp.Error.Code == JsonRpcTooManyRequests {
+			return nil, newRateLimitError(resp, rpcResp.Error, "")
+		}
 		return nil, rpcResp.Error
 	}
 
@@ -330,4 +370,68 @@ func (t *HTTPTransport) parseResponse(resp *http.Response) (*SendResult, error) 
 		result.Reply = rpcResp.Result.Reply
 	}
 	return result, nil
+}
+
+func newRateLimitError(resp *http.Response, rpcErr *JsonRpcError, fallbackDetail string) *RateLimitError {
+	retryAfter, ok := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+	if !ok && rpcErr != nil {
+		retryAfter, ok = retryAfterFromRPCData(rpcErr.Data)
+	}
+	if !ok {
+		retryAfter = defaultRateLimitRetryAfter
+	}
+
+	detail := fallbackDetail
+	if rpcErr != nil && strings.TrimSpace(rpcErr.Message) != "" {
+		detail = strings.TrimSpace(rpcErr.Message)
+	}
+
+	return &RateLimitError{RetryAfter: retryAfter, Detail: detail}
+}
+
+// parseRetryAfter parses both Retry-After forms defined by HTTP: a decimal
+// delay in seconds or an HTTP date. Invalid and overflowing values are ignored.
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+
+	if seconds, err := strconv.ParseUint(value, 10, 64); err == nil {
+		return retryAfterSeconds(seconds)
+	}
+
+	retryAt, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	delay := retryAt.Sub(now)
+	if delay < 0 {
+		return 0, true
+	}
+	return delay, true
+}
+
+func retryAfterFromRPCData(raw json.RawMessage) (time.Duration, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var data struct {
+		RetryAfterSec *int64 `json:"retryAfterSec"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return 0, false
+	}
+	if data.RetryAfterSec == nil || *data.RetryAfterSec < 0 {
+		return 0, false
+	}
+	return retryAfterSeconds(uint64(*data.RetryAfterSec))
+}
+
+func retryAfterSeconds(seconds uint64) (time.Duration, bool) {
+	maxSeconds := uint64(time.Duration(1<<63-1) / time.Second)
+	if seconds > maxSeconds {
+		return 0, false
+	}
+	return time.Duration(seconds) * time.Second, true
 }
