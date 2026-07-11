@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.2](https://github.com/enboxorg/meshd/compare/v0.21.1...v0.21.2) (2026-07-11)
+
+
+### Bug Fixes
+
+* preserve peer identity across membership changes ([#236](https://github.com/enboxorg/meshd/issues/236)) ([a3f08fe](https://github.com/enboxorg/meshd/commit/a3f08fe472bdeae97cbe197b267d1de487c46946))
+
 ## [0.21.1](https://github.com/enboxorg/meshd/compare/v0.21.0...v0.21.1) (2026-07-11)
 
 
