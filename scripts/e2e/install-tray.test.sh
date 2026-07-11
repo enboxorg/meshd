@@ -31,11 +31,26 @@ cat > "${FAKE_BIN}/launchctl" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$MESHD_TEST_LAUNCHCTL_LOG"
 case "${1:-}" in
-  print|kickstart) exit 0 ;;
+  print)
+    test -f "$HOME/.meshd-test-launchctl-loaded"
+    ;;
+  kickstart)
+    printf 'tray-start\n' >> "${MESHD_TEST_EVENT_LOG:?}"
+    test -f "$HOME/.meshd-test-launchctl-loaded" || exit 1
+    exit "${MESHD_TEST_KICKSTART_EXIT:-0}"
+    ;;
   *) exit 1 ;;
 esac
 FAKE
 chmod +x "${FAKE_BIN}/launchctl"
+
+cat > "${FAKE_BIN}/open" <<'FAKE'
+#!/usr/bin/env bash
+printf 'tray-open\n' >> "${MESHD_TEST_EVENT_LOG:?}"
+printf '%s\n' "$@" > "${MESHD_TEST_OPEN_ARGV_LOG:?}"
+exit "${MESHD_TEST_OPEN_EXIT:-0}"
+FAKE
+chmod +x "${FAKE_BIN}/open"
 
 cat > "${PAYLOAD}/meshd" <<'FAKE'
 #!/usr/bin/env bash
@@ -52,7 +67,11 @@ cat > "${PAYLOAD}/meshd-tray.app/Contents/MacOS/meshd-tray" <<'FAKE'
 # tray fixture: first
 printf 'tray-install\n' >> "${MESHD_TEST_EVENT_LOG:?}"
 printf '%s\n' "$@" >> "${MESHD_TEST_TRAY_ARGV_LOG:?}"
-exit "${MESHD_TEST_TRAY_EXIT:-0}"
+code="${MESHD_TEST_TRAY_EXIT:-0}"
+if [ "$code" -eq 0 ]; then
+  touch "$HOME/.meshd-test-launchctl-loaded"
+fi
+exit "$code"
 FAKE
 printf '<plist><dict><key>LSUIElement</key><true/></dict></plist>\n' > "${PAYLOAD}/meshd-tray.app/Contents/Info.plist"
 chmod +x "${PAYLOAD}/meshd" "${PAYLOAD}/meshd-tray.app/Contents/MacOS/meshd-tray"
@@ -70,6 +89,7 @@ output="$(
   VERSION="$VERSION_TAG" \
   MESHD_INSTALL_DOWNLOAD_BASE="file://${WORK}/dist" \
   MESHD_INSTALL_LAUNCHCTL="${FAKE_BIN}/launchctl" \
+  MESHD_INSTALL_OPEN="${FAKE_BIN}/open" \
   MESHD_TEST_LAUNCHCTL_LOG="$LAUNCHCTL_LOG" \
   MESHD_TEST_EVENT_LOG="$EVENT_LOG" \
   MESHD_TEST_MESHD_ARGV_LOG="$MESHD_ARGV_LOG" \
@@ -83,10 +103,10 @@ test -f "${HOME_DIR}/.meshd/meshd-tray.app/Contents/Info.plist"
 test -L "${HOME_DIR}/.meshd/bin/meshd-tray"
 test "$(readlink "${HOME_DIR}/.meshd/bin/meshd-tray")" = "${HOME_DIR}/.meshd/meshd-tray.app/Contents/MacOS/meshd-tray"
 grep -q 'tray fixture: first' "${HOME_DIR}/.meshd/meshd-tray.app/Contents/MacOS/meshd-tray"
-grep -q '^kickstart -k gui/[0-9][0-9]*/org.enbox.meshd-tray$' "$LAUNCHCTL_LOG"
+grep -q '^kickstart gui/[0-9][0-9]*/org.enbox.meshd-tray$' "$LAUNCHCTL_LOG"
 test "$(cat "$MESHD_ARGV_LOG")" = "$(printf 'up\nmeshd://invite/test-token\n--profile\nwork')"
 test "$(cat "$TRAY_ARGV_LOG")" = "$(printf 'install\n--profile\nwork')"
-test "$(cat "$EVENT_LOG")" = "$(printf 'meshd-up\ntray-install')"
+test "$(cat "$EVENT_LOG")" = "$(printf 'meshd-up\ntray-install\ntray-start')"
 test -f "${HOME_DIR}/.meshd/.tray-autostart-initialized"
 grep -q 'Enabling meshd-tray at login' <<<"$output"
 
@@ -99,6 +119,7 @@ PATH="${FAKE_BIN}:$PATH" \
 VERSION="$VERSION_TAG" \
 MESHD_INSTALL_DOWNLOAD_BASE="file://${WORK}/dist" \
 MESHD_INSTALL_LAUNCHCTL="${FAKE_BIN}/launchctl" \
+MESHD_INSTALL_OPEN="${FAKE_BIN}/open" \
 MESHD_TEST_LAUNCHCTL_LOG="$LAUNCHCTL_LOG" \
 MESHD_TEST_EVENT_LOG="$EVENT_LOG" \
 MESHD_TEST_MESHD_ARGV_LOG="$MESHD_ARGV_LOG" \
@@ -107,7 +128,8 @@ MESHD_TEST_TRAY_ARGV_LOG="$TRAY_ARGV_LOG" \
 
 grep -q 'tray fixture: second' "${HOME_DIR}/.meshd/meshd-tray.app/Contents/MacOS/meshd-tray"
 test ! -e "${HOME_DIR}/.meshd/meshd-tray.app.previous"
-test "$(grep -c '^kickstart -k gui/[0-9][0-9]*/org.enbox.meshd-tray$' "$LAUNCHCTL_LOG")" -eq 2
+test "$(grep -c '^kickstart gui/[0-9][0-9]*/org.enbox.meshd-tray$' "$LAUNCHCTL_LOG")" -eq 1
+test "$(grep -c '^kickstart -k gui/[0-9][0-9]*/org.enbox.meshd-tray$' "$LAUNCHCTL_LOG")" -eq 1
 test "$(cat "$TRAY_ARGV_LOG")" = "$(printf 'install\n--profile\nwork')"
 
 # A plain first install also enables the tray without running meshd up.
@@ -122,6 +144,7 @@ plain_output="$(
   VERSION="$VERSION_TAG" \
   MESHD_INSTALL_DOWNLOAD_BASE="file://${WORK}/dist" \
   MESHD_INSTALL_LAUNCHCTL="${FAKE_BIN}/launchctl" \
+  MESHD_INSTALL_OPEN="${FAKE_BIN}/open" \
   MESHD_TEST_LAUNCHCTL_LOG="$LAUNCHCTL_LOG" \
   MESHD_TEST_EVENT_LOG="$PLAIN_EVENT_LOG" \
   MESHD_TEST_MESHD_ARGV_LOG="$PLAIN_MESHD_ARGV_LOG" \
@@ -130,9 +153,37 @@ plain_output="$(
 )"
 test ! -e "$PLAIN_MESHD_ARGV_LOG"
 test "$(cat "$PLAIN_TRAY_ARGV_LOG")" = 'install'
-test "$(cat "$PLAIN_EVENT_LOG")" = 'tray-install'
+test "$(cat "$PLAIN_EVENT_LOG")" = "$(printf 'tray-install\ntray-start')"
 test -f "${PLAIN_HOME}/.meshd/.tray-autostart-initialized"
 grep -q 'Run: meshd up' <<<"$plain_output"
+
+# If launchd cannot start a successfully registered tray, the installer falls
+# back to launching the app through LaunchServices.
+FALLBACK_HOME="${WORK}/fallback-home"
+FALLBACK_EVENT_LOG="${WORK}/fallback-events.log"
+FALLBACK_MESHD_ARGV_LOG="${WORK}/fallback-meshd-argv.log"
+FALLBACK_TRAY_ARGV_LOG="${WORK}/fallback-tray-argv.log"
+FALLBACK_OPEN_ARGV_LOG="${WORK}/fallback-open-argv.log"
+mkdir -p "$FALLBACK_HOME"
+HOME="$FALLBACK_HOME" \
+PATH="${FAKE_BIN}:$PATH" \
+VERSION="$VERSION_TAG" \
+MESHD_INSTALL_DOWNLOAD_BASE="file://${WORK}/dist" \
+MESHD_INSTALL_LAUNCHCTL="${FAKE_BIN}/launchctl" \
+MESHD_INSTALL_OPEN="${FAKE_BIN}/open" \
+MESHD_TEST_LAUNCHCTL_LOG="$LAUNCHCTL_LOG" \
+MESHD_TEST_EVENT_LOG="$FALLBACK_EVENT_LOG" \
+MESHD_TEST_MESHD_ARGV_LOG="$FALLBACK_MESHD_ARGV_LOG" \
+MESHD_TEST_TRAY_ARGV_LOG="$FALLBACK_TRAY_ARGV_LOG" \
+MESHD_TEST_OPEN_ARGV_LOG="$FALLBACK_OPEN_ARGV_LOG" \
+MESHD_TEST_KICKSTART_EXIT=9 \
+  bash "$INSTALL" --no-modify-path up 'meshd://invite/fallback-token' --profile work >/dev/null
+
+test "$(cat "$FALLBACK_MESHD_ARGV_LOG")" = "$(printf 'up\nmeshd://invite/fallback-token\n--profile\nwork')"
+test "$(cat "$FALLBACK_TRAY_ARGV_LOG")" = "$(printf 'install\n--profile\nwork')"
+test "$(cat "$FALLBACK_OPEN_ARGV_LOG")" = "$(printf '%s\n--args\n--profile\nwork' "${FALLBACK_HOME}/.meshd/meshd-tray.app")"
+test "$(cat "$FALLBACK_EVENT_LOG")" = "$(printf 'meshd-up\ntray-install\ntray-start\ntray-open')"
+test -f "${FALLBACK_HOME}/.meshd/.tray-autostart-initialized"
 
 # Headless tray registration is optional: a successful invite remains
 # successful, emits an absolute retry command, and can be retried later.
@@ -147,6 +198,7 @@ PATH="${FAKE_BIN}:$PATH" \
 VERSION="$VERSION_TAG" \
 MESHD_INSTALL_DOWNLOAD_BASE="file://${WORK}/dist" \
 MESHD_INSTALL_LAUNCHCTL="${FAKE_BIN}/launchctl" \
+MESHD_INSTALL_OPEN="${FAKE_BIN}/open" \
 MESHD_TEST_LAUNCHCTL_LOG="$LAUNCHCTL_LOG" \
 MESHD_TEST_EVENT_LOG="$WARN_EVENT_LOG" \
 MESHD_TEST_MESHD_ARGV_LOG="$WARN_MESHD_ARGV_LOG" \
@@ -178,6 +230,7 @@ PATH="${FAKE_BIN}:$PATH" \
 VERSION="$VERSION_TAG" \
 MESHD_INSTALL_DOWNLOAD_BASE="file://${WORK}/dist" \
 MESHD_INSTALL_LAUNCHCTL="${FAKE_BIN}/launchctl" \
+MESHD_INSTALL_OPEN="${FAKE_BIN}/open" \
 MESHD_TEST_LAUNCHCTL_LOG="$LAUNCHCTL_LOG" \
 MESHD_TEST_EVENT_LOG="$FAIL_EVENT_LOG" \
 MESHD_TEST_MESHD_ARGV_LOG="$FAIL_MESHD_ARGV_LOG" \

@@ -11,6 +11,7 @@ TRAY_SWAP_ACTIVE=false
 TRAY_LAUNCH_AGENT_LABEL='org.enbox.meshd-tray'
 TRAY_AUTOSTART_MARKER="${HOME}/.${APP}/.tray-autostart-initialized"
 LAUNCHCTL="${MESHD_INSTALL_LAUNCHCTL:-/bin/launchctl}"
+OPEN="${MESHD_INSTALL_OPEN:-/usr/bin/open}"
 MESHD_WINDOWS_RESTART=false
 REQUESTED_VERSION="${VERSION:-}"
 # Test/ops override for the release download base (offline CI tests use a
@@ -43,7 +44,7 @@ Options:
 Everything after 'up' is passed to 'meshd up', so one command can install
 meshd, request to join a network, wait for dashboard approval, and start
 the mesh. On the first macOS install, the menu-bar app is also enabled at
-login after setup completes.
+login and started after setup completes.
 
 Examples:
   curl -fsSL https://meshd.sh/install | bash
@@ -237,6 +238,25 @@ restart_macos_tray_if_loaded() {
   fi
 }
 
+start_macos_tray_now() {
+  local profile="${1:-}"
+  local service="gui/$(id -u)/${TRAY_LAUNCH_AGENT_LABEL}"
+  local open_args=("$TRAY_APP_DIR")
+  if [ -n "$profile" ]; then
+    open_args+=(--args --profile "$profile")
+  fi
+  if [ -x "$LAUNCHCTL" ] && "$LAUNCHCTL" kickstart "$service" >/dev/null 2>&1; then
+    return
+  fi
+  if [ -x "$OPEN" ] && "$OPEN" "${open_args[@]}" >/dev/null 2>&1; then
+    return
+  fi
+
+  printf 'warning: meshd-tray was enabled at login but could not be started now; retry with:\n' >&2
+  print_shell_command "$OPEN" "${open_args[@]}" >&2
+  return 0
+}
+
 install_macos_tray() {
   local source_app="$1"
   local staged="${TRAY_APP_DIR}.new"
@@ -294,6 +314,7 @@ enable_macos_tray_at_login() {
 
   printf '\n==> Enabling meshd-tray at login\n'
   if "$tray" "${tray_args[@]}"; then
+    start_macos_tray_now "$profile"
     if ! (
       umask 077
       printf 'initialized\n' > "${TRAY_AUTOSTART_MARKER}.new" &&
