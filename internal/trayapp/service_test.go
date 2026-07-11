@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -51,9 +52,10 @@ func TestServiceConnectReportsCommandOutput(t *testing.T) {
 	}
 }
 
-func TestServiceDisconnectWaitsForSocketToClose(t *testing.T) {
+func TestServiceDisconnectWaitsForExactProcess(t *testing.T) {
 	socket := privateSocketPath(t)
 	server := daemon.NewServer(socket, nil, nil)
+	server.SetInstanceID("tray-instance")
 	if err := server.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -67,10 +69,20 @@ func TestServiceDisconnectWaitsForSocketToClose(t *testing.T) {
 	service.socket = socket
 	service.client = daemon.NewClient(socket)
 	service.disconnectPoll = time.Millisecond
+	var gotPID int
+	var gotPoll time.Duration
+	service.waitForExit = func(_ context.Context, pid int, poll time.Duration) error {
+		gotPID = pid
+		gotPoll = poll
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	if err := service.Disconnect(ctx); err != nil {
 		t.Fatalf("Disconnect: %v", err)
+	}
+	if gotPID != os.Getpid() || gotPoll != time.Millisecond {
+		t.Fatalf("process wait = pid %d poll %s, want pid %d poll 1ms", gotPID, gotPoll, os.Getpid())
 	}
 }
 
@@ -109,7 +121,11 @@ func TestServiceDisconnectDoesNotHideResponsiveServerError(t *testing.T) {
 	}
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v0/status" {
-			_, _ = w.Write([]byte("{"))
+			_ = json.NewEncoder(w).Encode(daemon.Status{
+				Running:    true,
+				PID:        os.Getpid(),
+				InstanceID: "responsive-instance",
+			})
 			return
 		}
 		http.Error(w, "shutdown rejected", http.StatusInternalServerError)
@@ -124,6 +140,102 @@ func TestServiceDisconnectDoesNotHideResponsiveServerError(t *testing.T) {
 	defer cancel()
 	if err := service.Disconnect(ctx); err == nil || !strings.Contains(err.Error(), "shutdown rejected") {
 		t.Fatalf("Disconnect error = %v, want responsive server error", err)
+	}
+}
+
+func TestServiceDisconnectAcceptsRequestRaceWhenCapturedProcessExited(t *testing.T) {
+	socket := privateSocketPath(t)
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v0/status" {
+			_ = json.NewEncoder(w).Encode(daemon.Status{
+				Running:    true,
+				PID:        5151,
+				InstanceID: "exited-instance",
+			})
+			return
+		}
+		http.Error(w, "socket closing", http.StatusInternalServerError)
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+
+	service := NewService("")
+	service.socket = socket
+	service.client = daemon.NewClient(socket)
+	service.processAlive = func(pid int) (bool, error) {
+		if pid != 5151 {
+			t.Fatalf("process check PID = %d, want 5151", pid)
+		}
+		return false, nil
+	}
+	if err := service.Disconnect(context.Background()); err != nil {
+		t.Fatalf("Disconnect request race: %v", err)
+	}
+}
+
+func TestServiceDisconnectTargetsObservedInstance(t *testing.T) {
+	socket := privateSocketPath(t)
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	targets := make(chan string, 1)
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v0/status" {
+			_ = json.NewEncoder(w).Encode(daemon.Status{
+				Running:    true,
+				PID:        4242,
+				InstanceID: "observed-instance",
+			})
+			return
+		}
+		targets <- r.Header.Get("X-Meshd-Instance-ID")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "shutting down"})
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+
+	service := NewService("")
+	service.socket = socket
+	service.client = daemon.NewClient(socket)
+	var gotPID int
+	service.waitForExit = func(_ context.Context, pid int, _ time.Duration) error {
+		gotPID = pid
+		return nil
+	}
+	if err := service.Disconnect(context.Background()); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	if got := <-targets; got != "observed-instance" {
+		t.Fatalf("shutdown target = %q, want observed-instance", got)
+	}
+	if gotPID != 4242 {
+		t.Fatalf("process wait PID = %d, want 4242", gotPID)
+	}
+}
+
+func TestServiceDisconnectReportsProcessWaitFailure(t *testing.T) {
+	socket := privateSocketPath(t)
+	server := daemon.NewServer(socket, nil, nil)
+	server.SetInstanceID("surviving-instance")
+	if err := server.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer server.Stop()
+
+	service := NewService("")
+	service.socket = socket
+	service.client = daemon.NewClient(socket)
+	service.waitForExit = func(context.Context, int, time.Duration) error {
+		return context.DeadlineExceeded
+	}
+	err := service.Disconnect(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "process "+strconv.Itoa(os.Getpid())) {
+		t.Fatalf("Disconnect wait error = %v", err)
 	}
 }
 

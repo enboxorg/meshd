@@ -727,6 +727,7 @@ func TestWaitForDaemonStartReturnsWhenChildExits(t *testing.T) {
 		filepath.Join(t.TempDir(), "missing.sock"),
 		30*time.Second,
 		true,
+		"startup-instance",
 		childExit,
 	)
 	if err == nil || !strings.Contains(err.Error(), "TUN startup failed") {
@@ -738,15 +739,164 @@ func TestWaitForDaemonStartReturnsWhenChildExits(t *testing.T) {
 }
 
 func TestValidateDaemonStartStatusRequiresRequestedTUN(t *testing.T) {
-	if err := validateDaemonStartStatus(&daemon.Status{}, false); err != nil {
+	if err := validateDaemonStartStatus(&daemon.Status{}, false, ""); err != nil {
 		t.Fatalf("explicit userspace status rejected: %v", err)
 	}
-	if err := validateDaemonStartStatus(&daemon.Status{TUNDevice: "meshd0"}, true); err != nil {
+	if err := validateDaemonStartStatus(&daemon.Status{TUNDevice: "meshd0"}, true, ""); err != nil {
 		t.Fatalf("TUN status rejected: %v", err)
 	}
-	if err := validateDaemonStartStatus(&daemon.Status{}, true); err == nil ||
+	if err := validateDaemonStartStatus(&daemon.Status{}, true, ""); err == nil ||
 		!strings.Contains(err.Error(), "required TUN device") {
 		t.Fatalf("missing TUN error = %v", err)
+	}
+}
+
+func TestValidateDaemonStartStatusRequiresMatchingInstance(t *testing.T) {
+	status := &daemon.Status{InstanceID: "different-instance", TUNDevice: "meshd0"}
+	err := validateDaemonStartStatus(status, true, "launched-instance")
+	if err == nil || !strings.Contains(err.Error(), "startup instance mismatch") {
+		t.Fatalf("instance mismatch error = %v", err)
+	}
+	if err := validateDaemonStartStatus(
+		&daemon.Status{InstanceID: "launched-instance", TUNDevice: "meshd0"},
+		true,
+		"launched-instance",
+	); err != nil {
+		t.Fatalf("matching startup instance rejected: %v", err)
+	}
+}
+
+func TestResolveDaemonInstanceIDOnlyTrustsBackgroundChild(t *testing.T) {
+	got, err := resolveDaemonInstanceID(true, "  launched-instance  ")
+	if err != nil || got != "launched-instance" {
+		t.Fatalf("background instance ID = %q, %v", got, err)
+	}
+
+	got, err = resolveDaemonInstanceID(false, "user-exported-internal-value")
+	if err != nil {
+		t.Fatalf("foreground instance ID: %v", err)
+	}
+	if got == "" || got == "user-exported-internal-value" {
+		t.Fatalf("foreground trusted internal environment value: %q", got)
+	}
+}
+
+type fakeDaemonShutdownClient struct {
+	shutdownCalls int
+	targets       []string
+	shutdownErr   error
+	targetErr     error
+}
+
+func (c *fakeDaemonShutdownClient) Shutdown(context.Context) error {
+	c.shutdownCalls++
+	return c.shutdownErr
+}
+
+func (c *fakeDaemonShutdownClient) ShutdownInstance(_ context.Context, instanceID string) error {
+	c.targets = append(c.targets, instanceID)
+	return c.targetErr
+}
+
+func TestShutdownDaemonProcessTargetsCapturedInstanceAndPID(t *testing.T) {
+	client := &fakeDaemonShutdownClient{}
+	var gotPID int
+	var gotPoll time.Duration
+	var hadDeadline bool
+	err := shutdownDaemonProcess(
+		context.Background(),
+		client,
+		&daemon.Status{PID: 4242, InstanceID: "instance-4242"},
+		func(ctx context.Context, pid int, poll time.Duration) error {
+			gotPID = pid
+			gotPoll = poll
+			_, hadDeadline = ctx.Deadline()
+			return nil
+		},
+		func(int) (bool, error) { return true, nil },
+	)
+	if err != nil {
+		t.Fatalf("shutdownDaemonProcess: %v", err)
+	}
+	if !reflect.DeepEqual(client.targets, []string{"instance-4242"}) || client.shutdownCalls != 0 {
+		t.Fatalf("targeted calls = %v, legacy calls = %d", client.targets, client.shutdownCalls)
+	}
+	if gotPID != 4242 || gotPoll != daemonStopPoll || !hadDeadline {
+		t.Fatalf("wait = pid %d poll %s deadline %v", gotPID, gotPoll, hadDeadline)
+	}
+}
+
+func TestShutdownDaemonProcessLegacyStatusUsesUntargetedRequest(t *testing.T) {
+	client := &fakeDaemonShutdownClient{}
+	err := shutdownDaemonProcess(
+		context.Background(),
+		client,
+		&daemon.Status{PID: 73},
+		func(context.Context, int, time.Duration) error { return nil },
+		func(int) (bool, error) { return true, nil },
+	)
+	if err != nil {
+		t.Fatalf("shutdownDaemonProcess legacy: %v", err)
+	}
+	if client.shutdownCalls != 1 || len(client.targets) != 0 {
+		t.Fatalf("legacy calls = %d, targeted calls = %v", client.shutdownCalls, client.targets)
+	}
+}
+
+func TestShutdownDaemonProcessReturnsWaitFailure(t *testing.T) {
+	client := &fakeDaemonShutdownClient{}
+	err := shutdownDaemonProcess(
+		context.Background(),
+		client,
+		&daemon.Status{PID: 8181, InstanceID: "survivor"},
+		func(context.Context, int, time.Duration) error { return context.DeadlineExceeded },
+		func(int) (bool, error) { return true, nil },
+	)
+	if err == nil || !strings.Contains(err.Error(), "process 8181 did not exit") {
+		t.Fatalf("wait failure = %v", err)
+	}
+}
+
+func TestShutdownDaemonProcessNeverFallsBackAfterTargetedFailure(t *testing.T) {
+	client := &fakeDaemonShutdownClient{targetErr: daemon.ErrInstanceMismatch}
+	waitCalled := false
+	err := shutdownDaemonProcess(
+		context.Background(),
+		client,
+		&daemon.Status{PID: 9191, InstanceID: "stale-instance"},
+		func(context.Context, int, time.Duration) error {
+			waitCalled = true
+			return nil
+		},
+		func(int) (bool, error) { return true, nil },
+	)
+	if !errors.Is(err, daemon.ErrInstanceMismatch) {
+		t.Fatalf("targeted failure = %v", err)
+	}
+	if client.shutdownCalls != 0 || waitCalled {
+		t.Fatalf("targeted failure fell back: legacy calls = %d wait = %v", client.shutdownCalls, waitCalled)
+	}
+}
+
+func TestShutdownDaemonProcessAcceptsRequestRaceOnlyWhenCapturedPIDExited(t *testing.T) {
+	client := &fakeDaemonShutdownClient{targetErr: errors.New("socket closed")}
+	err := shutdownDaemonProcess(
+		context.Background(),
+		client,
+		&daemon.Status{PID: 3131, InstanceID: "exited-instance"},
+		func(context.Context, int, time.Duration) error {
+			t.Fatal("wait should not run after the process was already verified gone")
+			return nil
+		},
+		func(pid int) (bool, error) {
+			if pid != 3131 {
+				t.Fatalf("process check PID = %d, want 3131", pid)
+			}
+			return false, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("shutdown race returned error: %v", err)
 	}
 }
 

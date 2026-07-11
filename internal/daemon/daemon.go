@@ -50,6 +50,7 @@ func DefaultSocketPath() string {
 // Status is the JSON response from GET /api/v0/status.
 type Status struct {
 	Running         bool         `json:"running"`
+	InstanceID      string       `json:"instanceID,omitempty"`
 	TUNDevice       string       `json:"tunDevice,omitempty"`
 	MeshIP          string       `json:"meshIP,omitempty"`
 	Network         string       `json:"network,omitempty"`
@@ -80,9 +81,13 @@ type Server struct {
 	statusFn   StatusFunc
 	startTime  time.Time
 
-	mu       sync.Mutex
-	listener net.Listener
-	srv      *http.Server
+	mu         sync.Mutex
+	listener   net.Listener
+	srv        *http.Server
+	socketInfo os.FileInfo
+
+	instanceMu sync.RWMutex
+	instanceID string
 
 	// shutdownCh is closed once when a shutdown request is received.
 	shutdownCh   chan struct{}
@@ -118,6 +123,20 @@ func (s *Server) SocketPath() string {
 	return s.socketPath
 }
 
+// SetInstanceID sets the identifier returned by status and used to target
+// shutdown requests. It should be called before Start.
+func (s *Server) SetInstanceID(instanceID string) {
+	s.instanceMu.Lock()
+	defer s.instanceMu.Unlock()
+	s.instanceID = instanceID
+}
+
+func (s *Server) currentInstanceID() string {
+	s.instanceMu.RLock()
+	defer s.instanceMu.RUnlock()
+	return s.instanceID
+}
+
 // Start begins listening on the Unix socket and serving HTTP requests.
 func (s *Server) Start() error {
 	s.mu.Lock()
@@ -143,22 +162,36 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", s.socketPath, err)
 	}
+	unixListener, ok := listener.(*net.UnixListener)
+	if !ok {
+		_ = listener.Close()
+		return fmt.Errorf("listener for %s is not a Unix listener", s.socketPath)
+	}
+	// UnixListener.Close otherwise unlinks by pathname even when that path was
+	// replaced by a newer daemon. Guarded cleanup below owns all unlinking.
+	unixListener.SetUnlinkOnClose(false)
+	socketInfo, err := os.Lstat(s.socketPath)
+	if err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("inspect listening socket %s: %w", s.socketPath, err)
+	}
 
 	uid, gid, changeOwner := sudoSocketOwner(os.Geteuid(), os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID"))
 	if err := secureSocketFile(s.socketPath, uid, gid, changeOwner); err != nil {
-		listener.Close()
-		_ = os.Remove(s.socketPath)
+		_ = listener.Close()
+		_ = removeSocketIfSame(s.socketPath, socketInfo)
 		return err
 	}
 
 	s.listener = listener
+	s.socketInfo = socketInfo
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v0/shutdown", s.handleShutdown)
 	mux.HandleFunc("GET /api/v0/status", s.handleStatus)
 
 	allowedUIDs := authorizedSocketUIDs(os.Geteuid(), os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID"))
-	s.srv = &http.Server{
+	httpServer := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if authorized, _ := r.Context().Value(peerAuthorizedContextKey{}).(bool); !authorized {
 				http.Error(w, "forbidden", http.StatusForbidden)
@@ -170,9 +203,10 @@ func (s *Server) Start() error {
 			return context.WithValue(ctx, peerAuthorizedContextKey{}, socketPeerAuthorized(conn, allowedUIDs))
 		},
 	}
+	s.srv = httpServer
 
 	go func() {
-		if err := s.srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 			s.logger.Warn("daemon server error", slog.Any("error", err))
 		}
 	}()
@@ -294,11 +328,35 @@ func (s *Server) Stop() {
 		_ = s.listener.Close()
 	}
 
-	_ = os.Remove(s.socketPath)
+	_ = removeSocketIfSame(s.socketPath, s.socketInfo)
+	s.srv = nil
+	s.listener = nil
+	s.socketInfo = nil
 	s.logger.Info("daemon control socket closed")
 }
 
+func removeSocketIfSame(path string, owned os.FileInfo) error {
+	if owned == nil {
+		return nil
+	}
+	current, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(owned, current) {
+		return nil
+	}
+	return os.Remove(path)
+}
+
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if target := r.Header.Get(instanceIDHeader); target != s.currentInstanceID() {
+		http.Error(w, ErrInstanceMismatch.Error(), http.StatusConflict)
+		return
+	}
 	s.logger.Info("shutdown requested via control socket")
 
 	w.Header().Set("Content-Type", "application/json")
@@ -321,6 +379,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		status.Running = true
 		status.PID = os.Getpid()
 	}
+	status.InstanceID = s.currentInstanceID()
 	status.Uptime = time.Since(s.startTime).Round(time.Second).String()
 
 	w.Header().Set("Content-Type", "application/json")
