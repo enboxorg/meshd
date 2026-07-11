@@ -36,34 +36,48 @@ type trayUI struct {
 	dashboard  *systray.MenuItem
 	copyIP     *systray.MenuItem
 	peers      *systray.MenuItem
+	peersTitle string
 	connect    *systray.MenuItem
 	disconnect *systray.MenuItem
 	quit       *systray.MenuItem
 
-	peerEmpty       *systray.MenuItem
-	peerItems       []*peerMenuSlot
-	peerSignature   string
-	iconInitialized bool
-	iconConnected   bool
+	peerEmpty         *systray.MenuItem
+	peerEmptyTitle    string
+	peerEmptyShown    bool
+	peerOverflow      *systray.MenuItem
+	peerOverflowTitle string
+	peerOverflowShown bool
+	peerItems         []*peerMenuSlot
+	peerSignature     string
+	iconInitialized   bool
+	iconConnected     bool
 }
 
 type peerMenuSlot struct {
 	item *systray.MenuItem
 
-	mu     sync.RWMutex
-	meshIP string
+	mu    sync.RWMutex
+	entry peerMenuEntry
 }
 
-func (slot *peerMenuSlot) setMeshIP(meshIP string) {
+func (slot *peerMenuSlot) setEntry(entry peerMenuEntry) {
 	slot.mu.Lock()
-	slot.meshIP = meshIP
+	slot.entry = entry
 	slot.mu.Unlock()
 }
 
-func (slot *peerMenuSlot) MeshIP() string {
+func (slot *peerMenuSlot) clear() {
+	slot.setEntry(peerMenuEntry{})
+}
+
+func (slot *peerMenuSlot) Entry() peerMenuEntry {
 	slot.mu.RLock()
 	defer slot.mu.RUnlock()
-	return slot.meshIP
+	return slot.entry
+}
+
+func (slot *peerMenuSlot) MeshIP() string {
+	return slot.Entry().MeshIP
 }
 
 func runTray(profile string) error {
@@ -84,8 +98,12 @@ func (ui *trayUI) onReady() {
 	ui.dashboard = systray.AddMenuItem("Open Dashboard…", "Open the active network in your browser")
 	ui.copyIP = systray.AddMenuItem("Copy Mesh IP", "Copy this device's mesh IP")
 	ui.peers = systray.AddMenuItem("Peers", "Click a peer to copy its mesh IP")
+	ui.peersTitle = "Peers"
 	ui.peerEmpty = ui.peers.AddSubMenuItem("Connect to view peers", "")
 	ui.peerEmpty.Disable()
+	ui.peerEmptyTitle = "Connect to view peers"
+	ui.peerEmptyShown = true
+	ui.initializePeerSlots()
 	systray.AddSeparator()
 	ui.connect = systray.AddMenuItem("Connect", "Start meshd")
 	ui.disconnect = systray.AddMenuItem("Disconnect", "Stop meshd")
@@ -260,47 +278,84 @@ func (ui *trayUI) renderPeers(connected bool, peers []trayapp.PeerView) {
 	}
 	ui.peerSignature = signature
 
-	if len(peers) == 0 {
-		ui.peers.SetTitle("Peers")
-		title := "Connect to view peers"
-		if connected {
-			title = "No peers"
-		}
-		ui.peerEmpty.SetTitle(title)
-		ui.peerEmpty.Show()
-		for _, slot := range ui.peerItems {
-			slot.setMeshIP("")
-			slot.item.Disable()
-			slot.item.Hide()
-		}
-		return
+	previousKeys := make([]string, len(ui.peerItems))
+	for index, slot := range ui.peerItems {
+		previousKeys[index] = slot.Entry().Key
 	}
-	ui.peerEmpty.Hide()
-	ui.peers.SetTitle(fmt.Sprintf("Peers (%d)", len(peers)))
-	ui.ensurePeerSlots(len(peers))
-	for index, peer := range peers {
-		slot := ui.peerItems[index]
-		slot.setMeshIP(peer.MeshIP)
-		slot.item.SetTitle(peer.Title)
-		slot.item.SetTooltip("Copy " + peer.MeshIP)
-		slot.item.Enable()
-		slot.item.Show()
+	plan := planPeerMenu(connected, peers, previousKeys)
+
+	if ui.peersTitle != plan.Title {
+		ui.peers.SetTitle(plan.Title)
+		ui.peersTitle = plan.Title
 	}
-	for _, slot := range ui.peerItems[len(peers):] {
-		slot.setMeshIP("")
-		slot.item.Disable()
-		slot.item.Hide()
+	if ui.peerEmptyTitle != plan.EmptyTitle {
+		ui.peerEmpty.SetTitle(plan.EmptyTitle)
+		ui.peerEmptyTitle = plan.EmptyTitle
+	}
+	if ui.peerEmptyShown != plan.EmptyVisible {
+		setVisible(ui.peerEmpty, plan.EmptyVisible)
+		ui.peerEmptyShown = plan.EmptyVisible
+	}
+	for index, entry := range plan.Slots {
+		ui.renderPeerSlot(ui.peerItems[index], entry)
+	}
+	if ui.peerOverflowTitle != plan.OverflowTitle {
+		ui.peerOverflow.SetTitle(plan.OverflowTitle)
+		ui.peerOverflowTitle = plan.OverflowTitle
+	}
+	if ui.peerOverflowShown != plan.OverflowVisible {
+		setVisible(ui.peerOverflow, plan.OverflowVisible)
+		ui.peerOverflowShown = plan.OverflowVisible
 	}
 }
 
-func (ui *trayUI) ensurePeerSlots(count int) {
-	for len(ui.peerItems) < count {
+func (ui *trayUI) initializePeerSlots() {
+	ui.peerItems = make([]*peerMenuSlot, 0, maxPeerMenuSlots)
+	for range maxPeerMenuSlots {
 		item := ui.peers.AddSubMenuItem("", "")
+		item.Disable()
 		item.Hide()
 		slot := &peerMenuSlot{item: item}
 		ui.peerItems = append(ui.peerItems, slot)
 		ui.startWorker(func() { ui.peerClicks(slot) })
 	}
+	ui.peerOverflow = ui.peers.AddSubMenuItem("", "")
+	ui.peerOverflow.Disable()
+	ui.peerOverflow.Hide()
+}
+
+func (ui *trayUI) renderPeerSlot(slot *peerMenuSlot, next peerMenuEntry) {
+	current := slot.Entry()
+	if !next.Visible {
+		// Clear the click binding before disabling the native item so an event
+		// already in flight can never copy a peer that has just disappeared.
+		slot.clear()
+		setEnabled(slot.item, false)
+		if current.Visible {
+			setVisible(slot.item, false)
+		}
+		return
+	}
+
+	remapped := current.Key != next.Key || current.MeshIP != next.MeshIP
+	if remapped {
+		// Keep an existing native menu item inert for the whole remap. This
+		// makes the title and the IP observed by its click worker change as one
+		// logical operation without adding or removing an NSMenuItem.
+		slot.clear()
+		setEnabled(slot.item, false)
+	}
+	if current.Title != next.Title || remapped {
+		slot.item.SetTitle(next.Title)
+	}
+	if current.Tooltip != next.Tooltip || remapped {
+		slot.item.SetTooltip(next.Tooltip)
+	}
+	slot.setEntry(next)
+	if !current.Visible {
+		setVisible(slot.item, true)
+	}
+	setEnabled(slot.item, true)
 }
 
 func (ui *trayUI) peerClicks(slot *peerMenuSlot) {
@@ -351,6 +406,14 @@ func setEnabled(item *systray.MenuItem, enabled bool) {
 		item.Enable()
 	} else if !enabled && !item.Disabled() {
 		item.Disable()
+	}
+}
+
+func setVisible(item *systray.MenuItem, visible bool) {
+	if visible {
+		item.Show()
+	} else {
+		item.Hide()
 	}
 }
 

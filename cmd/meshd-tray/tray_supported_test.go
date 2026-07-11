@@ -40,8 +40,8 @@ func TestPeerMenuSlotConcurrentUpdate(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 1000; i++ {
-			slot.setMeshIP("10.200.0.8")
-			slot.setMeshIP("")
+			slot.setEntry(peerMenuEntry{Key: "peer", MeshIP: "10.200.0.8", Visible: true})
+			slot.clear()
 		}
 	}()
 	for i := 0; i < 1000; i++ {
