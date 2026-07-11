@@ -190,6 +190,21 @@ type Config struct {
 
 var newTUNDevice = tstun.New
 
+func effectiveControlReadAuth(cfg Config) dwn.MessageAuth {
+	auth := dwn.MessageAuth{ProtocolRole: cfg.ProtocolRole}
+	if auth.ProtocolRole == "" && len(cfg.DelegatedGrant) == 0 &&
+		cfg.AnchorTenant != cfg.SelfDID {
+		auth.ProtocolRole = "network/node"
+	}
+	if len(cfg.DelegatedGrant) > 0 {
+		auth.ProtocolRole = ""
+		auth.DelegatedGrant = append(json.RawMessage(nil), cfg.DelegatedGrant...)
+	} else {
+		auth.PermissionGrantID = cfg.PermissionGrantID
+	}
+	return auth
+}
+
 // New creates a new Engine from the given config.
 //
 // Call [Engine.Start] to bring up the WireGuard tunnel, and [Engine.Stop] to
@@ -231,7 +246,10 @@ func New(cfg Config) (*Engine, error) {
 		domain = "meshd"
 	}
 
-	// Create the DWN control client that reads mesh state.
+	// Create the DWN control client that reads mesh state. Derive the auth once
+	// and share it with the subscription watcher so HTTP and WebSocket reads
+	// cannot silently diverge.
+	readAuth := effectiveControlReadAuth(cfg)
 	controlOpts := []control.Option{control.WithLogger(l)}
 	if cfg.Resolver != nil {
 		controlOpts = append(controlOpts, control.WithResolver(cfg.Resolver))
@@ -239,14 +257,14 @@ func New(cfg Config) (*Engine, error) {
 	if cfg.EncryptionKeyManager != nil {
 		controlOpts = append(controlOpts, control.WithEncryptionKeyManager(cfg.EncryptionKeyManager))
 	}
-	if cfg.ProtocolRole != "" {
-		controlOpts = append(controlOpts, control.WithProtocolRole(cfg.ProtocolRole))
+	if readAuth.ProtocolRole != "" {
+		controlOpts = append(controlOpts, control.WithProtocolRole(readAuth.ProtocolRole))
 	}
-	if cfg.PermissionGrantID != "" {
-		controlOpts = append(controlOpts, control.WithPermissionGrantID(cfg.PermissionGrantID))
+	if readAuth.PermissionGrantID != "" {
+		controlOpts = append(controlOpts, control.WithPermissionGrantID(readAuth.PermissionGrantID))
 	}
-	if len(cfg.DelegatedGrant) > 0 {
-		controlOpts = append(controlOpts, control.WithDelegatedGrant(cfg.DelegatedGrant))
+	if len(readAuth.DelegatedGrant) > 0 {
+		controlOpts = append(controlOpts, control.WithDelegatedGrant(readAuth.DelegatedGrant))
 	}
 	if cfg.GrantKeys != nil {
 		controlOpts = append(controlOpts, control.WithGrantKeys(cfg.GrantKeys))
@@ -424,7 +442,9 @@ func New(cfg Config) (*Engine, error) {
 		AnchorEndpoint:  cfg.AnchorEndpoint,
 		AnchorTenant:    cfg.AnchorTenant,
 		NetworkRecordID: cfg.NetworkRecordID,
+		SelfDID:         cfg.SelfDID,
 		Signer:          cfg.Signer,
+		ReadAuth:        readAuth,
 		Logger:          l,
 	})
 

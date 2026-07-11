@@ -66,9 +66,9 @@ type JsonRpcRequest struct {
 // JsonRpcParams carries the target DID and DWN message.
 // For rpc.ack messages, only Cursor is set (Target and Message are omitted).
 type JsonRpcParams struct {
-	Target  string   `json:"target,omitempty"`
-	Message *Message `json:"message,omitempty"`
-	Cursor  string   `json:"cursor,omitempty"`
+	Target  string         `json:"target,omitempty"`
+	Message *Message       `json:"message,omitempty"`
+	Cursor  *ProgressToken `json:"cursor,omitempty"`
 }
 
 // JsonRpcSubscription identifies a subscription in WebSocket messages.
@@ -102,6 +102,7 @@ type DwnReply struct {
 	Cursor  json.RawMessage `json:"cursor,omitempty"`
 	Entry   json.RawMessage `json:"entry,omitempty"`
 	Record  json.RawMessage `json:"record,omitempty"`
+	Error   json.RawMessage `json:"error,omitempty"`
 
 	// Subscription is populated in the initial subscribe response.
 	Subscription *SubscriptionConfirm `json:"subscription,omitempty"`
@@ -168,12 +169,13 @@ func newJsonRpcSubscribeRequest(target string, msg *Message, subscriptionID stri
 
 // newJsonRpcAck creates a JSON-RPC 2.0 ack notification (no id field).
 // This is a notification — no response is expected from the server.
-func newJsonRpcAck(subscriptionID string, cursor string) *JsonRpcRequest {
+func newJsonRpcAck(subscriptionID string, cursor ProgressToken) *JsonRpcRequest {
+	cursorCopy := cursor
 	return &JsonRpcRequest{
 		JSONRPC: "2.0",
 		Method:  MethodAck,
 		Params: &JsonRpcParams{
-			Cursor: cursor,
+			Cursor: &cursorCopy,
 		},
 		Subscription: &JsonRpcSubscription{
 			ID: subscriptionID,

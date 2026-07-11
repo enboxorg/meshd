@@ -499,7 +499,7 @@ func TestGrantInvocationMutualExclusion(t *testing.T) {
 	})
 
 	t.Run("RecordsSubscribe", func(t *testing.T) {
-		_, err := buildSubscribeMessage(s, RecordsFilter{Protocol: "https://example.com/p"}, "", MessageAuth{
+		_, err := buildSubscribeMessage(s, RecordsFilter{Protocol: "https://example.com/p"}, nil, MessageAuth{
 			PermissionGrantID: "some-grant-id",
 			DelegatedGrant:    grant,
 		})
@@ -611,15 +611,16 @@ func TestBuildSubscribeMessageAuthParity(t *testing.T) {
 	filter := RecordsFilter{Protocol: "https://example.com/p", ProtocolPath: "network"}
 
 	t.Run("plain grant", func(t *testing.T) {
-		msg, err := buildSubscribeMessage(s, filter, "cursor-1", MessageAuth{PermissionGrantID: "plain-grant-id"})
+		msg, err := buildSubscribeMessage(s, filter, &ProgressToken{StreamID: "stream", Epoch: "epoch", Position: "1"}, MessageAuth{PermissionGrantID: "plain-grant-id"})
 		if err != nil {
 			t.Fatalf("buildSubscribeMessage: %v", err)
 		}
 		if msg.Descriptor["permissionGrantId"] != "plain-grant-id" {
 			t.Errorf("descriptor permissionGrantId = %v, want plain-grant-id", msg.Descriptor["permissionGrantId"])
 		}
-		if msg.Descriptor["cursor"] != "cursor-1" {
-			t.Errorf("descriptor cursor = %v, want cursor-1", msg.Descriptor["cursor"])
+		cursor, ok := msg.Descriptor["cursor"].(ProgressToken)
+		if !ok || cursor.StreamID != "stream" || cursor.Epoch != "epoch" || cursor.Position != "1" {
+			t.Errorf("descriptor cursor = %#v, want structured progress token", msg.Descriptor["cursor"])
 		}
 		payload := decodeSignaturePayload(t, msg)
 		if payload["permissionGrantId"] != "plain-grant-id" {
@@ -628,7 +629,7 @@ func TestBuildSubscribeMessageAuthParity(t *testing.T) {
 	})
 
 	t.Run("protocol role", func(t *testing.T) {
-		msg, err := buildSubscribeMessage(s, filter, "", MessageAuth{ProtocolRole: "network/node"})
+		msg, err := buildSubscribeMessage(s, filter, nil, MessageAuth{ProtocolRole: "network/node"})
 		if err != nil {
 			t.Fatalf("buildSubscribeMessage: %v", err)
 		}
@@ -639,7 +640,7 @@ func TestBuildSubscribeMessageAuthParity(t *testing.T) {
 	})
 
 	t.Run("delegated grant", func(t *testing.T) {
-		msg, err := buildSubscribeMessage(s, filter, "", MessageAuth{DelegatedGrant: grant})
+		msg, err := buildSubscribeMessage(s, filter, nil, MessageAuth{DelegatedGrant: grant})
 		if err != nil {
 			t.Fatalf("buildSubscribeMessage: %v", err)
 		}
