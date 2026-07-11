@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.4](https://github.com/enboxorg/meshd/compare/v0.21.3...v0.21.4) (2026-07-11)
+
+
+### Bug Fixes
+
+* enforce a single daemon lifecycle ([#245](https://github.com/enboxorg/meshd/issues/245)) ([584a2af](https://github.com/enboxorg/meshd/commit/584a2afc60b4b68c11f815512f5ee2f3edf9ae1e))
+
 ## [0.21.3](https://github.com/enboxorg/meshd/compare/v0.21.2...v0.21.3) (2026-07-11)
 
 
