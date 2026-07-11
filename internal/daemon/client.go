@@ -34,9 +34,26 @@ func NewClient(socketPath string) *Client {
 
 // Shutdown sends a shutdown request to the running daemon.
 func (c *Client) Shutdown(ctx context.Context) error {
+	return c.shutdown(ctx, "")
+}
+
+// ShutdownInstance sends a shutdown request only to the daemon with the
+// supplied instance ID. A different daemon at the same socket path rejects
+// the request with ErrInstanceMismatch.
+func (c *Client) ShutdownInstance(ctx context.Context, instanceID string) error {
+	if instanceID == "" {
+		return fmt.Errorf("shutdown instance: instance ID is required")
+	}
+	return c.shutdown(ctx, instanceID)
+}
+
+func (c *Client) shutdown(ctx context.Context, instanceID string) error {
 	req, err := http.NewRequestWithContext(ctx, "POST", "http://meshd/api/v0/shutdown", nil)
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
+	}
+	if instanceID != "" {
+		req.Header.Set(instanceIDHeader, instanceID)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -47,6 +64,9 @@ func (c *Client) Shutdown(ctx context.Context) error {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode == http.StatusConflict {
+			return fmt.Errorf("%w: %s", ErrInstanceMismatch, string(body))
+		}
 		return fmt.Errorf("daemon returned %d: %s", resp.StatusCode, string(body))
 	}
 

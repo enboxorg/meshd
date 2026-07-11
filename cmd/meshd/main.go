@@ -143,12 +143,15 @@ var version = "dev"
 var errMacOSTrayElevationUnsupported = errors.New("macOS tray Connect cannot safely request administrator privileges from a user-writable installation; run 'meshd up' in a terminal to authorize system routing")
 
 const (
-	sudoChildEnv    = "MESHD_SUDO_CHILD"
-	upBackgroundEnv = "MESHD_UP_BACKGROUND_CHILD"
-	trayConnectEnv  = "MESHD_TRAY_CONNECT"
-	backgroundWait  = 30 * time.Second
-	daemonLogName   = "meshd.log"
-	walletWaitTime  = 10 * time.Minute
+	sudoChildEnv       = "MESHD_SUDO_CHILD"
+	upBackgroundEnv    = "MESHD_UP_BACKGROUND_CHILD"
+	startupInstanceEnv = "MESHD_STARTUP_INSTANCE"
+	trayConnectEnv     = "MESHD_TRAY_CONNECT"
+	backgroundWait     = 30 * time.Second
+	daemonStopWait     = 10 * time.Second
+	daemonStopPoll     = 100 * time.Millisecond
+	daemonLogName      = "meshd.log"
+	walletWaitTime     = 10 * time.Minute
 
 	walletResponseEndpointEnv     = "MESHD_WALLET_RESPONSE_ENDPOINT"
 	defaultWalletResponseEndpoint = "https://dev.aws.dwn.enbox.id"
@@ -3539,6 +3542,10 @@ func startUpInBackground(ctx context.Context, args []string, flagProfile, stateD
 		cmdArgs = append(cmdArgs, "--profile", flagProfile)
 	}
 	cmdArgs = append(cmdArgs, args...)
+	instanceID, err := daemon.NewInstanceID()
+	if err != nil {
+		return fmt.Errorf("preparing background daemon identity: %w", err)
+	}
 
 	var cmd *exec.Cmd
 	if needsSudo {
@@ -3562,11 +3569,15 @@ func startUpInBackground(ctx context.Context, args []string, flagProfile, stateD
 		sudoArgs := []string{"-n", "env"}
 		sudoArgs = append(sudoArgs, sudoEnvironmentAssignments()...)
 		sudoArgs = append(sudoArgs, upBackgroundEnv+"=1")
+		sudoArgs = append(sudoArgs, startupInstanceEnv+"="+instanceID)
 		sudoArgs = append(sudoArgs, cmdArgs...)
 		cmd = exec.Command(sudoPath, sudoArgs...)
 	} else {
 		cmd = exec.Command(cmdArgs[0], cmdArgs[1:]...)
-		cmd.Env = append(os.Environ(), upBackgroundEnv+"=1")
+		cmd.Env = append(os.Environ(),
+			upBackgroundEnv+"=1",
+			startupInstanceEnv+"="+instanceID,
+		)
 	}
 	cmd.Stdin = nil
 	cmd.Stdout = logFile
@@ -3581,7 +3592,7 @@ func startUpInBackground(ctx context.Context, args []string, flagProfile, stateD
 		childExit <- cmd.Wait()
 	}()
 
-	status, err := waitForDaemonStart(ctx, socketPath, backgroundWait, requireTUN, childExit)
+	status, err := waitForDaemonStart(ctx, socketPath, backgroundWait, requireTUN, instanceID, childExit)
 	if err != nil {
 		return fmt.Errorf("%w; see %s", err, logPath)
 	}
@@ -3611,6 +3622,7 @@ func waitForDaemonStart(
 	socketPath string,
 	timeout time.Duration,
 	requireTUN bool,
+	instanceID string,
 	childExit <-chan error,
 ) (*daemon.Status, error) {
 	client := daemon.NewClient(socketPath)
@@ -3630,7 +3642,7 @@ func waitForDaemonStart(
 				return nil, fmt.Errorf("background meshd exited before startup completed")
 			default:
 			}
-			if err := validateDaemonStartStatus(status, requireTUN); err != nil {
+			if err := validateDaemonStartStatus(status, requireTUN, instanceID); err != nil {
 				return nil, err
 			}
 			return status, nil
@@ -3655,14 +3667,26 @@ func waitForDaemonStart(
 	}
 }
 
-func validateDaemonStartStatus(status *daemon.Status, requireTUN bool) error {
+func validateDaemonStartStatus(status *daemon.Status, requireTUN bool, instanceID string) error {
 	if status == nil {
 		return fmt.Errorf("daemon returned empty startup status")
+	}
+	if instanceID != "" && status.InstanceID != instanceID {
+		return fmt.Errorf("daemon startup instance mismatch: got %q, want %q", status.InstanceID, instanceID)
 	}
 	if requireTUN && status.TUNDevice == "" {
 		return fmt.Errorf("daemon started without the required TUN device")
 	}
 	return nil
+}
+
+func resolveDaemonInstanceID(backgroundChild bool, startupID string) (string, error) {
+	if backgroundChild {
+		if instanceID := strings.TrimSpace(startupID); instanceID != "" {
+			return instanceID, nil
+		}
+	}
+	return daemon.NewInstanceID()
 }
 
 func daemonLogPath(stateDir string) string {
@@ -3979,6 +4003,17 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		engCfg.AudienceSource = delegateSession.AudienceSource
 		engCfg.ProtocolDefinition = delegateSession.ProtocolDefinition
 	}
+	socketPath := daemon.DefaultSocketPath()
+	instanceID, err := resolveDaemonInstanceID(backgroundChild, os.Getenv(startupInstanceEnv))
+	if err != nil {
+		return fmt.Errorf("generating daemon instance ID: %w", err)
+	}
+	instanceLock, err := daemon.AcquireInstanceLock(socketPath)
+	if err != nil {
+		return fmt.Errorf("acquiring daemon instance lock: %w", err)
+	}
+	defer instanceLock.Close()
+
 	eng, err := engine.New(engCfg)
 	if err != nil {
 		return fmt.Errorf("creating engine: %w", err)
@@ -3990,7 +4025,6 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	}
 
 	// ── Step 4: Start the daemon control socket ────────────────────
-	socketPath := daemon.DefaultSocketPath()
 	daemonSrv := daemon.NewServer(socketPath, func() daemon.Status {
 		return daemon.Status{
 			TUNDevice:       eng.TUNDeviceName(),
@@ -4001,6 +4035,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 			Peers:           daemonPeerStatuses(eng.PeerSnapshots()),
 		}
 	}, logger)
+	daemonSrv.SetInstanceID(instanceID)
 
 	if err := daemonSrv.Start(); err != nil {
 		_ = eng.Stop()
@@ -4038,6 +4073,8 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 	case <-sigCh:
 	case <-daemonSrv.ShutdownCh():
 	}
+	signal.Stop(sigCh)
+	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
 
 	fmt.Printf("\nShutting down...\n")
 	if err := eng.Stop(); err != nil {
@@ -4680,28 +4717,70 @@ func cmdDown(ctx context.Context, args []string) error {
 	socketPath := daemon.DefaultSocketPath()
 	client := daemon.NewClient(socketPath)
 
-	if !client.IsRunning() {
-		fmt.Println("meshd is not running.")
-		return nil
+	status, err := client.GetStatus(ctx)
+	if err != nil {
+		if !client.IsRunning() {
+			fmt.Println("meshd is not running.")
+			return nil
+		}
+		return fmt.Errorf("querying daemon status before shutdown: %w", err)
+	}
+	if status == nil || status.PID <= 0 {
+		return fmt.Errorf("daemon status did not include a valid process ID; refusing an unverified shutdown")
 	}
 
 	fmt.Printf("Stopping meshd (socket: %s)...\n", socketPath)
-	if err := client.Shutdown(ctx); err != nil {
+	if err := shutdownDaemonProcess(ctx, client, status, daemon.WaitForProcessExit, daemon.ProcessAlive); err != nil {
+		return err
+	}
+	fmt.Println("Stopped.")
+	return nil
+}
+
+type daemonShutdownClient interface {
+	Shutdown(context.Context) error
+	ShutdownInstance(context.Context, string) error
+}
+
+type daemonProcessWaiter func(context.Context, int, time.Duration) error
+type daemonProcessChecker func(int) (bool, error)
+
+func shutdownDaemonProcess(
+	ctx context.Context,
+	client daemonShutdownClient,
+	status *daemon.Status,
+	waitForExit daemonProcessWaiter,
+	processAlive daemonProcessChecker,
+) error {
+	if status == nil || status.PID <= 0 {
+		return fmt.Errorf("daemon status did not include a valid process ID; refusing an unverified shutdown")
+	}
+
+	var err error
+	if status.InstanceID != "" {
+		err = client.ShutdownInstance(ctx, status.InstanceID)
+	} else {
+		// A daemon already running during an in-place upgrade may predate
+		// instance IDs. Limit the untargeted request to that observed status
+		// and still verify the exact captured PID below.
+		err = client.Shutdown(ctx)
+	}
+	if err != nil {
+		alive, aliveErr := processAlive(status.PID)
+		if aliveErr == nil && !alive {
+			return nil
+		}
+		if aliveErr != nil {
+			return fmt.Errorf("shutdown failed: %w (could not verify process %d: %v)", err, status.PID, aliveErr)
+		}
 		return fmt.Errorf("shutdown failed: %w", err)
 	}
 
-	// Wait for the daemon to actually stop (socket goes away).
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if !client.IsRunning() {
-			fmt.Println("Stopped.")
-			return nil
-		}
-		time.Sleep(200 * time.Millisecond)
+	waitCtx, cancel := context.WithTimeout(ctx, daemonStopWait)
+	defer cancel()
+	if err := waitForExit(waitCtx, status.PID, daemonStopPoll); err != nil {
+		return fmt.Errorf("shutdown request accepted, but daemon process %d did not exit: %w", status.PID, err)
 	}
-
-	fmt.Println("Shutdown request sent but daemon is still running.")
-	fmt.Println("You may need to send SIGTERM manually.")
 	return nil
 }
 

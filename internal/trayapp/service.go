@@ -3,7 +3,6 @@ package trayapp
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +19,8 @@ import (
 const defaultDisconnectPoll = 150 * time.Millisecond
 
 type commandRunner func(context.Context, string, []string, []string) ([]byte, error)
+type processWaiter func(context.Context, int, time.Duration) error
+type processChecker func(int) (bool, error)
 
 // Service performs the side effects requested from the tray menu.
 type Service struct {
@@ -31,6 +32,8 @@ type Service struct {
 	launchConnect  commandRunner
 	openURL        func(string) error
 	writeClipboard func(context.Context, string) error
+	waitForExit    processWaiter
+	processAlive   processChecker
 	disconnectPoll time.Duration
 }
 
@@ -46,6 +49,8 @@ func NewService(profile string) *Service {
 		launchConnect:  connectCommand,
 		openURL:        openurl.Open,
 		writeClipboard: clipboard.WriteText,
+		waitForExit:    daemon.WaitForProcessExit,
+		processAlive:   daemon.ProcessAlive,
 		disconnectPoll: defaultDisconnectPoll,
 	}
 }
@@ -79,15 +84,44 @@ func (s *Service) Connect(ctx context.Context) error {
 	return nil
 }
 
-// Disconnect requests a graceful daemon shutdown and waits until its control
-// socket no longer accepts connections.
+// Disconnect requests a graceful shutdown of the observed daemon instance and
+// waits for that exact process to exit.
 func (s *Service) Disconnect(ctx context.Context) error {
-	if err := s.client.Shutdown(ctx); err != nil {
+	status, err := s.client.GetStatus(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("read meshd status: %w", ctx.Err())
+		}
+		if !s.client.IsRunning() {
+			return nil
+		}
+		return fmt.Errorf("read meshd status: %w", err)
+	}
+	if status == nil || status.PID <= 0 {
+		return fmt.Errorf("meshd status did not include a valid process ID; refusing an unverified disconnect")
+	}
+
+	if status.InstanceID != "" {
+		err = s.client.ShutdownInstance(ctx, status.InstanceID)
+	} else {
+		// A daemon already running during an in-place upgrade may predate
+		// instance IDs. The exact captured PID is still verified below.
+		err = s.client.Shutdown(ctx)
+	}
+	if err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("request shutdown: %w", ctx.Err())
 		}
-		if !socketReachable(ctx, s.socket) {
+		processAlive := s.processAlive
+		if processAlive == nil {
+			processAlive = daemon.ProcessAlive
+		}
+		alive, aliveErr := processAlive(status.PID)
+		if aliveErr == nil && !alive {
 			return nil
+		}
+		if aliveErr != nil {
+			return fmt.Errorf("request shutdown: %w (could not verify process %d: %v)", err, status.PID, aliveErr)
 		}
 		return fmt.Errorf("request shutdown: %w", err)
 	}
@@ -96,34 +130,14 @@ func (s *Service) Disconnect(ctx context.Context) error {
 	if poll <= 0 {
 		poll = defaultDisconnectPoll
 	}
-	ticker := time.NewTicker(poll)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("wait for meshd shutdown: %w", ctx.Err())
-		case <-ticker.C:
-			if !socketReachable(ctx, s.socket) {
-				if ctx.Err() != nil {
-					return fmt.Errorf("wait for meshd shutdown: %w", ctx.Err())
-				}
-				return nil
-			}
-		}
+	waitForExit := s.waitForExit
+	if waitForExit == nil {
+		waitForExit = daemon.WaitForProcessExit
 	}
-}
-
-func socketReachable(ctx context.Context, socketPath string) bool {
-	if ctx.Err() != nil {
-		return false
+	if err := waitForExit(ctx, status.PID, poll); err != nil {
+		return fmt.Errorf("wait for meshd process %d shutdown: %w", status.PID, err)
 	}
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, "unix", socketPath)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
+	return nil
 }
 
 // DashboardURL builds the dashboard URL from live daemon context when
