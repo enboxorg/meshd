@@ -19,6 +19,12 @@ const (
 	SubscriptionEventType = "event"
 	SubscriptionEOSEType  = "eose"
 	SubscriptionErrorType = "error"
+
+	// subscriptionMaxMessageBytes bounds every inbound WebSocket message. It
+	// leaves headroom above the topology queue's encoded event budget while
+	// preventing a peer from forcing an unbounded allocation before JSON
+	// validation can run.
+	subscriptionMaxMessageBytes int64 = 16 << 20
 )
 
 //
@@ -491,6 +497,7 @@ func (s *Subscription) connect(ctx context.Context, endpoint string) (bool, erro
 	if err != nil {
 		return false, fmt.Errorf("dialing websocket: %w", err)
 	}
+	conn.SetReadLimit(subscriptionMaxMessageBytes)
 
 	s.mu.Lock()
 	s.conn = conn

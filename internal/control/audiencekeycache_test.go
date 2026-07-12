@@ -9,6 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/enboxorg/meshd/internal/dwn"
+	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 )
 
 func TestAudienceKeyCacheReusesSuccessfulLookupAndCopiesKey(t *testing.T) {
@@ -85,6 +88,130 @@ func TestAudienceKeyCacheDoesNotCacheFailedLookup(t *testing.T) {
 	}
 	if got := loads.Load(); got != 2 {
 		t.Fatalf("loader calls = %d, want 2", got)
+	}
+}
+
+func TestAudienceKeyCacheCachesOnlyStableAbsenceUntilTTL(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	cache := audienceKeyCache{failureTTL: time.Minute, now: func() time.Time { return now }}
+	key := audienceKeyCacheKey{protocol: "p", rolePath: "r", keyID: "missing"}
+	wantErr := fmt.Errorf("%w: no delivery record", errAudienceKeyDeliveryAbsent)
+	var loads atomic.Int32
+	loader := func(context.Context) ([]byte, error) {
+		loads.Add(1)
+		return nil, wantErr
+	}
+	for range 2 {
+		if _, err := cache.get(context.Background(), key, loader); !errors.Is(err, errAudienceKeyDeliveryAbsent) {
+			t.Fatalf("stable miss error = %v", err)
+		}
+	}
+	if got := loads.Load(); got != 1 {
+		t.Fatalf("stable miss loader calls = %d, want 1", got)
+	}
+	now = now.Add(time.Minute)
+	if _, err := cache.get(context.Background(), key, loader); !errors.Is(err, errAudienceKeyDeliveryAbsent) {
+		t.Fatalf("expired stable miss error = %v", err)
+	}
+	if got := loads.Load(); got != 2 {
+		t.Fatalf("expired stable miss loader calls = %d, want 2", got)
+	}
+}
+
+func TestAudienceKeyCacheInvalidationRetainsSuccessAndNeverCachesTransient(t *testing.T) {
+	cache := audienceKeyCache{}
+	successKey := audienceKeyCacheKey{protocol: "p", rolePath: "r", keyID: "success"}
+	if _, err := cache.get(context.Background(), successKey, func(context.Context) ([]byte, error) {
+		return []byte{1, 2, 3}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	missingKey := audienceKeyCacheKey{protocol: "p", rolePath: "r", keyID: "missing"}
+	if _, err := cache.get(context.Background(), missingKey, func(context.Context) ([]byte, error) {
+		return nil, fmt.Errorf("%w: absent", errAudienceKeyDeliveryAbsent)
+	}); !errors.Is(err, errAudienceKeyDeliveryAbsent) {
+		t.Fatalf("stable failure = %v", err)
+	}
+	cache.invalidateFailures()
+	if _, err := cache.get(context.Background(), successKey, func(context.Context) ([]byte, error) {
+		return nil, errors.New("successful key was invalidated")
+	}); err != nil {
+		t.Fatalf("retained success: %v", err)
+	}
+	var retryLoads atomic.Int32
+	if _, err := cache.get(context.Background(), missingKey, func(context.Context) ([]byte, error) {
+		retryLoads.Add(1)
+		return []byte{4, 5, 6}, nil
+	}); err != nil {
+		t.Fatalf("invalidated absence retry: %v", err)
+	}
+	if retryLoads.Load() != 1 {
+		t.Fatalf("invalidated absence loads = %d", retryLoads.Load())
+	}
+
+	for _, transient := range []error{context.Canceled, context.DeadlineExceeded, dwn.ErrRateLimited, dwn.ErrTransport} {
+		key := audienceKeyCacheKey{protocol: "p", rolePath: "r", keyID: transient.Error()}
+		var loads atomic.Int32
+		for range 2 {
+			if _, err := cache.get(context.Background(), key, func(context.Context) ([]byte, error) {
+				loads.Add(1)
+				return nil, errors.Join(fmt.Errorf("%w: absent", errAudienceKeyDeliveryAbsent), transient)
+			}); !errors.Is(err, transient) {
+				t.Fatalf("transient %v error = %v", transient, err)
+			}
+		}
+		if loads.Load() != 2 {
+			t.Fatalf("transient %v was cached; loads=%d", transient, loads.Load())
+		}
+	}
+}
+
+func TestRoleAudiencePrivateKeyCachesStableUnavailableUntilTTLAndInvalidation(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	client := newMaterializerTestClient()
+	client.roleAudienceKeys.failureTTL = time.Minute
+	client.roleAudienceKeys.now = func() time.Time { return now }
+	info := &dwncrypto.RoleAudienceInfo{Protocol: "p", RolePath: "network/node", KeyID: "missing"}
+	key := audienceKeyCacheKey{protocol: info.Protocol, rolePath: info.RolePath, keyID: info.KeyID}
+
+	if _, err := client.roleAudiencePrivateKey(context.Background(), info); !errors.Is(err, errAudienceKeyDeliveryAbsent) {
+		t.Fatalf("first stable miss = %v", err)
+	}
+	client.roleAudienceKeys.mu.Lock()
+	firstExpiry := client.roleAudienceKeys.failures[key].expiresAt
+	client.roleAudienceKeys.mu.Unlock()
+	now = now.Add(30 * time.Second)
+	if _, err := client.roleAudiencePrivateKey(context.Background(), info); !errors.Is(err, errAudienceKeyDeliveryAbsent) {
+		t.Fatalf("cached stable miss = %v", err)
+	}
+	client.roleAudienceKeys.mu.Lock()
+	cachedExpiry := client.roleAudienceKeys.failures[key].expiresAt
+	client.roleAudienceKeys.mu.Unlock()
+	if !cachedExpiry.Equal(firstExpiry) {
+		t.Fatalf("cached miss re-ran routes: expiry %v -> %v", firstExpiry, cachedExpiry)
+	}
+
+	now = firstExpiry
+	if _, err := client.roleAudiencePrivateKey(context.Background(), info); !errors.Is(err, errAudienceKeyDeliveryAbsent) {
+		t.Fatalf("expired stable miss = %v", err)
+	}
+	client.roleAudienceKeys.mu.Lock()
+	expiredRetry := client.roleAudienceKeys.failures[key].expiresAt
+	client.roleAudienceKeys.mu.Unlock()
+	if !expiredRetry.After(firstExpiry) {
+		t.Fatalf("TTL expiry did not retry routes: %v <= %v", expiredRetry, firstExpiry)
+	}
+
+	client.roleAudienceKeys.invalidateFailures()
+	now = now.Add(time.Second)
+	if _, err := client.roleAudiencePrivateKey(context.Background(), info); !errors.Is(err, errAudienceKeyDeliveryAbsent) {
+		t.Fatalf("invalidated stable miss = %v", err)
+	}
+	client.roleAudienceKeys.mu.Lock()
+	invalidatedRetry := client.roleAudienceKeys.failures[key].expiresAt
+	client.roleAudienceKeys.mu.Unlock()
+	if !invalidatedRetry.After(expiredRetry) {
+		t.Fatalf("invalidation did not retry routes: %v <= %v", invalidatedRetry, expiredRetry)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -130,7 +131,7 @@ func (s *SealedAudienceSource) Current(ctx context.Context, protocol, rolePath, 
 // this reader can already derive seal keys for.
 func (s *SealedAudienceSource) AudiencePrivateKeyByKeyID(ctx context.Context, protocol, rolePath, keyID string) ([]byte, error) {
 	if s.sealKeys == nil {
-		return nil, fmt.Errorf("no seal keys available")
+		return nil, fmt.Errorf("%w: no seal keys available", errAudienceSealUnavailable)
 	}
 	rec, err := s.audienceByKeyID(ctx, protocol, rolePath, keyID)
 	if err != nil {
@@ -209,7 +210,7 @@ func (s *SealedAudienceSource) audienceByKeyID(ctx context.Context, protocol, ro
 		return nil, err
 	}
 	if len(records) == 0 {
-		return nil, fmt.Errorf("no audience record for keyId %s (%s %s)", keyID, protocol, rolePath)
+		return nil, fmt.Errorf("%w: no audience record for keyId %s (%s %s)", errAudienceRecordAbsent, keyID, protocol, rolePath)
 	}
 	return records[0], nil
 }
@@ -227,6 +228,9 @@ func (s *SealedAudienceSource) queryAudience(ctx context.Context, filterTags map
 	}
 	entries, err := dwn.QueryEntries(reply)
 	if err != nil {
+		if !errors.Is(err, dwn.ErrRateLimited) {
+			err = errors.Join(dwn.ErrTransport, err)
+		}
 		return nil, fmt.Errorf("parsing audience query: %w", err)
 	}
 

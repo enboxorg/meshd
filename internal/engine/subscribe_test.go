@@ -684,6 +684,74 @@ func TestSubscriptionWatcherSetupFailureClosesPartialSubscriptions(t *testing.T)
 	}
 }
 
+func TestSubscriptionWatcherTopologyHandlerRunsBeforeInvalidation(t *testing.T) {
+	coordinator := newRecordingRefreshCoordinator()
+	message := &dwn.SubscriptionMessage{Type: dwn.SubscriptionEventType}
+	handlerCalled := false
+	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{
+		TopologyEventHandler: func(got *dwn.SubscriptionMessage) error {
+			if got != message {
+				t.Fatalf("handler message = %p, want %p", got, message)
+			}
+			if calls := coordinator.takeCalls(); len(calls) != 0 {
+				t.Fatalf("coordinator called before topology handler: %#v", calls)
+			}
+			handlerCalled = true
+			return nil
+		},
+	})
+	w.SetRefreshCoordinator(coordinator)
+
+	if err := w.handleSubscriptionMessage(RefreshStreamTopology, message); err != nil {
+		t.Fatalf("handleSubscriptionMessage: %v", err)
+	}
+	if !handlerCalled {
+		t.Fatal("topology handler was not called")
+	}
+	requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{{
+		method: "invalidate", stream: RefreshStreamTopology, reason: RefreshReasonTopology,
+	}})
+}
+
+func TestSubscriptionWatcherTopologyHandlerErrorPreventsInvalidation(t *testing.T) {
+	handlerErr := errors.New("materializing topology event")
+	coordinator := newRecordingRefreshCoordinator()
+	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{
+		TopologyEventHandler: func(*dwn.SubscriptionMessage) error {
+			return handlerErr
+		},
+	})
+	w.SetRefreshCoordinator(coordinator)
+
+	err := w.handleSubscriptionMessage(RefreshStreamTopology, &dwn.SubscriptionMessage{Type: dwn.SubscriptionEventType})
+	if !errors.Is(err, handlerErr) {
+		t.Fatalf("handleSubscriptionMessage error = %v, want %v", err, handlerErr)
+	}
+	requireRefreshCoordinatorCalls(t, coordinator, nil)
+}
+
+func TestSubscriptionWatcherDeliveryEventSkipsTopologyHandler(t *testing.T) {
+	var handlerCalls atomic.Int32
+	coordinator := newRecordingRefreshCoordinator()
+	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{
+		TopologyEventHandler: func(*dwn.SubscriptionMessage) error {
+			handlerCalls.Add(1)
+			return errors.New("topology handler must not receive delivery events")
+		},
+	})
+	w.SetRefreshCoordinator(coordinator)
+
+	if err := w.handleSubscriptionMessage(RefreshStreamDelivery, &dwn.SubscriptionMessage{Type: dwn.SubscriptionEventType}); err != nil {
+		t.Fatalf("handleSubscriptionMessage: %v", err)
+	}
+	if calls := handlerCalls.Load(); calls != 0 {
+		t.Fatalf("topology handler calls = %d, want 0", calls)
+	}
+	requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{{
+		method: "invalidate", stream: RefreshStreamDelivery, reason: RefreshReasonDelivery,
+	}})
+}
+
 func TestSubscriptionWatcherMessageCallbacks(t *testing.T) {
 	tests := []struct {
 		name    string

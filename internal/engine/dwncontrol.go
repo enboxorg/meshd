@@ -40,6 +40,15 @@ type DWNControlConfig struct {
 	// Calls are serialized and coalesced by RefreshCoordinator.
 	MapResponseFunc func(ctx context.Context) (*netmap.NetworkMap, error)
 
+	// RefreshMapResponseFunc is called to obtain the current network state
+	// with the exact invalidation batch that triggered the rebuild. When set,
+	// it is preferred over MapResponseFunc. This lets loaders update local
+	// materialized state incrementally while retaining MapResponseFunc for
+	// legacy full-snapshot loaders.
+	//
+	// Calls are serialized and coalesced by RefreshCoordinator.
+	RefreshMapResponseFunc func(ctx context.Context, batch RefreshBatch) (*netmap.NetworkMap, error)
+
 	// OnMapResult observes every completed map load. It is called after the
 	// control-client observer has received the result, and is useful for
 	// reconciling host routing readiness with the exact map that was loaded.
@@ -68,6 +77,11 @@ type DWNControlConfig struct {
 	// StartupSubscriptionWait gives asynchronous subscription handshakes a
 	// bounded chance to establish before the initial full rebuild.
 	StartupSubscriptionWait time.Duration
+
+	// ExpiryClock supplies time and timers for local peer-expiry projection.
+	// It defaults to the system clock and is primarily exposed for deterministic
+	// tests.
+	ExpiryClock RefreshClock
 
 	// NodePrivateKey, if set, overrides the auto-generated WireGuard node
 	// key with the given key. This is essential when the WireGuard key has
@@ -133,6 +147,7 @@ type DWNControl struct {
 	shutdownOnce      sync.Once
 	cancel            context.CancelFunc
 	coordinator       *RefreshCoordinator
+	peerExpiry        *peerExpiryScheduler
 	initialMapApplied atomic.Bool
 }
 
@@ -151,7 +166,7 @@ func NewDWNControl(config *DWNControlConfig, opts controlclient.Options) (*DWNCo
 	if config == nil {
 		return nil, fmt.Errorf("DWN control config is required")
 	}
-	if config.MapResponseFunc == nil {
+	if config.RefreshMapResponseFunc == nil && config.MapResponseFunc == nil {
 		return nil, fmt.Errorf("DWN control map response function is required")
 	}
 	if config.RefreshTimeout < 0 || config.StartupSubscriptionWait < 0 {
@@ -194,12 +209,14 @@ func NewDWNControl(config *DWNControlConfig, opts controlclient.Options) (*DWNCo
 	cc := &DWNControl{
 		config: DWNControlConfig{
 			MapResponseFunc:         config.MapResponseFunc,
+			RefreshMapResponseFunc:  config.RefreshMapResponseFunc,
 			OnMapResult:             config.OnMapResult,
 			EndpointUpdateFunc:      config.EndpointUpdateFunc,
 			PollInterval:            pollInterval,
 			HealthyPollInterval:     healthyPollInterval,
 			RefreshTimeout:          refreshTimeout,
 			StartupSubscriptionWait: config.StartupSubscriptionWait,
+			ExpiryClock:             config.ExpiryClock,
 			NodePrivateKey:          config.NodePrivateKey,
 			DiscoKeyRegistry:        config.DiscoKeyRegistry,
 			Logf:                    logf,
@@ -224,6 +241,9 @@ func NewDWNControl(config *DWNControlConfig, opts controlclient.Options) (*DWNCo
 		return nil, err
 	}
 	cc.coordinator = coordinator
+	cc.peerExpiry = newPeerExpiryScheduler(config.ExpiryClock, func() {
+		coordinator.Notify(RefreshReasonExpiry)
+	})
 
 	cc.disco = opts.DiscoPublicKey
 
@@ -303,7 +323,7 @@ func refreshStreamsReadyForStartup(health RefreshCoordinatorHealth) bool {
 // refreshControlState performs one bounded remote rebuild. The first usable
 // map is applied locally a second time after the event bus has observed its peer
 // views; this preserves the startup ordering workaround without a second DWN load.
-func (cc *DWNControl) refreshControlState(ctx context.Context, _ RefreshBatch) error {
+func (cc *DWNControl) refreshControlState(ctx context.Context, batch RefreshBatch) error {
 	refreshCtx := ctx
 	cancel := func() {}
 	if cc.config.RefreshTimeout > 0 {
@@ -311,7 +331,7 @@ func (cc *DWNControl) refreshControlState(ctx context.Context, _ RefreshBatch) e
 	}
 	defer cancel()
 
-	replay, err := cc.loadAndPush(refreshCtx)
+	replay, err := cc.loadAndPush(refreshCtx, batch)
 	if err != nil {
 		return err
 	}
@@ -327,15 +347,23 @@ func (cc *DWNControl) refreshControlState(ctx context.Context, _ RefreshBatch) e
 
 // loadAndPush reads DWN state, applies it once, and returns an observer-safe
 // clone for the one-time startup replay.
-func (cc *DWNControl) loadAndPush(ctx context.Context) (*netmap.NetworkMap, error) {
-	if cc.config.MapResponseFunc == nil {
-		cc.logf("dwn-control: no MapResponseFunc configured")
+func (cc *DWNControl) loadAndPush(ctx context.Context, batch RefreshBatch) (*netmap.NetworkMap, error) {
+	if cc.config.RefreshMapResponseFunc == nil && cc.config.MapResponseFunc == nil {
+		cc.logf("dwn-control: no map response function configured")
 		return nil, nil
 	}
 
-	nm, err := cc.config.MapResponseFunc(ctx)
+	var nm *netmap.NetworkMap
+	var err error
+	loaderName := "MapResponseFunc"
+	if cc.config.RefreshMapResponseFunc != nil {
+		loaderName = "RefreshMapResponseFunc"
+		nm, err = cc.config.RefreshMapResponseFunc(ctx, batch)
+	} else {
+		nm, err = cc.config.MapResponseFunc(ctx)
+	}
 	if err != nil {
-		cc.logf("dwn-control: MapResponseFunc error: %v", err)
+		cc.logf("dwn-control: %s error: %v", loaderName, err)
 		if cc.observer != nil {
 			cc.observer.SetControlClientStatus(cc, controlclient.Status{
 				Err:     err,
@@ -358,6 +386,7 @@ func (cc *DWNControl) loadAndPush(ctx context.Context) (*netmap.NetworkMap, erro
 	cc.prepareNetMap(nm)
 	replay := cloneNetMapForReplay(nm)
 	cc.pushNetMap(nm)
+	cc.peerExpiry.Schedule(nm)
 	if cc.config.OnMapResult != nil {
 		cc.config.OnMapResult(ctx, nm, nil)
 	}
@@ -439,6 +468,7 @@ func (cc *DWNControl) RefreshHealth() RefreshCoordinatorHealth {
 
 func (cc *DWNControl) Shutdown() {
 	cc.shutdownOnce.Do(func() {
+		cc.peerExpiry.Stop()
 		cc.cancel()
 		cc.coordinator.Stop()
 	})
@@ -483,13 +513,12 @@ func (cc *DWNControl) SetTKAHead(headHash string) {
 
 func (cc *DWNControl) UpdateEndpoints(endpoints []tailcfg.Endpoint) {
 	if cc.config.EndpointUpdateFunc != nil {
-		go func() {
+		owned := slices.Clone(endpoints)
+		go func(endpoints []tailcfg.Endpoint) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			cc.config.EndpointUpdateFunc(ctx, endpoints)
-			// Coalesce the local write with its subscription echo.
-			cc.coordinator.Notify(RefreshReasonEndpoint)
-		}()
+		}(owned)
 	}
 }
 

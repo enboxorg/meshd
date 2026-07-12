@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"reflect"
 	"sync/atomic"
 	"testing"
@@ -44,6 +45,56 @@ func TestDWNControlRejectsInvalidCoordinatorConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDWNControlRefreshMapResponseFuncReceivesExactBatch(t *testing.T) {
+	startedAt := time.Date(2026, time.July, 11, 12, 34, 56, 789, time.UTC)
+	want := RefreshBatch{
+		Reasons:   []RefreshReason{RefreshReasonTopology, RefreshReasonDelivery},
+		Sequence:  42,
+		Attempt:   3,
+		StartedAt: startedAt,
+	}
+	var got RefreshBatch
+	var legacyCalls atomic.Int32
+
+	cc, err := NewDWNControl(&DWNControlConfig{
+		MapResponseFunc: func(context.Context) (*netmap.NetworkMap, error) {
+			legacyCalls.Add(1)
+			return nil, nil
+		},
+		RefreshMapResponseFunc: func(_ context.Context, batch RefreshBatch) (*netmap.NetworkMap, error) {
+			got = batch
+			return nil, nil
+		},
+		Logf: func(string, ...any) {},
+	}, controlclient.Options{SkipStartForTests: true})
+	if err != nil {
+		t.Fatalf("NewDWNControl: %v", err)
+	}
+	defer cc.Shutdown()
+
+	if err := cc.refreshControlState(context.Background(), want); err != nil {
+		t.Fatalf("refreshControlState: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("refresh batch = %#v, want %#v", got, want)
+	}
+	if calls := legacyCalls.Load(); calls != 0 {
+		t.Fatalf("legacy map response calls = %d, want 0", calls)
+	}
+}
+
+func TestDWNControlAcceptsRefreshMapResponseFuncWithoutLegacyLoader(t *testing.T) {
+	cc, err := NewDWNControl(&DWNControlConfig{
+		RefreshMapResponseFunc: func(context.Context, RefreshBatch) (*netmap.NetworkMap, error) {
+			return nil, nil
+		},
+	}, controlclient.Options{SkipStartForTests: true})
+	if err != nil {
+		t.Fatalf("NewDWNControl: %v", err)
+	}
+	cc.Shutdown()
 }
 
 func TestDWNControlCoordinatorFirstSuccessReplaysLoadedMap(t *testing.T) {
@@ -547,6 +598,112 @@ func TestDWNControlCoordinatorUsesConfiguredRefreshIntervals(t *testing.T) {
 	}
 	if got := cc.coordinator.maxDebounce; got != time.Second {
 		t.Fatalf("coordinator max debounce = %v, want 1s", got)
+	}
+}
+
+func TestDWNControlUpdateEndpointsReliesOnSubscriptionEcho(t *testing.T) {
+	published := make(chan struct{})
+	var loads atomic.Int32
+	cc, err := NewDWNControl(&DWNControlConfig{
+		MapResponseFunc: func(context.Context) (*netmap.NetworkMap, error) {
+			loads.Add(1)
+			return nil, nil
+		},
+		EndpointUpdateFunc: func(context.Context, []tailcfg.Endpoint) { close(published) },
+		Logf:               func(string, ...any) {},
+	}, controlclient.Options{SkipStartForTests: true})
+	if err != nil {
+		t.Fatalf("NewDWNControl: %v", err)
+	}
+	defer cc.Shutdown()
+
+	cc.UpdateEndpoints(nil)
+	select {
+	case <-published:
+	case <-time.After(time.Second):
+		t.Fatal("endpoint publication did not run")
+	}
+	if got := loads.Load(); got != 0 {
+		t.Fatalf("endpoint publication triggered %d map loads, want 0", got)
+	}
+	if pending := cc.RefreshHealth().PendingReasons; len(pending) != 0 {
+		t.Fatalf("endpoint publication queued refresh reasons: %v", pending)
+	}
+}
+
+func TestDWNControlUpdateEndpointsOwnsCallerSlice(t *testing.T) {
+	release := make(chan struct{})
+	published := make(chan []tailcfg.Endpoint, 1)
+	cc, err := NewDWNControl(&DWNControlConfig{
+		MapResponseFunc: func(context.Context) (*netmap.NetworkMap, error) { return nil, nil },
+		EndpointUpdateFunc: func(_ context.Context, endpoints []tailcfg.Endpoint) {
+			<-release
+			published <- endpoints
+		},
+		Logf: func(string, ...any) {},
+	}, controlclient.Options{SkipStartForTests: true})
+	if err != nil {
+		t.Fatalf("NewDWNControl: %v", err)
+	}
+	defer cc.Shutdown()
+
+	original := netip.MustParseAddrPort("192.0.2.1:4242")
+	callerOwned := []tailcfg.Endpoint{{Addr: original}}
+	cc.UpdateEndpoints(callerOwned)
+	callerOwned[0].Addr = netip.MustParseAddrPort("198.51.100.2:5252")
+	close(release)
+
+	select {
+	case got := <-published:
+		if len(got) != 1 || got[0].Addr != original {
+			t.Fatalf("published endpoints = %#v, want owned copy of %v", got, original)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("endpoint publication did not run")
+	}
+}
+
+func TestDWNControlPublishesRevokedMapAndRenewalAsSuccess(t *testing.T) {
+	now := time.Now().UTC()
+	selfAddress := netip.MustParsePrefix("10.200.70.205/32")
+	revoked := &netmap.NetworkMap{SelfNode: (&tailcfg.Node{
+		Addresses: []netip.Prefix{selfAddress}, KeyExpiry: now.Add(-time.Second),
+	}).View()}
+	renewed := &netmap.NetworkMap{
+		SelfNode: (&tailcfg.Node{Addresses: []netip.Prefix{selfAddress}, KeyExpiry: now.Add(time.Hour)}).View(),
+		Peers:    []tailcfg.NodeView{(&tailcfg.Node{Addresses: []netip.Prefix{netip.MustParsePrefix("10.200.176.93/32")}}).View()},
+	}
+	maps := []*netmap.NetworkMap{revoked, renewed}
+	var calls atomic.Int32
+	statuses := make(chan controlclient.Status, len(maps))
+	cc, err := NewDWNControl(&DWNControlConfig{
+		MapResponseFunc: func(context.Context) (*netmap.NetworkMap, error) {
+			return maps[int(calls.Add(1))-1], nil
+		},
+		Logf: func(string, ...any) {},
+	}, controlclient.Options{
+		Observer:          dwnControlObserverFunc(func(_ controlclient.Client, status controlclient.Status) { statuses <- status }),
+		SkipStartForTests: true,
+	})
+	if err != nil {
+		t.Fatalf("NewDWNControl: %v", err)
+	}
+	defer cc.Shutdown()
+
+	for i, want := range maps {
+		if _, err := cc.loadAndPush(context.Background(), RefreshBatch{}); err != nil {
+			t.Fatalf("loadAndPush %d: %v", i, err)
+		}
+		status := receiveDWNControlStatus(t, statuses)
+		if status.Err != nil || !status.LoggedIn || status.NetMap != want {
+			t.Fatalf("status %d = loggedIn %v map %p err %v, want success map %p", i, status.LoggedIn, status.NetMap, status.Err, want)
+		}
+	}
+	if !revoked.SelfKeyExpiry().Before(now) || len(revoked.Peers) != 0 {
+		t.Fatalf("revoked map = expiry %v peers %d", revoked.SelfKeyExpiry(), len(revoked.Peers))
+	}
+	if !renewed.SelfKeyExpiry().After(now) || len(renewed.Peers) != 1 {
+		t.Fatalf("renewed map = expiry %v peers %d", renewed.SelfKeyExpiry(), len(renewed.Peers))
 	}
 }
 
