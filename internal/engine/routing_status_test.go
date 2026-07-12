@@ -217,9 +217,9 @@ func TestDWNControlReportsMapResults(t *testing.T) {
 	defer cc.Shutdown()
 
 	ctx := context.Background()
-	cc.loadAndPush(ctx)
-	cc.loadAndPush(ctx)
-	cc.loadAndPush(ctx)
+	cc.loadAndPush(ctx, RefreshBatch{})
+	cc.loadAndPush(ctx, RefreshBatch{})
+	cc.loadAndPush(ctx, RefreshBatch{})
 	if len(results) != 3 {
 		t.Fatalf("map result callbacks = %d, want 3", len(results))
 	}
@@ -232,6 +232,63 @@ func TestDWNControlReportsMapResults(t *testing.T) {
 	if results[2].nm != wantMap || results[2].err != nil {
 		t.Fatalf("map result = %+v, want map %p", results[2], wantMap)
 	}
+}
+
+func TestHandleControlMapResultRevokedSelfRemovesPeerRoutes(t *testing.T) {
+	routerRecorder := &recordingRoutingRouter{}
+	eng := newRoutingTestEngine(true, routerRecorder, discardRoutingLogger())
+	ctx := context.Background()
+
+	eng.handleControlMapResult(ctx, routingTestNetMap(), nil)
+	selfAddress := netip.MustParsePrefix("10.200.70.205/32")
+	revoked := &netmap.NetworkMap{SelfNode: (&tailcfg.Node{
+		Addresses: []netip.Prefix{selfAddress},
+		KeyExpiry: time.Now().Add(-time.Second),
+	}).View()}
+	eng.handleControlMapResult(ctx, revoked, nil)
+
+	configs := routerRecorder.Configs()
+	if len(configs) != 2 {
+		t.Fatalf("router configs = %d, want 2", len(configs))
+	}
+	if len(configs[0].Routes) != 1 {
+		t.Fatalf("initial routes = %v, want peer route", configs[0].Routes)
+	}
+	if len(configs[1].Routes) != 0 {
+		t.Fatalf("revoked routes = %v, want none", configs[1].Routes)
+	}
+	if len(configs[1].LocalAddrs) != 1 || configs[1].LocalAddrs[0] != selfAddress {
+		t.Fatalf("revoked local addresses = %v, want %v", configs[1].LocalAddrs, selfAddress)
+	}
+}
+
+type recordingRoutingRouter struct {
+	mu      sync.Mutex
+	configs []*router.Config
+}
+
+func (r *recordingRoutingRouter) Up() error    { return nil }
+func (r *recordingRoutingRouter) Close() error { return nil }
+func (r *recordingRoutingRouter) Set(cfg *router.Config) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	owned := *cfg
+	owned.LocalAddrs = append([]netip.Prefix(nil), cfg.LocalAddrs...)
+	owned.Routes = append([]netip.Prefix(nil), cfg.Routes...)
+	r.configs = append(r.configs, &owned)
+	return nil
+}
+func (r *recordingRoutingRouter) Configs() []*router.Config {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	configs := make([]*router.Config, len(r.configs))
+	for i, cfg := range r.configs {
+		owned := *cfg
+		owned.LocalAddrs = append([]netip.Prefix(nil), cfg.LocalAddrs...)
+		owned.Routes = append([]netip.Prefix(nil), cfg.Routes...)
+		configs[i] = &owned
+	}
+	return configs
 }
 
 type scriptedRoutingRouter struct {

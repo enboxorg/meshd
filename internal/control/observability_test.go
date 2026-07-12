@@ -96,10 +96,48 @@ func TestLoadNodeEntryCountsUndecryptablePeer(t *testing.T) {
 		t.Fatalf("tracked record = %+v, want recordId/memberRecordId set", rec)
 	}
 
-	// The counter is cumulative across loads.
+	// Reprojecting the same opaque record must not create a new episode.
 	c.loadNodeEntry(context.Background(), entry, failing, "member-1")
+	if got := c.UndecryptablePeerCount(); got != 1 {
+		t.Fatalf("UndecryptablePeerCount after repeat = %d, want 1", got)
+	}
+	const warning = "node record could not be loaded; peer will be invisible until key delivery or record recovery"
+	if got := handler.count(slog.LevelWarn, warning); got != 1 {
+		t.Fatalf("repeat warning count = %d, want 1", got)
+	}
+
+	// A new failure class is a materially new diagnostic episode.
+	parseFailure := func([]byte, *dwncrypto.Encryption) ([]byte, error) {
+		return nil, errors.New("malformed ciphertext")
+	}
+	c.loadNodeEntry(context.Background(), entry, parseFailure, "member-1")
 	if got := c.UndecryptablePeerCount(); got != 2 {
-		t.Fatalf("UndecryptablePeerCount after second load = %d, want 2", got)
+		t.Fatalf("UndecryptablePeerCount after class change = %d, want 2", got)
+	}
+	if got := handler.count(slog.LevelWarn, warning); got != 2 {
+		t.Fatalf("class-change warning count = %d, want 2", got)
+	}
+
+	// A successful parse closes the episode; the next failure is counted again.
+	recovering := func([]byte, *dwncrypto.Encryption) ([]byte, error) {
+		return []byte(`{"meshIP":"10.200.1.9"}`), nil
+	}
+	if err := c.loadNodeEntry(context.Background(), entry, recovering, "member-1"); err != nil {
+		t.Fatalf("recovering loadNodeEntry: %v", err)
+	}
+	if _, failed := c.nodeFailures["peer-record"]; failed {
+		t.Fatal("successful parse retained node failure episode")
+	}
+	if got := handler.count(slog.LevelInfo, "node record is readable again"); got != 1 {
+		t.Fatalf("recovery log count = %d, want 1", got)
+	}
+
+	c.loadNodeEntry(context.Background(), entry, failing, "member-1")
+	if got := c.UndecryptablePeerCount(); got != 3 {
+		t.Fatalf("UndecryptablePeerCount after relapse = %d, want 3", got)
+	}
+	if got := handler.count(slog.LevelWarn, warning); got != 3 {
+		t.Fatalf("relapse warning count = %d, want 3", got)
 	}
 }
 
@@ -165,14 +203,18 @@ func TestLoadEndpointEntryWarnsOnceAndReportsRecovery(t *testing.T) {
 		},
 	}
 
-	entry := json.RawMessage(`{"recordsWrite":{"recordId":"endpoint-record","descriptor":{"recipient":"` +
-		peerDID + `","parentId":"` + nodeRecordID + `"},"encodedData":"AAAA","encryption":{}}}`)
+	entries := []json.RawMessage{
+		json.RawMessage(`{"recordsWrite":{"recordId":"endpoint-record-a","descriptor":{"recipient":"` +
+			peerDID + `","parentId":"` + nodeRecordID + `"},"encodedData":"AAAA","encryption":{}}}`),
+		json.RawMessage(`{"recordsWrite":{"recordId":"endpoint-record-b","descriptor":{"recipient":"` +
+			peerDID + `","parentId":"` + nodeRecordID + `"},"encodedData":"AAAA","encryption":{}}}`),
+	}
 	wantErr := errors.New("delivery query failed")
 	failing := func([]byte, *dwncrypto.Encryption) ([]byte, error) {
 		return nil, wantErr
 	}
 
-	for range 2 {
+	for _, entry := range entries {
 		if err := c.loadEndpointEntry(context.Background(), entry, failing); !errors.Is(err, wantErr) {
 			t.Fatalf("loadEndpointEntry error = %v, want %v", err, wantErr)
 		}
@@ -190,7 +232,7 @@ func TestLoadEndpointEntryWarnsOnceAndReportsRecovery(t *testing.T) {
 	recovered := func([]byte, *dwncrypto.Encryption) ([]byte, error) {
 		return []byte(`{"localEndpoints":["192.0.2.1:1234"],"discoKey":"disco","updatedAt":"2026-07-11T00:00:00Z"}`), nil
 	}
-	if err := c.loadEndpointEntry(context.Background(), entry, recovered); err != nil {
+	if err := c.loadEndpointEntry(context.Background(), entries[1], recovered); err != nil {
 		t.Fatalf("recovered loadEndpointEntry: %v", err)
 	}
 	if got := len(c.nodes[peerDID].Endpoints); got != 1 {
@@ -198,6 +240,15 @@ func TestLoadEndpointEntryWarnsOnceAndReportsRecovery(t *testing.T) {
 	}
 	if got := handler.count(slog.LevelInfo, "endpoint record is readable again"); got != 1 {
 		t.Fatalf("endpoint recovery logs = %d, want 1", got)
+	}
+	if _, failed := c.endpointFailures[nodeRecordID]; failed {
+		t.Fatal("successful endpoint parse retained parent-slot failure episode")
+	}
+	if err := c.loadEndpointEntry(context.Background(), entries[0], failing); !errors.Is(err, wantErr) {
+		t.Fatalf("post-recovery loadEndpointEntry error = %v, want %v", err, wantErr)
+	}
+	if got := handler.count(slog.LevelWarn, "endpoint record could not be loaded; peer connectivity may be degraded"); got != 2 {
+		t.Fatalf("endpoint warnings after recovery = %d, want a new episode", got)
 	}
 }
 

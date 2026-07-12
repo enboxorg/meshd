@@ -38,6 +38,13 @@ type NodeRecord struct {
 	Endpoints []EndpointData `json:"-"`
 	RecordID  string         `json:"-"`
 
+	// Opaque marks a descriptor-only ghost whose encrypted payload was not
+	// readable. Revoked marks the synthetic, expired self node emitted when a
+	// complete authoritative projection contains no self membership record.
+	// Neither marker is serialized into DWN record data.
+	Opaque  bool `json:"-"`
+	Revoked bool `json:"-"`
+
 	// MemberRecordID is the parent member record ID, if this node is
 	// under a member (network/member/node path). Empty for owner-provisioned
 	// top-level nodes (network/node path).

@@ -2000,15 +2000,20 @@ func parseJoinCommandArgs(args []string) (inviteURL string, ownerDID string, noS
 
 const peerListDaemonLookupTimeout = 750 * time.Millisecond
 
+var (
+	errPeerListDaemonUnavailable = errors.New("meshd daemon is not running or unavailable")
+	errPeerListDaemonMismatch    = errors.New("meshd daemon is serving a different profile or network")
+	errPeerListSnapshotNotReady  = errors.New("meshd peer snapshot is not ready")
+)
+
 type peerListCommandDependencies struct {
-	loadIdentity     func(string) (*did.DID, error)
-	loadDaemonStatus func(context.Context, string) (*daemon.Status, error)
+	loadDaemonStatus    func(context.Context, string) (*daemon.Status, error)
+	daemonLookupTimeout time.Duration
 }
 
 // cmdPeerList lists all peers in the current mesh network.
 func cmdPeerList(ctx context.Context, args []string, flagProfile string) error {
 	return cmdPeerListWithDependencies(ctx, args, flagProfile, peerListCommandDependencies{
-		loadIdentity:     loadIdentity,
 		loadDaemonStatus: loadPeerListDaemonStatus,
 	})
 }
@@ -2027,161 +2032,33 @@ func cmdPeerListWithDependencies(ctx context.Context, args []string, flagProfile
 		return fmt.Errorf("not in a network. Use 'meshd network join' first.")
 	}
 
-	// The running daemon already owns a materialized, last-good view of the
-	// mesh. Prefer it before unlocking identity state or contacting the DWN.
-	// Legacy daemon responses and snapshots for another profile/network are
-	// deliberately ignored and fall through to the remote path below.
-	if deps.loadDaemonStatus != nil {
-		if status, statusErr := deps.loadDaemonStatus(ctx, daemon.DefaultSocketPath()); statusErr == nil {
-			if rows, warning, ok := peerListRowsFromDaemonStatus(ns, status); ok {
-				if warning != "" {
-					fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
-				}
-				printPeerListRows(ns.NetworkName, rows)
-				return nil
-			}
-		}
+	if deps.loadDaemonStatus == nil {
+		return fmt.Errorf("%w; run 'meshd up'", errPeerListDaemonUnavailable)
+	}
+	lookupTimeout := deps.daemonLookupTimeout
+	if lookupTimeout <= 0 {
+		lookupTimeout = peerListDaemonLookupTimeout
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, lookupTimeout)
+	defer cancel()
+	status, statusErr := deps.loadDaemonStatus(lookupCtx, daemon.DefaultSocketPath())
+	if statusErr != nil {
+		return fmt.Errorf("%w: %w; run 'meshd up'", errPeerListDaemonUnavailable, statusErr)
 	}
 
-	identityLoader := deps.loadIdentity
-	if identityLoader == nil {
-		identityLoader = loadIdentity
-	}
-	identity, err := identityLoader(stateDir)
+	rows, warning, err := peerListRowsFromDaemonStatus(ns, status)
 	if err != nil {
 		return err
 	}
-	selfNodeDID := networkNodeDID(ns, identity.URI)
-	meta := resolveIdentityMetadata(flagProfile, identity.URI)
-	selfOwnerDID := networkOwnerDID(ns, firstNonEmpty(meta.OwnerDID, identity.URI))
-
-	operationIdentity, err := loadDWNOperationIdentity(stateDir, meta, identity)
-	if err != nil {
-		return err
-	}
-	signer := dwnSigner(operationIdentity)
-	agent := dwn.NewSimpleAgent(ns.AnchorEndpoint, signer)
-	api := dwn.NewDwnAPI(agent)
-
-	readAuth, err := walletDWNAuthForOperation(stateDir, meta, dwn.InterfaceRecordsQuery, protocols.MeshProtocolURI, "", ns.NetworkRecordID, false)
-	if err != nil {
-		return err
-	}
-	// Determine protocol role for queries. Delegated sessions read as the
-	// owner (no role); member-associated nodes read as network/member.
-	queryRole := protocolRoleForAuth(readAuth, readProtocolRole(ns.AnchorDID, identity.URI, ns.MemberRecordID))
-	delegateSession := delegateSessionForCLIBestEffort(ctx, stateDir, meta, ns, operationIdentity, readAuth)
-	encMgr := newEncryptionKeyManager(identity)
-	if resp, err := loadControlStateForCLI(ctx, ns, identity, operationIdentity, encMgr, readAuth, delegateSession); err == nil {
-		if refreshed, _, saveErr := refreshLocalMembershipMetadataFromMap(stateDir, ns, resp); saveErr == nil && refreshed != nil {
-			ns = refreshed
-			selfOwnerDID = networkOwnerDID(ns, firstNonEmpty(meta.OwnerDID, identity.URI))
-		}
-		printPeerListRows(ns.NetworkName, peerListRowsFromMapResponse(ns, resp, selfNodeDID, selfOwnerDID))
-		return nil
-	}
-
-	// Query owner-provisioned node records (network/node).
-	records, status, err := api.Query(ctx, ns.AnchorDID, dwn.QueryParams{
-		Filter: dwn.RecordsFilter{
-			Protocol:     protocols.MeshProtocolURI,
-			ProtocolPath: "network/node",
-			ContextID:    ns.NetworkRecordID,
-		},
-		DateSort:          "createdAscending",
-		PermissionGrantID: readAuth.PermissionGrantID,
-		DelegatedGrant:    readAuth.DelegatedGrant,
-	}, queryRole)
-	if err != nil {
-		return fmt.Errorf("querying peers: %w", err)
-	}
-
-	if status.Code != 200 {
-		return fmt.Errorf("query failed: %d %s", status.Code, status.Detail)
-	}
-
-	// Also query member-associated node records (network/member/node).
-	// Nested protocol queries must use the direct parent member context.
-	memberRecords, mStatus, mErr := api.Query(ctx, ns.AnchorDID, dwn.QueryParams{
-		Filter: dwn.RecordsFilter{
-			Protocol:     protocols.MeshProtocolURI,
-			ProtocolPath: "network/member",
-			ContextID:    ns.NetworkRecordID,
-		},
-		DateSort:          "createdAscending",
-		PermissionGrantID: readAuth.PermissionGrantID,
-		DelegatedGrant:    readAuth.DelegatedGrant,
-	}, queryRole)
-	if mErr == nil && mStatus.Code == 200 {
-		for _, memberRecord := range memberRecords {
-			memberNodeRecords, mnStatus, mnErr := api.Query(ctx, ns.AnchorDID, dwn.QueryParams{
-				Filter: dwn.RecordsFilter{
-					Protocol:     protocols.MeshProtocolURI,
-					ProtocolPath: "network/member/node",
-					ContextID:    ns.NetworkRecordID + "/" + memberRecord.ID,
-				},
-				DateSort:          "createdAscending",
-				PermissionGrantID: readAuth.PermissionGrantID,
-				DelegatedGrant:    readAuth.DelegatedGrant,
-			}, queryRole)
-			if mnErr == nil && mnStatus.Code == 200 {
-				records = append(records, memberNodeRecords...)
-			}
-		}
-	}
-
-	if len(records) == 0 {
-		fmt.Println("No peers found.")
-		return nil
-	}
-
-	var rows []peerListRow
-	for _, r := range records {
-		peerDID := r.Recipient
-		displayDID := peerDID
-		if displayDID == "" {
-			displayDID = "(unknown)"
-		}
-		device := peerListDevice(peerDID, selfNodeDID)
-
-		var node struct {
-			MeshIP    string `json:"meshIP"`
-			Label     string `json:"label"`
-			MemberDID string `json:"memberDID"`
-			ExpiresAt string `json:"expiresAt"`
-		}
-		if err := r.Data().JSON(ctx, &node); err != nil {
-			// Data may not be inline (encrypted records need context key).
-			rows = append(rows, peerListRow{
-				NodeDID: displayDID,
-				MeshIP:  peerListMeshIP(ns.MeshCIDR, peerDID, ""),
-				Device:  device,
-				Owner:   peerListOwner(peerDID, "", selfNodeDID, selfOwnerDID),
-				Label:   "(encrypted)",
-				Expires: "unknown",
-				Path:    r.ProtocolPath,
-			})
-			continue
-		}
-		rows = append(rows, peerListRow{
-			NodeDID: displayDID,
-			MeshIP:  peerListMeshIP(ns.MeshCIDR, peerDID, node.MeshIP),
-			Device:  device,
-			Owner:   peerListOwner(peerDID, node.MemberDID, selfNodeDID, selfOwnerDID),
-			Label:   node.Label,
-			Expires: node.ExpiresAt,
-			Path:    r.ProtocolPath,
-		})
+	if warning != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
 	}
 	printPeerListRows(ns.NetworkName, rows)
-
 	return nil
 }
 
 func loadPeerListDaemonStatus(ctx context.Context, socketPath string) (*daemon.Status, error) {
-	lookupCtx, cancel := context.WithTimeout(ctx, peerListDaemonLookupTimeout)
-	defer cancel()
-	return daemon.NewClient(socketPath).GetStatus(lookupCtx)
+	return daemon.NewClient(socketPath).GetStatus(ctx)
 }
 
 func loadControlStateForCLI(ctx context.Context, ns *state.NetworkState, identity *did.DID, signerIdentity *did.DID, encMgr *dwncrypto.EncryptionKeyManager, readAuth dwn.MessageAuth, delegateSession *mesh.DelegateSession) (*control.MapResponse, error) {
@@ -2309,28 +2186,37 @@ func peerListRowsFromMapResponse(ns *state.NetworkState, resp *control.MapRespon
 	return rows
 }
 
-func peerListRowsFromDaemonStatus(ns *state.NetworkState, status *daemon.Status) ([]peerListRow, string, bool) {
-	if ns == nil || status == nil || !status.Running {
-		return nil, "", false
+func peerListRowsFromDaemonStatus(ns *state.NetworkState, status *daemon.Status) ([]peerListRow, string, error) {
+	if status == nil || !status.Running {
+		return nil, "", errPeerListDaemonUnavailable
 	}
 
-	// NodeDID was added to network.json after the first releases. Without it
-	// there is no identity-free way to prove that the daemon snapshot belongs
-	// to this profile, so legacy state must use the existing identity path.
+	// Never unlock identity state or query the DWN from this read path. The
+	// persisted node and network IDs are the complete local trust boundary for
+	// accepting the daemon snapshot.
+	if ns == nil {
+		return nil, "", fmt.Errorf("%w: local network context is missing", errPeerListDaemonMismatch)
+	}
 	selfNodeDID := strings.TrimSpace(ns.NodeDID)
 	if selfNodeDID == "" || strings.TrimSpace(ns.NetworkRecordID) == "" {
-		return nil, "", false
+		return nil, "", fmt.Errorf("%w: local network context is incomplete", errPeerListDaemonMismatch)
 	}
-	if status.NetworkRecordID != ns.NetworkRecordID || status.Self == nil || status.Self.NodeDID != selfNodeDID {
-		return nil, "", false
+	if status.NetworkRecordID != ns.NetworkRecordID {
+		return nil, "", fmt.Errorf("%w: daemon network %q does not match local network %q", errPeerListDaemonMismatch, status.NetworkRecordID, ns.NetworkRecordID)
+	}
+	if status.Self != nil && strings.TrimSpace(status.Self.NodeDID) != selfNodeDID {
+		return nil, "", fmt.Errorf("%w: daemon node %q does not match local node %q", errPeerListDaemonMismatch, status.Self.NodeDID, selfNodeDID)
 	}
 
 	snapshot := status.Snapshot
-	if snapshot == nil || snapshot.Generation == 0 || strings.TrimSpace(snapshot.RefreshedAt) == "" {
-		return nil, "", false
+	if status.Self == nil || snapshot == nil || snapshot.Generation == 0 || strings.TrimSpace(snapshot.RefreshedAt) == "" {
+		if snapshot != nil && strings.TrimSpace(snapshot.LastError) != "" {
+			return nil, "", fmt.Errorf("%w: %s", errPeerListSnapshotNotReady, strings.TrimSpace(snapshot.LastError))
+		}
+		return nil, "", fmt.Errorf("%w; wait for synchronization and check 'meshd status'", errPeerListSnapshotNotReady)
 	}
 	if _, err := time.Parse(time.RFC3339Nano, snapshot.RefreshedAt); err != nil {
-		return nil, "", false
+		return nil, "", fmt.Errorf("%w: invalid refresh timestamp", errPeerListSnapshotNotReady)
 	}
 
 	selfOwnerDID := firstNonEmpty(status.OwnerDID, ns.EffectiveOwnerDID(selfNodeDID))
@@ -2365,7 +2251,7 @@ func peerListRowsFromDaemonStatus(ns *state.NetworkState, status *daemon.Status)
 		})
 	}
 	if len(rows) == 0 || rows[0].NodeDID != selfNodeDID {
-		return nil, "", false
+		return nil, "", fmt.Errorf("%w: snapshot does not begin with the local node", errPeerListDaemonMismatch)
 	}
 
 	warning := ""
@@ -2376,7 +2262,7 @@ func peerListRowsFromDaemonStatus(ns *state.NetworkState, status *daemon.Status)
 			lastError,
 		)
 	}
-	return rows, warning, true
+	return rows, warning, nil
 }
 
 func printPeerListRows(networkName string, rows []peerListRow) {

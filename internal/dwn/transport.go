@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,6 +28,17 @@ import (
 var (
 	ErrTransport   = errors.New("transport error")
 	ErrRateLimited = errors.New("rate limited")
+)
+
+const (
+	// maxHTTPResponseBodyBytes accommodates large encrypted RecordsRead data
+	// and paginated JSON envelopes, including their wire-format overhead, while
+	// keeping every response allocation within a fixed production bound.
+	maxHTTPResponseBodyBytes int64 = 128 << 20
+
+	// maxHTTPResponseErrorPreviewBytes keeps malformed or rate-limit responses
+	// from being copied wholesale into errors and logs.
+	maxHTTPResponseErrorPreviewBytes = 4 << 10
 )
 
 // RateLimitError reports a DWN rate-limit response and carries the delay the
@@ -224,8 +236,9 @@ func WithTransportHTTPClient(c *http.Client) HTTPTransportOption {
 //   - For RecordsRead responses with data: JSON-RPC response is in
 //     "dwn-response" header and binary data is the HTTP body
 type HTTPTransport struct {
-	endpoint   string
-	httpClient *http.Client
+	endpoint             string
+	httpClient           *http.Client
+	maxResponseBodyBytes int64
 }
 
 // NewHTTPTransport creates a new HTTP transport for the given DWN endpoint.
@@ -238,8 +251,9 @@ func NewHTTPTransport(endpoint string, opts ...HTTPTransportOption) *HTTPTranspo
 	}
 
 	return &HTTPTransport{
-		endpoint:   endpoint,
-		httpClient: options.httpClient,
+		endpoint:             endpoint,
+		httpClient:           options.httpClient,
+		maxResponseBodyBytes: maxHTTPResponseBodyBytes,
 	}
 }
 
@@ -300,6 +314,10 @@ func (t *HTTPTransport) Send(ctx context.Context, target string, msg *Message, d
 //   - dwn-response header present: JSON-RPC in header, binary data in body
 //   - dwn-response header absent: JSON-RPC in body
 func (t *HTTPTransport) parseResponse(resp *http.Response) (*SendResult, error) {
+	maxBodyBytes := t.maxResponseBodyBytes
+	if maxBodyBytes == 0 {
+		maxBodyBytes = maxHTTPResponseBodyBytes
+	}
 	dwnResponseHeader := resp.Header.Get("dwn-response")
 
 	if dwnResponseHeader != "" {
@@ -320,9 +338,9 @@ func (t *HTTPTransport) parseResponse(resp *http.Response) (*SendResult, error) 
 		}
 
 		// Read the binary data from the body.
-		data, err := io.ReadAll(resp.Body)
+		data, err := readBoundedResponseBody(resp.Body, maxBodyBytes)
 		if err != nil {
-			return nil, fmt.Errorf("%w: reading response data: %v", ErrTransport, err)
+			return nil, fmt.Errorf("reading response data: %w", err)
 		}
 
 		result := &SendResult{Data: data}
@@ -333,9 +351,9 @@ func (t *HTTPTransport) parseResponse(resp *http.Response) (*SendResult, error) 
 	}
 
 	// Standard response: JSON-RPC in body.
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readBoundedResponseBody(resp.Body, maxBodyBytes)
 	if err != nil {
-		return nil, fmt.Errorf("%w: reading response body: %v", ErrTransport, err)
+		return nil, fmt.Errorf("reading response body: %w", err)
 	}
 
 	var rpcResp JsonRpcResponse
@@ -349,15 +367,15 @@ func (t *HTTPTransport) parseResponse(resp *http.Response) (*SendResult, error) 
 			rpcErr = rpcResp.Error
 		}
 		detail := "HTTP 429"
-		if rpcErr == nil && len(strings.TrimSpace(string(respBody))) > 0 {
-			detail += ": " + strings.TrimSpace(string(respBody))
+		if rpcErr == nil && len(bytes.TrimSpace(respBody)) > 0 {
+			detail += ": " + strings.TrimSpace(responseBodyErrorPreview(respBody))
 		}
 		return nil, newRateLimitError(resp, rpcErr, detail)
 	}
 
 	if parseErr != nil {
 		return nil, fmt.Errorf("%w: parsing response body (HTTP %d): %s: %v",
-			ErrTransport, resp.StatusCode, string(respBody), parseErr)
+			ErrTransport, resp.StatusCode, responseBodyErrorPreview(respBody), parseErr)
 	}
 
 	if rpcResp.Error != nil {
@@ -372,6 +390,31 @@ func (t *HTTPTransport) parseResponse(resp *http.Response) (*SendResult, error) 
 		result.Reply = rpcResp.Result.Reply
 	}
 	return result, nil
+}
+
+// readBoundedResponseBody reads at most limit+1 bytes so it can distinguish an
+// exact-boundary response from an oversized one without buffering the rest of
+// the stream. Errors never return a partial body for callers to decode.
+func readBoundedResponseBody(reader io.Reader, limit int64) ([]byte, error) {
+	if limit < 0 || limit == math.MaxInt64 {
+		return nil, fmt.Errorf("%w: invalid response body limit %d", ErrTransport, limit)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: reading bounded response body: %w", ErrTransport, err)
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("%w: response body exceeds %d-byte limit", ErrTransport, limit)
+	}
+	return body, nil
+}
+
+func responseBodyErrorPreview(body []byte) string {
+	if len(body) <= maxHTTPResponseErrorPreviewBytes {
+		return string(body)
+	}
+	return fmt.Sprintf("%s... (%d bytes total)", body[:maxHTTPResponseErrorPreviewBytes], len(body))
 }
 
 func newRateLimitError(resp *http.Response, rpcErr *JsonRpcError, fallbackDetail string) *RateLimitError {

@@ -54,14 +54,16 @@ type subscriptionRefreshCoordinator interface {
 // reducing peer discovery latency from up to 30s to near-instant.
 // The poll timer remains as a fallback for missed events.
 type SubscriptionWatcher struct {
-	endpoint        string
-	anchorTenant    string
-	networkRecordID string
-	selfDID         string
-	signer          *dwn.Signer
-	readAuth        dwn.MessageAuth
-	logger          *slog.Logger
-	newManager      subscriptionManagerFactory
+	endpoint              string
+	anchorTenant          string
+	networkRecordID       string
+	selfDID               string
+	signer                *dwn.Signer
+	readAuth              dwn.MessageAuth
+	topologyHandler       func(*dwn.SubscriptionMessage) error
+	topologyRepairHandler func()
+	logger                *slog.Logger
+	newManager            subscriptionManagerFactory
 
 	mu      sync.Mutex
 	manager subscriptionManager
@@ -100,6 +102,17 @@ type SubscriptionWatcherConfig struct {
 	// subscriptions and therefore keeps polling for topology changes.
 	ReadAuth dwn.MessageAuth
 
+	// TopologyEventHandler applies topology event frames to local materialized
+	// state before the refresh coordinator is invalidated. It runs
+	// synchronously; returning an error prevents invalidation and propagates to
+	// the subscription so the event cursor is not acknowledged.
+	TopologyEventHandler func(*dwn.SubscriptionMessage) error
+
+	// TopologyRepairHandler marks local topology state as requiring an
+	// authoritative rebuild. It runs before coordinator lifecycle actions can
+	// release or schedule a topology repair.
+	TopologyRepairHandler func()
+
 	// Logger is the structured logger.
 	Logger *slog.Logger
 }
@@ -113,13 +126,15 @@ func NewSubscriptionWatcher(cfg SubscriptionWatcherConfig) *SubscriptionWatcher 
 	}
 
 	return &SubscriptionWatcher{
-		endpoint:        cfg.AnchorEndpoint,
-		anchorTenant:    cfg.AnchorTenant,
-		networkRecordID: cfg.NetworkRecordID,
-		selfDID:         cfg.SelfDID,
-		signer:          cfg.Signer,
-		readAuth:        cloneMessageAuth(cfg.ReadAuth),
-		logger:          l.With(slog.String("component", "subscription-watcher")),
+		endpoint:              cfg.AnchorEndpoint,
+		anchorTenant:          cfg.AnchorTenant,
+		networkRecordID:       cfg.NetworkRecordID,
+		selfDID:               cfg.SelfDID,
+		signer:                cfg.Signer,
+		readAuth:              cloneMessageAuth(cfg.ReadAuth),
+		topologyHandler:       cfg.TopologyEventHandler,
+		topologyRepairHandler: cfg.TopologyRepairHandler,
+		logger:                l.With(slog.String("component", "subscription-watcher")),
 		newManager: func(endpoint string, logger *slog.Logger) subscriptionManager {
 			return dwn.NewSubscriptionManager(endpoint, logger)
 		},
@@ -202,6 +217,11 @@ func (w *SubscriptionWatcher) handleSubscriptionMessage(stream RefreshStream, me
 
 	switch message.Type {
 	case "event":
+		if stream == RefreshStreamTopology && w.topologyHandler != nil {
+			if err := w.topologyHandler(message); err != nil {
+				return fmt.Errorf("handling topology event: %w", err)
+			}
+		}
 		w.logger.Debug("DWN record changed",
 			slog.String("source", string(stream)),
 			slog.Any("cursor", message.Cursor),
@@ -236,6 +256,9 @@ func (w *SubscriptionWatcher) handleSubscriptionLifecycle(stream RefreshStream, 
 			slog.String("source", string(stream)),
 			slog.Bool("needsFullRefresh", event.NeedsFullRefresh),
 		)
+		if stream == RefreshStreamTopology && event.NeedsFullRefresh && w.topologyRepairHandler != nil {
+			w.topologyRepairHandler()
+		}
 		w.setStreamLive(stream, true, event.NeedsFullRefresh)
 	case dwn.SubscriptionLifecycleProgressGap:
 		// Wait for the fresh replacement stream before rebuilding. This keeps
@@ -244,6 +267,9 @@ func (w *SubscriptionWatcher) handleSubscriptionLifecycle(stream RefreshStream, 
 			slog.String("source", string(stream)),
 			slog.Any("gap", event.Gap),
 		)
+		if stream == RefreshStreamTopology && w.topologyRepairHandler != nil {
+			w.topologyRepairHandler()
+		}
 		w.setStreamLive(stream, false, true)
 	case dwn.SubscriptionLifecycleRetrying:
 		// The coordinator switches to the fallback cadence while reconnecting.
@@ -258,6 +284,9 @@ func (w *SubscriptionWatcher) handleSubscriptionLifecycle(stream RefreshStream, 
 			slog.String("source", string(stream)),
 			slog.Any("error", event.Err),
 		)
+		if stream == RefreshStreamTopology && w.topologyRepairHandler != nil {
+			w.topologyRepairHandler()
+		}
 		w.setStreamLive(stream, false, false)
 		w.notify(reasonForStream(stream))
 	default:

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/enboxorg/meshd/internal/daemon"
-	"github.com/enboxorg/meshd/internal/did"
 	"github.com/enboxorg/meshd/internal/engine"
 	"github.com/enboxorg/meshd/internal/state"
 )
@@ -58,9 +57,9 @@ func TestPeerListRowsFromDaemonStatus(t *testing.T) {
 		},
 	}
 
-	rows, warning, ok := peerListRowsFromDaemonStatus(ns, status)
-	if !ok {
-		t.Fatal("peerListRowsFromDaemonStatus rejected ready matching snapshot")
+	rows, warning, err := peerListRowsFromDaemonStatus(ns, status)
+	if err != nil {
+		t.Fatalf("peerListRowsFromDaemonStatus rejected ready matching snapshot: %v", err)
 	}
 	want := []peerListRow{
 		{
@@ -111,17 +110,20 @@ func TestPeerListRowsFromDaemonStatusRejectsUntrustedOrUnreadySnapshot(t *testin
 	}
 
 	tests := []struct {
-		name   string
-		mutate func(*state.NetworkState, *daemon.Status) (*state.NetworkState, *daemon.Status)
+		name    string
+		wantErr error
+		mutate  func(*state.NetworkState, *daemon.Status) (*state.NetworkState, *daemon.Status)
 	}{
 		{
-			name: "absent daemon status",
+			name:    "absent daemon status",
+			wantErr: errPeerListDaemonUnavailable,
 			mutate: func(ns *state.NetworkState, _ *daemon.Status) (*state.NetworkState, *daemon.Status) {
 				return ns, nil
 			},
 		},
 		{
-			name: "old daemon response",
+			name:    "old daemon response",
+			wantErr: errPeerListSnapshotNotReady,
 			mutate: func(ns *state.NetworkState, status *daemon.Status) (*state.NetworkState, *daemon.Status) {
 				status.Self = nil
 				status.Snapshot = nil
@@ -129,49 +131,56 @@ func TestPeerListRowsFromDaemonStatusRejectsUntrustedOrUnreadySnapshot(t *testin
 			},
 		},
 		{
-			name: "legacy state without node DID",
+			name:    "legacy state without node DID",
+			wantErr: errPeerListDaemonMismatch,
 			mutate: func(ns *state.NetworkState, status *daemon.Status) (*state.NetworkState, *daemon.Status) {
 				ns.NodeDID = ""
 				return ns, status
 			},
 		},
 		{
-			name: "network mismatch",
+			name:    "network mismatch",
+			wantErr: errPeerListDaemonMismatch,
 			mutate: func(ns *state.NetworkState, status *daemon.Status) (*state.NetworkState, *daemon.Status) {
 				status.NetworkRecordID = "other-network"
 				return ns, status
 			},
 		},
 		{
-			name: "self mismatch",
+			name:    "self mismatch",
+			wantErr: errPeerListDaemonMismatch,
 			mutate: func(ns *state.NetworkState, status *daemon.Status) (*state.NetworkState, *daemon.Status) {
 				status.Self.NodeDID = "did:jwk:other-profile"
 				return ns, status
 			},
 		},
 		{
-			name: "zero generation",
+			name:    "zero generation",
+			wantErr: errPeerListSnapshotNotReady,
 			mutate: func(ns *state.NetworkState, status *daemon.Status) (*state.NetworkState, *daemon.Status) {
 				status.Snapshot.Generation = 0
 				return ns, status
 			},
 		},
 		{
-			name: "missing refresh time",
+			name:    "missing refresh time",
+			wantErr: errPeerListSnapshotNotReady,
 			mutate: func(ns *state.NetworkState, status *daemon.Status) (*state.NetworkState, *daemon.Status) {
 				status.Snapshot.RefreshedAt = ""
 				return ns, status
 			},
 		},
 		{
-			name: "malformed refresh time",
+			name:    "malformed refresh time",
+			wantErr: errPeerListSnapshotNotReady,
 			mutate: func(ns *state.NetworkState, status *daemon.Status) (*state.NetworkState, *daemon.Status) {
 				status.Snapshot.RefreshedAt = "not-a-time"
 				return ns, status
 			},
 		},
 		{
-			name: "not running",
+			name:    "not running",
+			wantErr: errPeerListDaemonUnavailable,
 			mutate: func(ns *state.NetworkState, status *daemon.Status) (*state.NetworkState, *daemon.Status) {
 				status.Running = false
 				return ns, status
@@ -182,8 +191,9 @@ func TestPeerListRowsFromDaemonStatusRejectsUntrustedOrUnreadySnapshot(t *testin
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			ns, status := tc.mutate(readyState(), readyStatus())
-			if rows, warning, ok := peerListRowsFromDaemonStatus(ns, status); ok || rows != nil || warning != "" {
-				t.Fatalf("result = (%+v, %q, %v), want remote fallback", rows, warning, ok)
+			rows, warning, err := peerListRowsFromDaemonStatus(ns, status)
+			if !errors.Is(err, tc.wantErr) || rows != nil || warning != "" {
+				t.Fatalf("result = (%+v, %q, %v), want local error %v", rows, warning, err, tc.wantErr)
 			}
 		})
 	}
@@ -355,7 +365,7 @@ func TestDaemonRefreshState(t *testing.T) {
 	}
 }
 
-func TestCmdPeerListUsesDaemonSnapshotBeforeIdentity(t *testing.T) {
+func TestCmdPeerListUsesOnlyDaemonSnapshot(t *testing.T) {
 	stateDir := t.TempDir()
 	t.Setenv("MESHD_STATE_DIR", stateDir)
 	ns := &state.NetworkState{
@@ -369,14 +379,9 @@ func TestCmdPeerListUsesDaemonSnapshotBeforeIdentity(t *testing.T) {
 		t.Fatalf("SaveNetworkState: %v", err)
 	}
 
-	var identityLoads atomic.Int32
 	var statusLoads atomic.Int32
 	output, err := captureStdout(t, func() error {
 		return cmdPeerListWithDependencies(context.Background(), nil, "", peerListCommandDependencies{
-			loadIdentity: func(string) (*did.DID, error) {
-				identityLoads.Add(1)
-				return nil, errors.New("identity must not be loaded")
-			},
 			loadDaemonStatus: func(context.Context, string) (*daemon.Status, error) {
 				statusLoads.Add(1)
 				return &daemon.Status{
@@ -404,9 +409,6 @@ func TestCmdPeerListUsesDaemonSnapshotBeforeIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cmdPeerListWithDependencies: %v", err)
 	}
-	if got := identityLoads.Load(); got != 0 {
-		t.Fatalf("identity loads = %d, want zero", got)
-	}
 	if got := statusLoads.Load(); got != 1 {
 		t.Fatalf("daemon status loads = %d, want one", got)
 	}
@@ -417,7 +419,7 @@ func TestCmdPeerListUsesDaemonSnapshotBeforeIdentity(t *testing.T) {
 	}
 }
 
-func TestCmdPeerListFallsBackToIdentityForMismatchedSnapshot(t *testing.T) {
+func TestCmdPeerListRejectsMismatchedDaemonWithoutRemoteFallback(t *testing.T) {
 	stateDir := t.TempDir()
 	t.Setenv("MESHD_STATE_DIR", stateDir)
 	if err := state.SaveNetworkState(stateDir, &state.NetworkState{
@@ -428,14 +430,10 @@ func TestCmdPeerListFallsBackToIdentityForMismatchedSnapshot(t *testing.T) {
 		t.Fatalf("SaveNetworkState: %v", err)
 	}
 
-	wantErr := errors.New("identity fallback reached")
-	var identityLoads atomic.Int32
+	var statusLoads atomic.Int32
 	err := cmdPeerListWithDependencies(context.Background(), nil, "", peerListCommandDependencies{
-		loadIdentity: func(string) (*did.DID, error) {
-			identityLoads.Add(1)
-			return nil, wantErr
-		},
 		loadDaemonStatus: func(context.Context, string) (*daemon.Status, error) {
+			statusLoads.Add(1)
 			return &daemon.Status{
 				Running:         true,
 				NetworkRecordID: "other-network",
@@ -447,10 +445,86 @@ func TestCmdPeerListFallsBackToIdentityForMismatchedSnapshot(t *testing.T) {
 			}, nil
 		},
 	})
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("cmdPeerListWithDependencies error = %v, want identity fallback", err)
+	if !errors.Is(err, errPeerListDaemonMismatch) {
+		t.Fatalf("cmdPeerListWithDependencies error = %v, want profile/network mismatch", err)
 	}
-	if got := identityLoads.Load(); got != 1 {
-		t.Fatalf("identity loads = %d, want one", got)
+	if got := statusLoads.Load(); got != 1 {
+		t.Fatalf("daemon status loads = %d, want one", got)
+	}
+}
+
+func TestCmdPeerListReturnsLocalSnapshotNotReady(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("MESHD_STATE_DIR", stateDir)
+	if err := state.SaveNetworkState(stateDir, &state.NetworkState{
+		NetworkRecordID: "network-1",
+		NetworkName:     "home",
+		NodeDID:         "did:jwk:self",
+	}); err != nil {
+		t.Fatalf("SaveNetworkState: %v", err)
+	}
+
+	err := cmdPeerListWithDependencies(context.Background(), nil, "", peerListCommandDependencies{
+		loadDaemonStatus: func(context.Context, string) (*daemon.Status, error) {
+			return &daemon.Status{
+				Running:         true,
+				NetworkRecordID: "network-1",
+				Self:            &daemon.PeerStatus{NodeDID: "did:jwk:self"},
+				Snapshot:        &daemon.SnapshotStatus{LastError: "initial synchronization is rate limited"},
+			}, nil
+		},
+	})
+	if !errors.Is(err, errPeerListSnapshotNotReady) || !strings.Contains(err.Error(), "rate limited") {
+		t.Fatalf("cmdPeerListWithDependencies error = %v, want local not-ready detail", err)
+	}
+}
+
+func TestCmdPeerListReturnsDaemonUnavailableWithoutRemoteFallback(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("MESHD_STATE_DIR", stateDir)
+	if err := state.SaveNetworkState(stateDir, &state.NetworkState{
+		NetworkRecordID: "network-1",
+		NetworkName:     "home",
+		NodeDID:         "did:jwk:self",
+	}); err != nil {
+		t.Fatalf("SaveNetworkState: %v", err)
+	}
+
+	wantErr := errors.New("socket unavailable")
+	err := cmdPeerListWithDependencies(context.Background(), nil, "", peerListCommandDependencies{
+		loadDaemonStatus: func(context.Context, string) (*daemon.Status, error) {
+			return nil, wantErr
+		},
+	})
+	if !errors.Is(err, errPeerListDaemonUnavailable) || !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "meshd up") {
+		t.Fatalf("cmdPeerListWithDependencies error = %v, want unavailable error and start hint", err)
+	}
+}
+
+func TestCmdPeerListDaemonLookupIsBounded(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("MESHD_STATE_DIR", stateDir)
+	if err := state.SaveNetworkState(stateDir, &state.NetworkState{
+		NetworkRecordID: "network-1",
+		NetworkName:     "home",
+		NodeDID:         "did:jwk:self",
+	}); err != nil {
+		t.Fatalf("SaveNetworkState: %v", err)
+	}
+
+	started := time.Now()
+	err := cmdPeerListWithDependencies(context.Background(), nil, "", peerListCommandDependencies{
+		daemonLookupTimeout: 20 * time.Millisecond,
+		loadDaemonStatus: func(ctx context.Context, _ string) (*daemon.Status, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	})
+	elapsed := time.Since(started)
+	if !errors.Is(err, errPeerListDaemonUnavailable) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cmdPeerListWithDependencies error = %v, want bounded unavailable deadline", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("daemon lookup took %s, want bounded local failure", elapsed)
 	}
 }

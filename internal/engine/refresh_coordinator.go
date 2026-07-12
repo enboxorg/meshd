@@ -20,6 +20,7 @@ const (
 	RefreshReasonStartup  RefreshReason = "startup"
 	RefreshReasonPeriodic RefreshReason = "periodic"
 	RefreshReasonTopology RefreshReason = "topology"
+	RefreshReasonExpiry   RefreshReason = "expiry"
 	RefreshReasonDelivery RefreshReason = "delivery"
 	RefreshReasonEndpoint RefreshReason = "endpoint"
 	RefreshReasonManual   RefreshReason = "manual"

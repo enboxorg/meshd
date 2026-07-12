@@ -464,23 +464,25 @@ func New(cfg Config) (*Engine, error) {
 	// This replaces pure polling with event-driven updates when the DWN
 	// server supports WebSocket subscriptions.
 	subWatcher := NewSubscriptionWatcher(SubscriptionWatcherConfig{
-		AnchorEndpoint:  cfg.AnchorEndpoint,
-		AnchorTenant:    cfg.AnchorTenant,
-		NetworkRecordID: cfg.NetworkRecordID,
-		SelfDID:         cfg.SelfDID,
-		Signer:          cfg.Signer,
-		ReadAuth:        readAuth,
-		Logger:          l,
+		AnchorEndpoint:        cfg.AnchorEndpoint,
+		AnchorTenant:          cfg.AnchorTenant,
+		NetworkRecordID:       cfg.NetworkRecordID,
+		SelfDID:               cfg.SelfDID,
+		Signer:                cfg.Signer,
+		ReadAuth:              readAuth,
+		TopologyEventHandler:  dwnClient.StageTopologyEvent,
+		TopologyRepairHandler: dwnClient.RequireFullReconciliation,
+		Logger:                l,
 	})
 
 	// Wire the DWN control client into the LocalBackend.
-	// MapResponseFunc closes over our DWNClient and Converter to produce
-	// NetworkMaps from DWN records.
+	// RefreshMapResponseFunc uses staged topology deltas only for pure topology
+	// batches and performs a full reconciliation for every other trigger.
 	snapshots := &meshSnapshotStore{}
-	mapFn := mapResponseFunc(dwnClient.LoadState, converter, snapshots.record)
+	mapFn := refreshMapResponseFunc(dwnClient, converter, snapshots.record)
 	var engineRef *Engine
 	dwnControlConfig := &DWNControlConfig{
-		MapResponseFunc:         mapFn,
+		RefreshMapResponseFunc:  mapFn,
 		PollInterval:            pollInterval,
 		HealthyPollInterval:     healthyPollInterval,
 		RefreshTimeout:          refreshTimeout,

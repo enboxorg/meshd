@@ -216,7 +216,7 @@ func TestBuildMapResponseSkipsExpiredPeer(t *testing.T) {
 	}
 }
 
-func TestBuildMapResponseReturnsNilWhenSelfExpired(t *testing.T) {
+func TestBuildMapResponseEmitsDownMapWhenSelfExpired(t *testing.T) {
 	selfDID, _ := testDIDJWK(t)
 	peerDID, _ := testDIDJWK(t)
 	c := NewDWNClient("https://dwn.example", "did:example:anchor", "network-1", selfDID, nil)
@@ -229,8 +229,10 @@ func TestBuildMapResponseReturnsNilWhenSelfExpired(t *testing.T) {
 	}
 	c.nodes[peerDID] = &NodeRecord{DID: peerDID, MeshIP: "10.200.0.3", RecordID: "peer-record"}
 
-	if resp := c.buildMapResponse(); resp != nil {
-		t.Fatalf("buildMapResponse returned %#v, want nil", resp)
+	resp := c.buildMapResponse()
+	if resp == nil || resp.Node == nil || resp.Node.DID != selfDID || len(resp.Peers) != 0 ||
+		resp.Node.ExpiresAt != c.nodes[selfDID].ExpiresAt {
+		t.Fatalf("expired self response = %#v, want expired self and zero peers", resp)
 	}
 }
 
@@ -243,7 +245,7 @@ func TestNodeRecordExpired(t *testing.T) {
 	}{
 		"empty":     {expiresAt: "", want: false},
 		"future":    {expiresAt: now.Add(time.Minute).Format(time.RFC3339), want: false},
-		"exact now": {expiresAt: now.Format(time.RFC3339), want: false},
+		"exact now": {expiresAt: now.Format(time.RFC3339), want: true},
 		"past":      {expiresAt: now.Add(-time.Minute).Format(time.RFC3339), want: true},
 		"malformed": {expiresAt: "not-a-time", want: false},
 	}

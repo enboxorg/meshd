@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -10,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/netip"
 	"sort"
 	"strings"
@@ -32,13 +34,15 @@ const DefaultPeerStaleThreshold = 5 * time.Minute
 
 // Sentinel errors.
 var (
-	ErrNoNetwork = errors.New("network record not found")
-	ErrNoEntry   = errors.New("no data found in entry")
+	ErrNoNetwork              = errors.New("network record not found")
+	ErrNoEntry                = errors.New("no data found in entry")
+	errRawCaptureReadNotFound = errors.New("RecordsRead entry not found")
 )
 
 func shouldAbortStateLoad(ctx context.Context, err error) bool {
 	return ctx.Err() != nil ||
 		errors.Is(err, dwn.ErrRateLimited) ||
+		errors.Is(err, dwn.ErrTransport) ||
 		errors.Is(err, context.Canceled) ||
 		errors.Is(err, context.DeadlineExceeded)
 }
@@ -51,6 +55,8 @@ func endpointFailureClass(err error) string {
 		return "context"
 	case errors.Is(err, dwn.ErrTransport):
 		return "transport"
+	case errors.Is(err, errAudienceKeyDeliveryAbsent):
+		return "key-unavailable"
 	}
 	message := strings.ToLower(err.Error())
 	if strings.Contains(message, "no delivery record") ||
@@ -175,11 +181,25 @@ type DWNClient struct {
 	// coalesces concurrent lookups. It has its own lock because record parsing
 	// can run while c.mu is held.
 	deliveredAudienceKeys audienceKeyCache
+	// roleAudienceKeys memoizes the combined seal-or-delivery resolution per
+	// tuple, preventing one absent audience query per encrypted record.
+	roleAudienceKeys audienceKeyCache
 
 	// loadMu serializes complete state refreshes and blocks snapshot readers
 	// until a refresh either commits or rolls back.
 	loadMu sync.Mutex
-	mu     sync.RWMutex
+
+	// deltaMu protects the last-good raw snapshot and staged topology events.
+	deltaMu              sync.Mutex
+	rawBaseline          *rawMeshRecordSet
+	pendingTopology      []pendingTopologyEvent
+	pendingTopologyBytes int
+	topologySequence     uint64
+	repairSequence       uint64
+	fullReconciliation   bool
+	mu                   sync.RWMutex
+	rawParsedGeneration  uint64
+	rawParsedOutcomes    map[rawParsedOutcomeKey]rawParsedOutcome
 
 	network *NetworkConfig
 	members map[string]*MemberRecord
@@ -190,12 +210,12 @@ type DWNClient struct {
 	// peerEndpoints caches resolved DID → DWN endpoint mappings.
 	peerEndpoints map[string]*PeerEndpointInfo
 
-	// undecryptablePeers counts (cumulatively, across all state loads) node
-	// records whose data payload could not be decrypted — the visible symptom
-	// of a missing role-audience key delivery (issue #187). Tracked separately
-	// from droppedPeers because a record can fail to decrypt yet still surface a
-	// mesh IP via fallback, or decrypt yet lack a usable IP.
+	// undecryptablePeers counts distinct node failure episodes/classes.
+	// nodeFailures suppresses repeated projection warnings for unchanged opaque
+	// records until the record recovers or the failure class changes. The map is
+	// protected by mu because node parsing already runs under that lock.
 	undecryptablePeers atomic.Int64
+	nodeFailures       map[string]string
 
 	// unreadableEndpoints counts endpoint records that could not be parsed or
 	// decrypted. endpointFailures suppresses repeated warnings until recovery;
@@ -250,14 +270,14 @@ func NewDWNClient(
 		members:          make(map[string]*MemberRecord),
 		nodes:            make(map[string]*NodeRecord),
 		peerEndpoints:    make(map[string]*PeerEndpointInfo),
+		nodeFailures:     make(map[string]string),
 		endpointFailures: make(map[string]string),
 	}
 }
 
-// UndecryptablePeerCount returns the cumulative number of node records this
-// client has failed to decrypt since it was created. A non-zero, growing value
-// means role-audience keys are not reaching this node (issue #187): its peers
-// exist in the DWN but cannot be read, so they never enter the mesh map.
+// UndecryptablePeerCount returns the number of distinct node failure episodes
+// or failure-class transitions since this client was created. A non-zero,
+// growing value means records remain unreadable or are failing in new ways.
 func (c *DWNClient) UndecryptablePeerCount() int64 {
 	return c.undecryptablePeers.Load()
 }
@@ -335,313 +355,589 @@ func (c *DWNClient) restoreState(snapshot dwnClientStateSnapshot) {
 // Both paths have nodeInfo and endpoint child records. LoadState queries
 // all paths and merges them into a unified node map keyed by DID.
 func (c *DWNClient) LoadState(ctx context.Context) (*MapResponse, error) {
+	return c.LoadStateValidated(ctx, nil)
+}
+
+// LoadStateValidated reads a complete remote snapshot and validates its
+// projected response before making the parsed state, raw baseline, or covered
+// topology-event prefix durable. The validator runs while loadMu is held and
+// must not call methods that acquire loadMu.
+func (c *DWNClient) LoadStateValidated(ctx context.Context, validate PendingStateValidator) (*MapResponse, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("loading full state: nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	c.loadMu.Lock()
-	previous := c.stateSnapshot()
-	committed := false
-	defer func() {
-		if !committed {
-			c.restoreState(previous)
-		}
-		c.loadMu.Unlock()
-	}()
+	defer c.loadMu.Unlock()
+	c.invalidateRawParsedOutcomes()
+	c.deliveredAudienceKeys.invalidateFailures()
+	c.roleAudienceKeys.invalidateFailures()
 
-	// Determine the protocol role for queries. The anchor (network owner)
-	// can read as author without a role. Non-anchor nodes use their node
-	// role. Both network/node and network/member roles grant read access
-	// to all record types, so we use network/node universally for
-	// non-anchor reads.
+	through := c.beginFullReconciliation()
+	budget := &fullStateFetchBudget{}
 	role := c.protocolRole
-
-	// 1. Read network config.
-	c.logger.DebugContext(ctx, "reading network record",
-		slog.String("recordId", c.networkRecordID),
-	)
-
-	netResp, err := c.anchorDWN.RecordsReadWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
+	fetchStarted := time.Now()
+	loadCommitted := false
+	logger := c.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	defer func() {
+		requests, records, retainedBytes := budget.snapshot()
+		logger.DebugContext(ctx, "full state reconciliation finished",
+			slog.Bool("committed", loadCommitted),
+			slog.Int("requests", requests),
+			slog.Int("records", records),
+			slog.Int("retainedBytes", retainedBytes),
+			slog.Duration("duration", time.Since(fetchStarted)),
+		)
+	}()
+	if err := budget.takeRequest(); err != nil {
+		return nil, err
+	}
+	networkResult, err := c.anchorDWN.RecordsReadWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
 		RecordID: c.networkRecordID,
 	}, c.readAuth(role))
 	if err != nil {
 		return nil, fmt.Errorf("reading network: %w", err)
 	}
-	if netResp.Reply == nil || netResp.Reply.Status.Code != 200 {
-		code, detail := 0, "nil reply"
-		if netResp.Reply != nil {
-			code = netResp.Reply.Status.Code
-			detail = netResp.Reply.Status.Detail
+	if networkResult != nil && networkResult.Reply != nil && networkResult.Reply.Status.Code == http.StatusNotFound {
+		return nil, fmt.Errorf("%w: %d %s", ErrNoNetwork, networkResult.Reply.Status.Code, networkResult.Reply.Status.Detail)
+	}
+	if statusErr := rawCaptureReadStatusError(networkResult); statusErr != nil {
+		if errors.Is(statusErr, dwn.ErrRateLimited) {
+			return nil, fmt.Errorf("reading network: %w", statusErr)
 		}
-		return nil, fmt.Errorf("%w: %d %s", ErrNoNetwork, code, detail)
+		return nil, fmt.Errorf("reading network: %w", errors.Join(dwn.ErrTransport, statusErr))
 	}
-
-	var network NetworkConfig
-	// Network record is NOT encrypted (publicly readable anchor).
-	if err := ParseEntryData(netResp.Reply.Entry, &network, nil); err != nil {
-		return nil, fmt.Errorf("parsing network: %w", err)
-	}
-
-	c.mu.Lock()
-	c.network = &network
-	c.mu.Unlock()
-
-	// 2. Query owner-provisioned node records (network/node).
-	c.logger.DebugContext(ctx, "querying owner-provisioned nodes")
-
-	nodesResp, err := c.anchorDWN.RecordsQueryWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
-		Protocol:     protocols.MeshProtocolURI,
-		ProtocolPath: "network/node",
-		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, c.readAuth(role))
+	networkEntry, err := rawMeshRecordReadEntry(networkResult)
 	if err != nil {
-		return nil, fmt.Errorf("querying nodes: %w", err)
+		return nil, fmt.Errorf("reading network entry: %w", err)
 	}
-
-	nodeEntries, err := dwn.QueryResult(nodesResp)
+	if err := budget.retain([]json.RawMessage{networkEntry}, nil); err != nil {
+		return nil, fmt.Errorf("retaining network entry: %w", err)
+	}
+	candidate, err := newRawMeshRecordSet([]json.RawMessage{networkEntry}, "network")
 	if err != nil {
-		return nil, fmt.Errorf("parsing nodes: %w", err)
+		return nil, fmt.Errorf("normalizing network entry: %w", err)
 	}
 
-	nodeDecryptor := c.makeDecryptor(ctx, "network/node")
-	var nodeLoadErr error
-	c.mu.Lock()
-	clear(c.nodes) // Clear stale nodes before repopulating.
-	for _, entry := range nodeEntries {
-		if err := c.loadNodeEntry(ctx, entry, nodeDecryptor, ""); shouldAbortStateLoad(ctx, err) {
-			nodeLoadErr = err
-			break
-		}
-	}
-	c.mu.Unlock()
-	if nodeLoadErr != nil {
-		return nil, fmt.Errorf("decrypting nodes: %w", nodeLoadErr)
-	}
-
-	c.logger.DebugContext(ctx, "loaded owner-provisioned nodes", slog.Int("count", len(nodeEntries)))
-
-	// 3. Query member records (network/member) to discover members.
-	c.logger.DebugContext(ctx, "querying members")
-
-	membersReady := true
-	membersResp, err := c.anchorDWN.RecordsQueryWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
-		Protocol:     protocols.MeshProtocolURI,
-		ProtocolPath: "network/member",
-		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, c.readAuth(role))
-	if err != nil {
-		if shouldAbortStateLoad(ctx, err) {
-			return nil, fmt.Errorf("querying members: %w", err)
-		}
-		c.logger.DebugContext(ctx, "querying members failed", slog.Any("error", err))
-		membersReady = false
-	}
-	var memberEntries []json.RawMessage
-	if membersReady {
-		memberEntries, err = dwn.QueryResult(membersResp)
+	queryPath := func(protocolPath, contextID, dateSort string) error {
+		entries, err := c.queryAllRawMeshRecords(ctx, dwn.RecordsFilter{
+			Protocol:     protocols.MeshProtocolURI,
+			ProtocolPath: protocolPath,
+			ContextID:    contextID,
+		}, dateSort, role, budget)
 		if err != nil {
-			if shouldAbortStateLoad(ctx, err) {
-				return nil, fmt.Errorf("parsing members: %w", err)
-			}
-			c.logger.DebugContext(ctx, "parsing member results", slog.Any("error", err))
-			membersReady = false
+			return fmt.Errorf("querying %s under %s: %w", protocolPath, contextID, err)
 		}
+		if _, err := candidate.addEntries(entries, protocolPath); err != nil {
+			return fmt.Errorf("normalizing %s under %s: %w", protocolPath, contextID, err)
+		}
+		return nil
+	}
+	queryGroup := func(specs []fullStateQuerySpec) error {
+		batches, err := c.queryRawMeshRecordGroup(ctx, specs, role, budget)
+		if err != nil {
+			return err
+		}
+		for i, entries := range batches {
+			spec := specs[i]
+			if _, err := candidate.addEntries(entries, spec.protocolPath); err != nil {
+				return fmt.Errorf("normalizing %s under %s: %w", spec.protocolPath, spec.contextID, err)
+			}
+		}
+		return nil
 	}
 
-	if membersReady {
-		memberDecryptor := c.makeDecryptor(ctx, "network/member")
-		var memberLoadErr error
-		c.mu.Lock()
-		clear(c.members) // Clear stale members before repopulating.
-		for _, entry := range memberEntries {
-			meta := extractEntryMetadata(entry)
-			memberDID := meta.Recipient
+	if err := queryPath("network/node", c.networkRecordID, "createdAscending"); err != nil {
+		return nil, err
+	}
+	if err := queryPath("network/member", c.networkRecordID, "createdAscending"); err != nil {
+		return nil, err
+	}
+	memberContexts := fullStateMemberContexts(candidate, c.networkRecordID)
+	memberQueries := make([]fullStateQuerySpec, len(memberContexts))
+	for i, memberContext := range memberContexts {
+		memberQueries[i] = fullStateQuerySpec{
+			protocolPath: "network/member/node", contextID: memberContext, dateSort: "createdAscending",
+		}
+	}
+	if err := queryGroup(memberQueries); err != nil {
+		return nil, err
+	}
+	if err := queryPath("network/relay", c.networkRecordID, "createdAscending"); err != nil {
+		return nil, err
+	}
+	if err := queryPath("network/aclPolicy", c.networkRecordID, "createdDescending"); err != nil {
+		return nil, err
+	}
+	nodeContexts := fullStateNodeContexts(candidate, c.networkRecordID)
+	nodeQueries := make([]fullStateQuerySpec, 0, 2*len(nodeContexts))
+	for _, node := range nodeContexts {
+		nodeQueries = append(nodeQueries,
+			fullStateQuerySpec{protocolPath: node.infoPath, contextID: node.contextID, dateSort: "createdDescending"},
+			fullStateQuerySpec{protocolPath: node.endpointPath, contextID: node.contextID, dateSort: "createdDescending"},
+		)
+	}
+	if err := queryGroup(nodeQueries); err != nil {
+		return nil, err
+	}
 
-			var member MemberRecord
-			if err := ParseEntryData(entry, &member, memberDecryptor); err != nil {
-				c.logger.DebugContext(ctx, "parsing member entry",
-					slog.Any("error", err),
-					slog.String("memberDID", memberDID),
-				)
-				if shouldAbortStateLoad(ctx, err) {
-					memberLoadErr = err
-					break
-				}
-				// Track a permanently unreadable member from its public metadata so
-				// later key delivery can still target it.
-				if memberDID != "" {
-					member.DID = memberDID
-					member.RecordID = meta.RecordID
-					c.members[memberDID] = &member
-				}
+	projection, err := c.projectRawMeshRecordSetWithDecryptors(ctx, candidate, c.makeDecryptor)
+	if err != nil {
+		return nil, fmt.Errorf("projecting full state: %w", err)
+	}
+	if validate != nil {
+		if err := validate(projection.response); err != nil {
+			return projection.response, err
+		}
+	}
+	if err := c.completeFullReconciliation(ctx, candidate, projection, through); err != nil {
+		return projection.response, err
+	}
+	loadCommitted = true
+	return projection.response, nil
+}
+
+const (
+	fullStateQueryPageSize = 256
+	fullStateQueryWorkers  = 8
+	fullStateMaxQueryPages = 64
+	fullStateMaxRecords    = 10_000
+	fullStateMaxBytes      = 64 << 20
+	fullStateMaxRequests   = 25_000
+)
+
+type fullStateFetchBudget struct {
+	mu       sync.Mutex
+	requests int
+	records  int
+	bytes    int
+}
+
+func (b *fullStateFetchBudget) takeRequest() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.requests >= fullStateMaxRequests {
+		return fmt.Errorf("full-state request limit exceeded: %d", fullStateMaxRequests)
+	}
+	b.requests++
+	return nil
+}
+
+func (b *fullStateFetchBudget) retain(entries []json.RawMessage, cursor json.RawMessage) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(entries) > fullStateMaxRecords-b.records {
+		return fmt.Errorf("full-state record limit exceeded: %d", fullStateMaxRecords)
+	}
+	retainedBytes := len(cursor)
+	for _, entry := range entries {
+		if len(entry) > fullStateMaxBytes-retainedBytes {
+			return fmt.Errorf("full-state byte limit exceeded: %d", fullStateMaxBytes)
+		}
+		retainedBytes += len(entry)
+	}
+	if retainedBytes > fullStateMaxBytes-b.bytes {
+		return fmt.Errorf("full-state byte limit exceeded: %d", fullStateMaxBytes)
+	}
+	b.records += len(entries)
+	b.bytes += retainedBytes
+	return nil
+}
+
+func (b *fullStateFetchBudget) snapshot() (requests, records, retainedBytes int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.requests, b.records, b.bytes
+}
+
+func canonicalFullStateCursor(raw json.RawMessage) (json.RawMessage, string, error) {
+	if len(raw) == 0 {
+		return nil, "", nil
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return nil, "", fmt.Errorf("decoding pagination cursor: %w", err)
+	}
+	canonical := cloneRawJSON(compact.Bytes())
+	if bytes.Equal(canonical, []byte("null")) {
+		return nil, "", nil
+	}
+	return canonical, string(canonical), nil
+}
+
+func fullStateMemberContexts(set *rawMeshRecordSet, networkRecordID string) []string {
+	seen := make(map[string]struct{})
+	for _, record := range set.all() {
+		if record.protocol != protocols.MeshProtocolURI || record.protocolPath != "network/member" ||
+			!rawRecordIsDirectChild(record, networkRecordID) {
+			continue
+		}
+		seen[record.contextID] = struct{}{}
+	}
+	contexts := make([]string, 0, len(seen))
+	for contextID := range seen {
+		contexts = append(contexts, contextID)
+	}
+	sort.Strings(contexts)
+	return contexts
+}
+
+type fullStateNodeContext struct {
+	contextID    string
+	infoPath     string
+	endpointPath string
+}
+
+func fullStateNodeContexts(set *rawMeshRecordSet, networkRecordID string) []fullStateNodeContext {
+	memberContexts := make(map[string]struct{})
+	for _, contextID := range fullStateMemberContexts(set, networkRecordID) {
+		memberContexts[contextID] = struct{}{}
+	}
+	seen := make(map[string]fullStateNodeContext)
+	for _, record := range set.all() {
+		if record.protocol != protocols.MeshProtocolURI {
+			continue
+		}
+		var node fullStateNodeContext
+		switch record.protocolPath {
+		case "network/node":
+			if !rawRecordIsDirectChild(record, networkRecordID) {
 				continue
 			}
-			member.DID = memberDID
-			member.RecordID = meta.RecordID
-			if memberDID != "" {
-				c.members[memberDID] = &member
+			node = fullStateNodeContext{
+				contextID: record.contextID, infoPath: "network/node/nodeInfo", endpointPath: "network/node/endpoint",
 			}
+		case "network/member/node":
+			if _, ok := memberContexts[record.parentContextID]; !ok || !rawRecordIsDirectChild(record, record.parentContextID) {
+				continue
+			}
+			node = fullStateNodeContext{
+				contextID: record.contextID, infoPath: "network/member/node/nodeInfo", endpointPath: "network/member/node/endpoint",
+			}
+		default:
+			continue
 		}
-		c.mu.Unlock()
-		if memberLoadErr != nil {
-			return nil, fmt.Errorf("decrypting members: %w", memberLoadErr)
-		}
-
-		c.logger.DebugContext(ctx, "loaded members", slog.Int("count", len(memberEntries)))
+		seen[node.infoPath+"\x00"+node.contextID] = node
 	}
+	nodes := make([]fullStateNodeContext, 0, len(seen))
+	for _, node := range seen {
+		nodes = append(nodes, node)
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].infoPath != nodes[j].infoPath {
+			return nodes[i].infoPath < nodes[j].infoPath
+		}
+		return nodes[i].contextID < nodes[j].contextID
+	})
+	return nodes
+}
 
-	// 4. Query member-associated node records (network/member/node).
-	c.logger.DebugContext(ctx, "querying member nodes")
+type fullStatePageQuery func(context.Context, *dwn.Pagination) (*dwn.DwnReply, error)
 
-	memberNodeCount := 0
-	for _, query := range c.memberNodeParentQueries() {
-		memberNodesResp, err := c.anchorDWN.RecordsQueryWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
-			Protocol:     protocols.MeshProtocolURI,
-			ProtocolPath: "network/member/node",
-			ContextID:    query.ParentContextID,
-		}, "createdAscending", nil, c.readAuth(role))
+func (c *DWNClient) queryAllRawMeshRecords(
+	ctx context.Context,
+	filter dwn.RecordsFilter,
+	dateSort string,
+	role string,
+	budget *fullStateFetchBudget,
+) ([]json.RawMessage, error) {
+	return c.queryAllRawMeshRecordsWith(ctx, filter, role, budget, func(ctx context.Context, pagination *dwn.Pagination) (*dwn.DwnReply, error) {
+		return c.anchorDWN.RecordsQueryWithAuth(
+			ctx, c.anchorTenant, filter, dateSort, pagination, c.readAuth(role),
+		)
+	})
+}
+
+func (c *DWNClient) queryAllRawMeshRecordsWith(
+	ctx context.Context,
+	filter dwn.RecordsFilter,
+	role string,
+	budget *fullStateFetchBudget,
+	query fullStatePageQuery,
+) ([]json.RawMessage, error) {
+	var entries []json.RawMessage
+	var cursor json.RawMessage
+	seenCursors := make(map[string]struct{})
+	for page := 0; page < fullStateMaxQueryPages; page++ {
+		if err := budget.takeRequest(); err != nil {
+			return nil, err
+		}
+		reply, err := query(ctx, &dwn.Pagination{Limit: fullStateQueryPageSize, Cursor: cloneRawJSON(cursor)})
 		if err != nil {
-			if shouldAbortStateLoad(ctx, err) {
-				return nil, fmt.Errorf("querying member nodes for %s: %w", query.MemberRecordID, err)
+			return nil, fmt.Errorf("requesting page %d: %w", page+1, err)
+		}
+		pageEntries, err := dwn.QueryEntries(reply)
+		if err != nil {
+			if errors.Is(err, dwn.ErrRateLimited) {
+				return nil, fmt.Errorf("reading page %d: %w", page+1, err)
 			}
-			c.logger.DebugContext(ctx, "querying member nodes failed",
-				slog.String("memberRecordId", query.MemberRecordID),
-				slog.Any("error", err),
-			)
+			if reply == nil || reply.Status.Code != http.StatusOK {
+				err = errors.Join(dwn.ErrTransport, err)
+			}
+			return nil, fmt.Errorf("reading page %d: %w", page+1, err)
+		}
+		hydrated, err := c.hydrateRawCaptureEntries(ctx, pageEntries, filter.ProtocolPath, filter.ContextID, role, budget)
+		if err != nil {
+			return nil, fmt.Errorf("hydrating page %d: %w", page+1, err)
+		}
+		nextCursor, cursorKey, err := canonicalFullStateCursor(reply.Cursor)
+		if err != nil {
+			return nil, fmt.Errorf("page %d: %w", page+1, err)
+		}
+		if err := budget.retain(hydrated, nextCursor); err != nil {
+			return nil, fmt.Errorf("page %d: %w", page+1, err)
+		}
+		entries = append(entries, hydrated...)
+		if cursorKey == "" {
+			return entries, nil
+		}
+		if _, duplicate := seenCursors[cursorKey]; duplicate {
+			return nil, fmt.Errorf("page %d repeated pagination cursor", page+1)
+		}
+		seenCursors[cursorKey] = struct{}{}
+		cursor = nextCursor
+	}
+	return nil, fmt.Errorf("query page limit exceeded: %d", fullStateMaxQueryPages)
+}
+
+type fullStateQuerySpec struct {
+	protocolPath string
+	contextID    string
+	dateSort     string
+}
+
+func (c *DWNClient) queryRawMeshRecordGroup(
+	ctx context.Context,
+	specs []fullStateQuerySpec,
+	role string,
+	budget *fullStateFetchBudget,
+) ([][]json.RawMessage, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	groupCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make([][]json.RawMessage, len(specs))
+	jobs := make(chan int, len(specs))
+	for i := range specs {
+		jobs <- i
+	}
+	close(jobs)
+
+	workerCount := min(fullStateQueryWorkers, len(specs))
+	var workers sync.WaitGroup
+	var firstErr error
+	var errorOnce sync.Once
+	for range workerCount {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				if groupCtx.Err() != nil {
+					return
+				}
+				spec := specs[index]
+				entries, err := c.queryAllRawMeshRecords(groupCtx, dwn.RecordsFilter{
+					Protocol: protocols.MeshProtocolURI, ProtocolPath: spec.protocolPath, ContextID: spec.contextID,
+				}, spec.dateSort, role, budget)
+				if err != nil {
+					errorOnce.Do(func() {
+						firstErr = fmt.Errorf("querying %s under %s: %w", spec.protocolPath, spec.contextID, err)
+						cancel()
+					})
+					return
+				}
+				results[index] = entries
+			}
+		}()
+	}
+	workers.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+func rawMeshRecordReadEntry(result *dwn.RecordsReadResult) (json.RawMessage, error) {
+	if err := rawCaptureReadStatusError(result); err != nil {
+		return nil, err
+	}
+	entry, err := dwn.ReadEntry(result.Reply)
+	if err != nil {
+		return nil, err
+	}
+	encodedData := ""
+	if len(result.Data) != 0 && !rawRecordHasEncodedData(entry) {
+		encodedData = base64.RawURLEncoding.EncodeToString(result.Data)
+	}
+	entry, err = injectSubscriptionEncodedData(entry, encodedData)
+	if err != nil {
+		return nil, err
+	}
+	if !rawRecordHasEncodedData(entry) {
+		return nil, fmt.Errorf("RecordsRead result has no encoded data")
+	}
+	return entry, nil
+}
+
+type rawCaptureRecordIdentity struct {
+	recordID         string
+	protocol         string
+	protocolPath     string
+	contextID        string
+	parentContextID  string
+	parentID         string
+	recipient        string
+	dateCreated      string
+	messageTimestamp string
+	revision         time.Time
+	messageCID       string
+}
+
+// hydrateRawCaptureEntries fills query entries whose data was omitted because
+// it exceeded the DWN inline-data limit. The targeted read is authenticated in
+// exactly the same way as the query. Hydration is all-or-nothing: callers keep
+// the original query slice when any read or validation fails.
+func (c *DWNClient) hydrateRawCaptureEntries(ctx context.Context, entries []json.RawMessage, pathHint, contextID, role string, budget *fullStateFetchBudget) ([]json.RawMessage, error) {
+	var hydrated []json.RawMessage
+	for i, entry := range entries {
+		if rawRecordHasEncodedData(entry) {
 			continue
 		}
 
-		memberNodeEntries, err := dwn.QueryResult(memberNodesResp)
+		expected, err := rawCaptureIdentity(entry)
 		if err != nil {
-			if shouldAbortStateLoad(ctx, err) {
-				return nil, fmt.Errorf("parsing member nodes for %s: %w", query.MemberRecordID, err)
-			}
-			c.logger.DebugContext(ctx, "parsing member node results",
-				slog.String("memberRecordId", query.MemberRecordID),
-				slog.Any("error", err),
-			)
-			continue
+			return nil, fmt.Errorf("identifying %s query entry %d: %w", pathHint, i, err)
+		}
+		if expected.protocol != protocols.MeshProtocolURI || expected.protocolPath != pathHint || expected.parentContextID != contextID {
+			return nil, fmt.Errorf("query entry %s does not match requested protocol/path %s %s", expected.recordID, protocols.MeshProtocolURI, pathHint)
 		}
 
-		memberNodeDecryptor := c.makeDecryptor(ctx, "network/member/node")
-		var memberNodeLoadErr error
-		c.mu.Lock()
-		for _, entry := range memberNodeEntries {
-			if err := c.loadNodeEntry(ctx, entry, memberNodeDecryptor, query.MemberRecordID); shouldAbortStateLoad(ctx, err) {
-				memberNodeLoadErr = err
-				break
-			}
+		if err := budget.takeRequest(); err != nil {
+			return nil, err
 		}
-		c.mu.Unlock()
-		if memberNodeLoadErr != nil {
-			return nil, fmt.Errorf("decrypting member nodes for %s: %w", query.MemberRecordID, memberNodeLoadErr)
-		}
-		memberNodeCount += len(memberNodeEntries)
-	}
-	c.logger.DebugContext(ctx, "loaded member nodes", slog.Int("count", memberNodeCount))
-
-	// 5. Query relay records.
-	relayResp, err := c.anchorDWN.RecordsQueryWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
-		Protocol:     protocols.MeshProtocolURI,
-		ProtocolPath: "network/relay",
-		ContextID:    c.networkRecordID,
-	}, "createdAscending", nil, c.readAuth(role))
-	if err != nil {
-		return nil, fmt.Errorf("querying relays: %w", err)
-	}
-
-	relayEntries, err := dwn.QueryResult(relayResp)
-	if err != nil {
-		return nil, fmt.Errorf("parsing relays: %w", err)
-	}
-
-	relayDecryptor := c.makeDecryptor(ctx, "network/relay")
-	var relayLoadErr error
-	c.mu.Lock()
-	c.relays = nil // Clear stale relays before repopulating.
-	for _, entry := range relayEntries {
-		var relay RelayData
-		if err := ParseEntryData(entry, &relay, relayDecryptor); err != nil {
-			c.logger.DebugContext(ctx, "parsing relay entry", slog.Any("error", err))
-			if shouldAbortStateLoad(ctx, err) {
-				relayLoadErr = err
-				break
-			}
-			continue
-		}
-		c.relays = append(c.relays, &relay)
-	}
-	c.mu.Unlock()
-	if relayLoadErr != nil {
-		return nil, fmt.Errorf("decrypting relays: %w", relayLoadErr)
-	}
-
-	// 6. Query ACL policy record.
-	aclReady := true
-	aclResp, err := c.anchorDWN.RecordsQueryWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
-		Protocol:     protocols.MeshProtocolURI,
-		ProtocolPath: "network/aclPolicy",
-		ContextID:    c.networkRecordID,
-	}, "createdDescending", nil, c.readAuth(role))
-	if err != nil {
-		if shouldAbortStateLoad(ctx, err) {
-			return nil, fmt.Errorf("querying ACL policy: %w", err)
-		}
-		c.logger.DebugContext(ctx, "querying ACL policy failed", slog.Any("error", err))
-		aclReady = false
-	}
-	var aclEntries []json.RawMessage
-	if aclReady {
-		aclEntries, err = dwn.QueryResult(aclResp)
+		result, err := c.anchorDWN.RecordsReadWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
+			RecordID: expected.recordID,
+		}, c.readAuth(role))
 		if err != nil {
-			if shouldAbortStateLoad(ctx, err) {
-				return nil, fmt.Errorf("parsing ACL policy results: %w", err)
-			}
-			c.logger.DebugContext(ctx, "parsing ACL policy results", slog.Any("error", err))
-			aclReady = false
+			return nil, fmt.Errorf("hydrating %s record %s: %w", pathHint, expected.recordID, err)
 		}
-	}
-	if aclReady && len(aclEntries) > 0 {
-		// ACL policies are squashed snapshots; take the newest visible entry.
-		aclDecryptor := c.makeDecryptor(ctx, "network/aclPolicy")
-		var policy ACLPolicyData
-		if err := ParseEntryData(aclEntries[0], &policy, aclDecryptor); err != nil {
-			if shouldAbortStateLoad(ctx, err) {
-				return nil, fmt.Errorf("decrypting ACL policy: %w", err)
+		if err := rawCaptureReadStatusError(result); err != nil {
+			if !errors.Is(err, dwn.ErrRateLimited) && !errors.Is(err, dwn.ErrTransport) &&
+				!errors.Is(err, errRawCaptureReadNotFound) {
+				err = errors.Join(dwn.ErrTransport, err)
 			}
-			c.logger.DebugContext(ctx, "parsing ACL policy entry", slog.Any("error", err))
-		} else {
-			c.mu.Lock()
-			c.acl = &policy
-			c.mu.Unlock()
-			c.logger.DebugContext(ctx, "loaded ACL policy",
-				slog.Int("version", policy.Version),
-				slog.Int("rules", len(policy.Rules)),
-			)
+			return nil, fmt.Errorf("hydrating %s record %s: %w", pathHint, expected.recordID, err)
 		}
-	}
+		readEntry, err := rawMeshRecordReadEntry(result)
+		if err != nil {
+			return nil, fmt.Errorf("hydrating %s record %s: %w", pathHint, expected.recordID, err)
+		}
+		actual, err := rawCaptureIdentity(readEntry)
+		if err != nil {
+			return nil, fmt.Errorf("validating hydrated %s record %s: %w", pathHint, expected.recordID, err)
+		}
+		if !sameRawCaptureSlot(actual, expected) {
+			return nil, fmt.Errorf("hydrated %s record %s moved to a different immutable slot", pathHint, expected.recordID)
+		}
+		if compareRawCaptureRevision(actual, expected) < 0 {
+			return nil, fmt.Errorf("hydrated %s record %s is older than the queried revision", pathHint, expected.recordID)
+		}
 
-	// 7. Query nodeInfo records under each node's direct parent context.
-	if err := c.loadNodeChildRecords(ctx, "nodeInfo", role, c.loadNodeInfoEntry); err != nil {
-		return nil, fmt.Errorf("loading node info: %w", err)
+		if hydrated == nil {
+			hydrated = append([]json.RawMessage(nil), entries...)
+		}
+		hydrated[i] = readEntry
 	}
-
-	// 8. Query endpoint records under each node's direct parent context.
-	if err := c.loadNodeChildRecords(ctx, "endpoint", role, c.loadEndpointEntry); err != nil {
-		return nil, fmt.Errorf("loading endpoints: %w", err)
+	if hydrated == nil {
+		return entries, nil
 	}
+	return hydrated, nil
+}
 
-	hasACL := c.acl != nil
-	c.logger.DebugContext(ctx, "mesh state loaded",
-		slog.String("network", network.Name),
-		slog.Int("nodes", len(c.nodes)),
-		slog.Int("members", len(c.members)),
-		slog.Int("relays", len(c.relays)),
-		slog.Bool("aclPolicy", hasACL),
-	)
-
-	resp := c.buildMapResponse()
-	if resp == nil {
-		return nil, fmt.Errorf("self DID %q not found in network node records", c.selfDID)
+func rawCaptureReadStatusError(result *dwn.RecordsReadResult) error {
+	if result == nil || result.Reply == nil {
+		return fmt.Errorf("%w: empty RecordsRead result", dwn.ErrTransport)
 	}
-	committed = true
-	return resp, nil
+	status := result.Reply.Status
+	if status.Code == http.StatusTooManyRequests {
+		return &dwn.RateLimitError{RetryAfter: rawCaptureRetryAfter(status.Detail), Detail: status.Detail}
+	}
+	if status.Code == http.StatusNotFound {
+		return fmt.Errorf("%w: %d %s", errRawCaptureReadNotFound, status.Code, status.Detail)
+	}
+	if status.Code != http.StatusOK {
+		return fmt.Errorf("%w: read failed: %d %s", dwn.ErrTransport, status.Code, status.Detail)
+	}
+	return nil
+}
+
+func sameRawCaptureSlot(a, b rawCaptureRecordIdentity) bool {
+	return a.recordID == b.recordID &&
+		a.protocol == b.protocol &&
+		a.protocolPath == b.protocolPath &&
+		a.contextID == b.contextID &&
+		a.parentContextID == b.parentContextID &&
+		a.parentID == b.parentID &&
+		a.recipient == b.recipient &&
+		a.dateCreated == b.dateCreated
+}
+
+func compareRawCaptureRevision(a, b rawCaptureRecordIdentity) int {
+	if a.revision.Before(b.revision) {
+		return -1
+	}
+	if a.revision.After(b.revision) {
+		return 1
+	}
+	return strings.Compare(a.messageCID, b.messageCID)
+}
+
+func rawCaptureRetryAfter(detail string) time.Duration {
+	const marker = "retry after "
+	lower := strings.ToLower(detail)
+	index := strings.LastIndex(lower, marker)
+	if index < 0 {
+		return time.Second
+	}
+	fields := strings.Fields(strings.TrimSpace(detail[index+len(marker):]))
+	if len(fields) == 0 {
+		return time.Second
+	}
+	delay, err := time.ParseDuration(strings.TrimRight(fields[0], ".,;"))
+	if err != nil || delay < 0 {
+		return time.Second
+	}
+	return delay
+}
+
+func rawCaptureIdentity(entry json.RawMessage) (rawCaptureRecordIdentity, error) {
+	record, err := normalizeRawMeshRecordIdentity(entry, "")
+	if err != nil {
+		return rawCaptureRecordIdentity{}, err
+	}
+	return rawCaptureRecordIdentity{
+		recordID:         record.recordID,
+		protocol:         record.protocol,
+		protocolPath:     record.protocolPath,
+		contextID:        record.contextID,
+		parentContextID:  record.parentContextID,
+		parentID:         record.parentID,
+		recipient:        record.recipient,
+		dateCreated:      record.dateCreated,
+		messageTimestamp: record.messageTimestamp,
+		revision:         record.revision,
+		messageCID:       record.messageCID,
+	}, nil
 }
 
 type memberNodeParentQuery struct {
@@ -676,19 +972,28 @@ func (c *DWNClient) loadNodeEntry(ctx context.Context, entry json.RawMessage, de
 	meta := extractEntryMetadata(entry)
 	nodeDID := meta.Recipient
 
+	failureKey := meta.RecordID
+	if failureKey == "" {
+		failureKey = nodeDID
+	}
+
 	var node NodeRecord
 	if err := ParseEntryData(entry, &node, decryptor); err != nil {
-		// An undecryptable peer node record is the visible symptom of a
-		// missing role-audience key delivery (issue #187): the record exists
-		// but this node was never handed the key to read it. Surface it at
-		// Warn (not Debug) and count it so operators can see peers silently
-		// dropping out of the mesh.
-		c.undecryptablePeers.Add(1)
-		c.logger.WarnContext(ctx, "node record could not be decrypted; peer will be invisible until a role-audience key is delivered",
-			slog.Any("error", err),
-			slog.String("nodeDID", nodeDID),
-			slog.String("memberRecordId", memberRecordID),
-		)
+		if c.nodeFailures == nil {
+			c.nodeFailures = make(map[string]string)
+		}
+		failureClass := endpointFailureClass(err)
+		if previous, warned := c.nodeFailures[failureKey]; !warned || previous != failureClass {
+			c.undecryptablePeers.Add(1)
+			c.logger.WarnContext(ctx, "node record could not be loaded; peer will be invisible until key delivery or record recovery",
+				slog.Any("error", err),
+				slog.String("failureClass", failureClass),
+				slog.String("nodeDID", nodeDID),
+				slog.String("recordId", meta.RecordID),
+				slog.String("memberRecordId", memberRecordID),
+			)
+		}
+		c.nodeFailures[failureKey] = failureClass
 		// Even if we can't decrypt the data payload, track the node DID
 		// from the unencrypted recipient field. This allows peer discovery
 		// and auto key delivery to work even before context key exchange.
@@ -696,6 +1001,7 @@ func (c *DWNClient) loadNodeEntry(ctx context.Context, entry json.RawMessage, de
 			node.DID = nodeDID
 			node.RecordID = meta.RecordID
 			node.MemberRecordID = memberRecordID
+			node.Opaque = true
 			c.nodes[nodeDID] = &node
 		}
 		return err
@@ -706,6 +1012,14 @@ func (c *DWNClient) loadNodeEntry(ctx context.Context, entry json.RawMessage, de
 	node.MemberRecordID = memberRecordID
 	if nodeDID != "" {
 		c.nodes[nodeDID] = &node
+	}
+	if _, recovering := c.nodeFailures[failureKey]; recovering {
+		delete(c.nodeFailures, failureKey)
+		c.logger.InfoContext(ctx, "node record is readable again",
+			slog.String("nodeDID", nodeDID),
+			slog.String("recordId", meta.RecordID),
+			slog.String("memberRecordId", memberRecordID),
+		)
 	}
 	return nil
 }
@@ -749,10 +1063,16 @@ func (c *DWNClient) nodeChildRecordQueries(childType string) []nodeChildRecordQu
 
 type nodeChildRecordHandler func(ctx context.Context, entry json.RawMessage, decryptor EntryDecryptor) error
 
+type nodeChildRecordCapture func(protocolPath string, entries []json.RawMessage, err error) error
+
 func (c *DWNClient) loadNodeChildRecords(ctx context.Context, childType string, role string, handler nodeChildRecordHandler) error {
+	return c.loadNodeChildRecordsWithCapture(ctx, childType, role, handler, nil)
+}
+
+func (c *DWNClient) loadNodeChildRecordsWithCapture(ctx context.Context, childType string, role string, handler nodeChildRecordHandler, capture nodeChildRecordCapture) error {
 	total := 0
 	for _, query := range c.nodeChildRecordQueries(childType) {
-		count, err := c.loadChildRecords(ctx, query.ProtocolPath, query.ParentContextID, role, handler)
+		count, err := c.loadChildRecordsWithCapture(ctx, query.ProtocolPath, query.ParentContextID, role, handler, capture)
 		if err != nil {
 			return fmt.Errorf("%s under %s: %w", query.ProtocolPath, query.ParentContextID, err)
 		}
@@ -768,6 +1088,10 @@ func (c *DWNClient) loadNodeChildRecords(ctx context.Context, childType string, 
 // loadChildRecords queries child records at the given protocol path under a
 // direct parent context and processes each entry with the provided handler.
 func (c *DWNClient) loadChildRecords(ctx context.Context, protocolPath string, parentContextID string, role string, handler nodeChildRecordHandler) (int, error) {
+	return c.loadChildRecordsWithCapture(ctx, protocolPath, parentContextID, role, handler, nil)
+}
+
+func (c *DWNClient) loadChildRecordsWithCapture(ctx context.Context, protocolPath string, parentContextID string, role string, handler nodeChildRecordHandler, capture nodeChildRecordCapture) (int, error) {
 	resp, err := c.anchorDWN.RecordsQueryWithAuth(ctx, c.anchorTenant, dwn.RecordsFilter{
 		Protocol:     protocols.MeshProtocolURI,
 		ProtocolPath: protocolPath,
@@ -776,6 +1100,11 @@ func (c *DWNClient) loadChildRecords(ctx context.Context, protocolPath string, p
 	if err != nil {
 		if shouldAbortStateLoad(ctx, err) {
 			return 0, fmt.Errorf("querying child records: %w", err)
+		}
+		if capture != nil {
+			if captureErr := capture(protocolPath, nil, err); captureErr != nil {
+				return 0, captureErr
+			}
 		}
 		c.logger.DebugContext(ctx, "querying child records failed",
 			slog.String("path", protocolPath),
@@ -790,12 +1119,23 @@ func (c *DWNClient) loadChildRecords(ctx context.Context, protocolPath string, p
 		if shouldAbortStateLoad(ctx, err) {
 			return 0, fmt.Errorf("parsing child record results: %w", err)
 		}
+		if capture != nil {
+			if captureErr := capture(protocolPath, nil, err); captureErr != nil {
+				return 0, captureErr
+			}
+		}
 		c.logger.DebugContext(ctx, "parsing child record results",
 			slog.String("path", protocolPath),
 			slog.String("parentContextId", parentContextID),
 			slog.Any("error", err),
 		)
 		return 0, nil
+	}
+
+	if capture != nil {
+		if captureErr := capture(protocolPath, entries, nil); captureErr != nil {
+			return 0, captureErr
+		}
 	}
 
 	decryptor := c.makeDecryptor(ctx, protocolPath)
@@ -845,9 +1185,9 @@ func (c *DWNClient) loadNodeInfoEntry(ctx context.Context, entry json.RawMessage
 // Caller must hold c.mu.
 func (c *DWNClient) loadEndpointEntry(ctx context.Context, entry json.RawMessage, decryptor EntryDecryptor) error {
 	meta := extractEntryMetadata(entry)
-	failureKey := meta.RecordID
+	failureKey := meta.ParentID
 	if failureKey == "" {
-		failureKey = meta.ParentID
+		failureKey = meta.RecordID
 	}
 
 	var parentNode *NodeRecord
@@ -974,6 +1314,11 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 		DERPMap:   c.buildDERPMap(),
 		DNSConfig: c.buildDNSConfig(),
 	}
+	if c.acl != nil {
+		resp.PacketFilter = c.buildFilterRules()
+	} else {
+		resp.PacketFilter = defaultFilterRules()
+	}
 
 	// Keep response ordering deterministic for logs, status output, and tests.
 	// Node IDs themselves are derived from each DID below; assigning IDs from
@@ -988,14 +1333,36 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 	now := time.Now().UTC()
 	for _, did := range dids {
 		rec := c.nodes[did]
-		if nodeRecordExpired(rec, now) {
+		if rec == nil {
+			continue
+		}
+		if rec.Opaque {
 			if did == c.selfDID {
-				c.logger.Debug("self node membership is expired",
-					slog.String("did", did),
-					slog.String("expiresAt", rec.ExpiresAt),
-				)
+				c.logger.Warn("self node record is opaque; refusing descriptor-only network identity",
+					slog.String("did", did), slog.String("recordId", rec.RecordID))
 				return nil
 			}
+			c.droppedPeers.Add(1)
+			c.logger.Warn("dropping opaque peer before fallback identity derivation",
+				slog.String("did", did), slog.String("recordId", rec.RecordID))
+			continue
+		}
+		expired := nodeRecordExpired(rec, now)
+		if did == c.selfDID && (rec.Revoked || expired) {
+			c.logger.Debug("self node membership is inactive",
+				slog.String("did", did),
+				slog.String("expiresAt", rec.ExpiresAt),
+				slog.Bool("revoked", rec.Revoked),
+			)
+			nodeID, stableID := nodeIdentityForDID(c.networkRecordID, did)
+			node := nodeRecordToNode(nodeID, did, rec)
+			node.StableID = stableID
+			c.applyFallbackMeshIP(node)
+			resp.Node = node
+			resp.Peers = nil
+			return resp
+		}
+		if expired || rec.Revoked {
 			c.logger.Debug("skipping expired peer in network map",
 				slog.String("did", did),
 				slog.String("expiresAt", rec.ExpiresAt),
@@ -1033,12 +1400,6 @@ func (c *DWNClient) buildMapResponse() *MapResponse {
 		return nil
 	}
 
-	if c.acl != nil {
-		resp.PacketFilter = c.buildFilterRules()
-	} else {
-		resp.PacketFilter = defaultFilterRules()
-	}
-
 	return resp
 }
 
@@ -1067,7 +1428,7 @@ func nodeRecordExpired(rec *NodeRecord, now time.Time) bool {
 	if err != nil {
 		return false
 	}
-	return now.After(expiresAt)
+	return !now.Before(expiresAt)
 }
 
 func (c *DWNClient) applyFallbackMeshIP(node *Node) {
@@ -1119,7 +1480,7 @@ func nodeRecordToNodeWithThreshold(id int64, nodeDID string, rec *NodeRecord, st
 	if rec.Info != nil {
 		node.Name = rec.Info.Hostname
 		node.OS = rec.Info.OS
-		node.Capabilities = rec.Info.Capabilities
+		node.Capabilities = append([]string(nil), rec.Info.Capabilities...)
 	}
 
 	// Fall back to node label if no hostname from nodeInfo.
@@ -1275,7 +1636,7 @@ func (c *DWNClient) buildDNSConfig() *DNSConfig {
 	}
 	return &DNSConfig{
 		MagicDNSSuffix: suffix,
-		Resolvers:      c.network.DNSServers,
+		Resolvers:      append([]string(nil), c.network.DNSServers...),
 	}
 }
 
@@ -1684,32 +2045,58 @@ func (c *DWNClient) decryptRoleAudience(ctx context.Context, ciphertext []byte, 
 
 	var errs []error
 	for _, info := range infos {
-		if c.audienceSource != nil {
-			audiencePriv, err := c.audienceSource.AudiencePrivateKeyByKeyID(ctx, info.Protocol, info.RolePath, info.KeyID)
-			if err == nil {
-				dec, err := dwncrypto.NewRoleAudienceDecrypter(audiencePriv)
-				clear(audiencePriv)
-				if err != nil {
-					return nil, err
-				}
-				plaintext, err := dec.Decrypt(ciphertext, enc)
-				dec.Close()
-				if err == nil {
-					return plaintext, nil
-				}
-				errs = append(errs, fmt.Errorf("%s seal decrypt: %w", info.RolePath, err))
-			} else {
-				errs = append(errs, fmt.Errorf("%s seal: %w", info.RolePath, err))
-			}
+		privateKey, err := c.roleAudiencePrivateKey(ctx, info)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s audience key: %w", info.RolePath, err))
+			continue
 		}
-
-		plaintext, err := c.decryptViaDelivery(ctx, ciphertext, enc, info)
+		dec, err := dwncrypto.NewRoleAudienceDecrypter(privateKey)
+		clear(privateKey)
+		if err != nil {
+			return nil, err
+		}
+		plaintext, err := dec.Decrypt(ciphertext, enc)
+		dec.Close()
 		if err == nil {
 			return plaintext, nil
 		}
-		errs = append(errs, fmt.Errorf("%s delivery: %w", info.RolePath, err))
+		errs = append(errs, fmt.Errorf("%s audience decrypt: %w", info.RolePath, err))
 	}
 	return nil, fmt.Errorf("role audience key unavailable: %w", errors.Join(errs...))
+}
+
+func stableRoleAudienceRouteFailure(err error) bool {
+	return errors.Is(err, errAudienceRecordAbsent) ||
+		errors.Is(err, errAudienceSealUnavailable) ||
+		errors.Is(err, errAudienceDeliveryUnavailable) ||
+		errors.Is(err, errAudienceKeyDeliveryAbsent)
+}
+
+func (c *DWNClient) roleAudiencePrivateKey(ctx context.Context, info *dwncrypto.RoleAudienceInfo) ([]byte, error) {
+	key := audienceKeyCacheKey{protocol: info.Protocol, rolePath: info.RolePath, keyID: info.KeyID}
+	return c.roleAudienceKeys.get(ctx, key, func(ctx context.Context) ([]byte, error) {
+		var errs []error
+		allRoutesStable := true
+		if c.audienceSource != nil {
+			privateKey, err := c.audienceSource.AudiencePrivateKeyByKeyID(ctx, info.Protocol, info.RolePath, info.KeyID)
+			if err == nil {
+				return privateKey, nil
+			}
+			errs = append(errs, fmt.Errorf("seal: %w", err))
+			allRoutesStable = allRoutesStable && stableRoleAudienceRouteFailure(err)
+		}
+		privateKey, err := c.deliveryAudiencePrivateKey(ctx, info)
+		if err == nil {
+			return privateKey, nil
+		}
+		errs = append(errs, fmt.Errorf("delivery: %w", err))
+		allRoutesStable = allRoutesStable && stableRoleAudienceRouteFailure(err)
+		joined := errors.Join(errs...)
+		if allRoutesStable {
+			return nil, fmt.Errorf("%w: role audience key unavailable: %w", errAudienceKeyDeliveryAbsent, joined)
+		}
+		return nil, fmt.Errorf("role audience key unavailable: %w", joined)
+	})
 }
 
 // decryptViaDelivery recovers the audience key from a `$encryption/delivery`
@@ -1717,13 +2104,7 @@ func (c *DWNClient) decryptRoleAudience(ctx context.Context, ciphertext []byte, 
 // The delivery record is encrypted to this node's OWN role-path key, derived
 // from its encryption root.
 func (c *DWNClient) decryptViaDelivery(ctx context.Context, ciphertext []byte, enc *dwncrypto.Encryption, info *dwncrypto.RoleAudienceInfo) ([]byte, error) {
-	privateKey, err := c.deliveredAudienceKeys.get(ctx, audienceKeyCacheKey{
-		protocol: info.Protocol,
-		rolePath: info.RolePath,
-		keyID:    info.KeyID,
-	}, func(ctx context.Context) ([]byte, error) {
-		return c.queryDeliveryAudiencePrivateKey(ctx, info)
-	})
+	privateKey, err := c.deliveryAudiencePrivateKey(ctx, info)
 	if err != nil {
 		return nil, err
 	}
@@ -1737,9 +2118,19 @@ func (c *DWNClient) decryptViaDelivery(ctx context.Context, ciphertext []byte, e
 	return dec.Decrypt(ciphertext, enc)
 }
 
+func (c *DWNClient) deliveryAudiencePrivateKey(ctx context.Context, info *dwncrypto.RoleAudienceInfo) ([]byte, error) {
+	return c.deliveredAudienceKeys.get(ctx, audienceKeyCacheKey{
+		protocol: info.Protocol,
+		rolePath: info.RolePath,
+		keyID:    info.KeyID,
+	}, func(ctx context.Context) ([]byte, error) {
+		return c.queryDeliveryAudiencePrivateKey(ctx, info)
+	})
+}
+
 func (c *DWNClient) queryDeliveryAudiencePrivateKey(ctx context.Context, info *dwncrypto.RoleAudienceInfo) ([]byte, error) {
 	if c.encManager == nil {
-		return nil, fmt.Errorf("no encryption root available for delivery records")
+		return nil, fmt.Errorf("%w: no encryption root available for delivery records", errAudienceDeliveryUnavailable)
 	}
 	reply, err := c.queryDeliveryRecordsWithRetry(ctx, info)
 	if err != nil {
@@ -1747,6 +2138,9 @@ func (c *DWNClient) queryDeliveryAudiencePrivateKey(ctx context.Context, info *d
 	}
 	entries, err := dwn.QueryEntries(reply)
 	if err != nil {
+		if !errors.Is(err, dwn.ErrRateLimited) {
+			err = errors.Join(dwn.ErrTransport, err)
+		}
 		return nil, fmt.Errorf("parsing delivery query: %w", err)
 	}
 	for _, entry := range entries {
@@ -1768,7 +2162,7 @@ func (c *DWNClient) queryDeliveryAudiencePrivateKey(ctx context.Context, info *d
 		}
 		return privateKey, nil
 	}
-	return nil, fmt.Errorf("no delivery record for keyId %s at %s", info.KeyID, info.RolePath)
+	return nil, fmt.Errorf("%w: no delivery record for keyId %s at %s", errAudienceKeyDeliveryAbsent, info.KeyID, info.RolePath)
 }
 
 // queryDeliveryRecordsWithRetry makes at most one bounded retry of this

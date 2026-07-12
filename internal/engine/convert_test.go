@@ -49,6 +49,27 @@ func TestConvertNodeKeyExpiry(t *testing.T) {
 	}
 }
 
+func TestConvertRevokedSelfDownMap(t *testing.T) {
+	now := time.Now().UTC()
+	selfIP := netip.MustParseAddr("10.200.1.1")
+	resp := &control.MapResponse{Node: &control.Node{
+		ID: 1, StableID: "self", Name: "self", DID: "did:jwk:self",
+		Key: testWireGuardKey(), MeshIP: selfIP,
+		AllowedIPs: []netip.Prefix{netip.PrefixFrom(selfIP, selfIP.BitLen())},
+		ExpiresAt:  time.Unix(0, 0).UTC().Format(time.RFC3339Nano),
+	}}
+	nm, err := NewConverter("test").Convert(resp)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	if !nm.SelfNode.Valid() || !nm.SelfKeyExpiry().Before(now) {
+		t.Fatalf("revoked self = valid %v expiry %v, want past expiry", nm.SelfNode.Valid(), nm.SelfKeyExpiry())
+	}
+	if len(nm.Peers) != 0 {
+		t.Fatalf("revoked peers = %d, want 0", len(nm.Peers))
+	}
+}
+
 // testWireGuardKey returns a valid base64-encoded 32-byte key for testing.
 func testWireGuardKey() string {
 	// Generate a real key pair so we have a valid 32-byte public key.
