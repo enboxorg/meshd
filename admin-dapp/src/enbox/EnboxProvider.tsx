@@ -1,9 +1,7 @@
 import React, { createContext, useCallback, useEffect, useRef, useState } from "react";
 
-import { AuthManager, BrowserConnectHandler, Enbox } from "@enbox/browser";
-import type { AuthManagerOptions, AuthSession } from "@enbox/browser";
-import { BrowserStorage } from "@enbox/auth";
-import type { ProviderAuthParams, ProviderAuthResult } from "@enbox/auth";
+import { AuthManager, BrowserConnectHandler, BrowserStorage, Enbox, isSessionExpiredError, isSessionInvalidError } from "@enbox/browser";
+import type { AuthManagerOptions, AuthSession, ProviderAuthParams, ProviderAuthResult } from "@enbox/browser";
 
 import {
   AUTH_DATA_PATH,
@@ -130,6 +128,8 @@ async function resetScopedAuthStorage() {
 
 export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const authRef = useRef<AuthManager | null>(null);
+  const monitorStopRef = useRef<(() => void) | null>(null);
+  const disconnectRef = useRef<((options?: { clearStorage?: boolean }) => Promise<void>) | null>(null);
 
   const [isConnecting, setIsConnecting] = useState(false);
   const [enbox, setEnbox] = useState<Enbox | undefined>();
@@ -147,6 +147,23 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setIsDelegateSession(Boolean(session.delegateDid));
     setProtocolsInitialized(false);
     setProtocolSetupError(undefined);
+
+    // Monitor delegate (wallet) sessions only; local sessions never expire on us.
+    monitorStopRef.current?.();
+    monitorStopRef.current = null;
+    const auth = authRef.current;
+    if (auth && session.delegateDid) {
+      monitorStopRef.current = auth.startConnectionMonitor({
+        autoRefresh: { protocols: DAPP_PROTOCOLS },
+        onError: (err) => {
+          if (isSessionExpiredError(err) || isSessionInvalidError(err)) {
+            void disconnectRef.current?.();
+          } else {
+            console.warn("[meshd-admin] connection refresh failed; will retry", err);
+          }
+        }
+      });
+    }
   }, []);
 
   useEffect(() => {
@@ -234,6 +251,8 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const disconnect = useCallback(async (options?: { clearStorage?: boolean }) => {
     const auth = authRef.current;
+    monitorStopRef.current?.();
+    monitorStopRef.current = null;
     try {
       await enbox?.disconnect();
       await auth?.disconnect({ clearStorage: options?.clearStorage });
@@ -250,6 +269,19 @@ export const EnboxProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     }
   }, [enbox]);
+
+  // Keep the monitor's onError handler pointing at the latest disconnect, and
+  // ensure the monitor is torn down when the provider unmounts.
+  useEffect(() => {
+    disconnectRef.current = disconnect;
+  }, [disconnect]);
+
+  useEffect(() => {
+    return () => {
+      monitorStopRef.current?.();
+      monitorStopRef.current = null;
+    };
+  }, []);
 
   return (
     <EnboxContext.Provider

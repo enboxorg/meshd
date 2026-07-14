@@ -1,4 +1,5 @@
 import type { AuthManagerOptions, Permission, ProtocolRequest, WalletOption } from "@enbox/browser";
+import { DEFAULT_WALLETS } from "@enbox/browser";
 
 import meshProtocolDefinitionJson from "../../../protocols/wireguard-mesh.json";
 
@@ -10,20 +11,9 @@ const ADMIN_PERMISSIONS = ["read", "write", "delete"] satisfies Permission[];
 
 export const DAPP_NAME = import.meta.env.VITE_ENBOX_DAPP_NAME || "meshd Admin";
 
-export const WALLET_OPTIONS = [
-  {
-    name: "Enbox Wallet",
-    url: import.meta.env.VITE_ENBOX_WALLET_URL || "https://enbox-wallet.pages.dev",
-    icon: `${import.meta.env.VITE_ENBOX_WALLET_URL || "https://enbox-wallet.pages.dev"}/favicon.ico`,
-    description: "Your Enbox identity wallet"
-  },
-  {
-    name: "Blue Enbox Wallet",
-    url: import.meta.env.VITE_ENBOX_BLUE_WALLET_URL || "https://blue-enbox-wallet.pages.dev",
-    icon: `${import.meta.env.VITE_ENBOX_BLUE_WALLET_URL || "https://blue-enbox-wallet.pages.dev"}/favicon.ico`,
-    description: "Your Enbox identity wallet"
-  }
-] satisfies WalletOption[];
+// Use the SDK's current DEFAULT_WALLETS (Enbox, Prism, Matcha, Onyx) so the
+// standardized connect dialog stays current as the SDK's wallet set evolves.
+export const WALLET_OPTIONS: WalletOption[] = DEFAULT_WALLETS;
 
 export const DWN_ENDPOINTS = (
   import.meta.env.VITE_ENBOX_DWN_ENDPOINTS || "https://dev.aws.dwn.enbox.id,https://enbox-dwn.fly.dev"
