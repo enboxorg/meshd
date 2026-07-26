@@ -17,10 +17,14 @@ import {
   updateMeshdInviteDescription,
   updateMeshdNodeExpiry,
   updateMeshdNodeLabel,
+  QUERY_MAX_PAGES,
+  QUERY_PAGE_LIMIT,
   type MeshdAdminAgent,
   type MeshdAdminSession,
+  type MeshdDeadLetter,
   type MeshdNetworkSummary,
   type MeshdNodeRequestSummary,
+  type MeshdQueryCursor,
   type RolePublicKeyJwk
 } from "./admin";
 
@@ -140,12 +144,17 @@ function createFakeSession(options: {
   grant?: boolean;
   endpoints?: string[];
   queryEntries?: unknown[];
+  // Paged query replies: each call consumes one page (with its cursor); once
+  // exhausted, subsequent queries fall back to queryEntries/empty.
+  queryPages?: Array<{ entries: unknown[]; cursor?: MeshdQueryCursor }>;
   recordIds?: string[];
   audienceKeyDelivery?: { delivered: boolean; recipientDid?: string; reason?: string };
+  deadLetters?: MeshdDeadLetter[];
 } = {}) {
   const requests: CapturedRequest[] = [];
   const pushes: Array<string | undefined> = [];
   const recordIds = [...(options.recordIds ?? ["record-1", "record-2", "record-3"])];
+  const queryPages = options.queryPages ? [...options.queryPages] : undefined;
   let cid = 0;
 
   const agent: MeshdAdminAgent = {
@@ -167,6 +176,16 @@ function createFakeSession(options: {
     processDwnRequest: vi.fn(async (request: CapturedRequest) => {
       requests.push(request);
       if (request.messageType === DwnInterface.RecordsQuery) {
+        const page = queryPages?.shift();
+        if (page) {
+          return {
+            reply: {
+              status: { code: 200, detail: "OK" },
+              entries: page.entries,
+              ...(page.cursor ? { cursor: page.cursor } : {})
+            }
+          };
+        }
         return {
           reply: {
             status: { code: 200, detail: "OK" },
@@ -194,7 +213,8 @@ function createFakeSession(options: {
     sync: {
       sync: vi.fn(async (direction?: "push" | "pull") => {
         pushes.push(direction);
-      })
+      }),
+      getDeadLetters: vi.fn(async () => options.deadLetters ?? [])
     }
   };
 
@@ -801,11 +821,102 @@ describe("meshd admin DWN operations", () => {
           protocol: MESHD_PROTOCOL_URI,
           protocolPath: "network"
         },
+        pagination: {
+          limit: QUERY_PAGE_LIMIT
+        },
         delegatedGrant: {
           grant: `${MESHD_PROTOCOL_URI}:${DwnInterface.RecordsQuery}`
         }
       }
     });
+  });
+
+  it("walks the reply pagination cursor until exhausted", async () => {
+    const cursorOne: MeshdQueryCursor = { messageCid: "cid-page-1", value: "a" };
+    const cursorTwo: MeshdQueryCursor = { messageCid: "cid-page-2", value: "b" };
+    const { session, requests } = createFakeSession({
+      queryPages: [
+        { entries: [recordEntry("net-1", "network", { name: "One", meshCIDR: "10.200.0.0/16" })], cursor: cursorOne },
+        { entries: [recordEntry("net-2", "network", { name: "Two", meshCIDR: "10.201.0.0/16" })], cursor: cursorTwo },
+        { entries: [recordEntry("net-3", "network", { name: "Three", meshCIDR: "10.202.0.0/16" })] }
+      ]
+    });
+
+    const networks = await fetchMeshdNetworks(session);
+
+    expect(networks).toHaveLength(3);
+    expect(requests).toHaveLength(3);
+    // First page carries no cursor; later pages resume from the reply cursor.
+    expect(requests[0].messageParams.pagination).toEqual({ limit: QUERY_PAGE_LIMIT });
+    expect(requests[1].messageParams.pagination).toEqual({ limit: QUERY_PAGE_LIMIT, cursor: cursorOne });
+    expect(requests[2].messageParams.pagination).toEqual({ limit: QUERY_PAGE_LIMIT, cursor: cursorTwo });
+  });
+
+  it("caps cursor pagination at the page limit instead of looping forever", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const pages = Array.from({ length: QUERY_MAX_PAGES + 5 }, (_, index) => ({
+        entries: [recordEntry(`net-${index}`, "network", { name: `Mesh ${index}`, meshCIDR: "10.200.0.0/16" })],
+        cursor: { messageCid: `cid-${index}`, value: index }
+      }));
+      const { session, requests } = createFakeSession({ queryPages: pages });
+
+      const networks = await fetchMeshdNetworks(session);
+
+      expect(requests).toHaveLength(QUERY_MAX_PAGES);
+      expect(networks).toHaveLength(QUERY_MAX_PAGES);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("truncated"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("surfaces terminal (dead-lettered) mesh pushes after a write", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const { session, agent } = createFakeSession({
+        recordIds: ["network-record"],
+        deadLetters: [{
+          messageCid: "cid-dead",
+          tenantDid: "did:example:owner",
+          remoteEndpoint: "https://dwn.example",
+          protocol: MESHD_PROTOCOL_URI,
+          errorDetail: "schema rejected",
+          failedAt: "2026-07-26T00:00:00Z"
+        }]
+      });
+
+      await createMeshdNetwork(session, { name: "Home mesh", meshCIDR: "10.200.0.0/16" });
+
+      expect(agent.sync?.getDeadLetters).toHaveBeenCalledWith("did:example:owner");
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("permanently failed"));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("cid-dead"));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("stays quiet when dead letters belong to other protocols", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const { session } = createFakeSession({
+        recordIds: ["network-record"],
+        deadLetters: [{
+          messageCid: "cid-other",
+          tenantDid: "did:example:owner",
+          remoteEndpoint: "https://dwn.example",
+          protocol: "https://enbox.id/protocols/notebook",
+          errorDetail: "unrelated",
+          failedAt: "2026-07-26T00:00:00Z"
+        }]
+      });
+
+      await createMeshdNetwork(session, { name: "Home mesh", meshCIDR: "10.200.0.0/16" });
+
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
