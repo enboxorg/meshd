@@ -41,16 +41,17 @@ http://127.0.0.1:5173/
 The dapp requests access with:
 
 - `https://enbox.id/protocols/wireguard-mesh`
-- `https://identity.foundation/protocols/key-delivery`
 
-For each protocol it asks for read, write, and delete record permissions. The
-wallet installs/configures the protocols during approval and grants this dapp a
-local delegate session. The dapp does not ask for delegated
+It asks for read, write, and delete record permissions on that protocol. The
+wallet installs/configures the protocol during approval and grants this dapp a
+local delegate session. Role-audience encryption keys are delivered through
+the mesh protocol's own sealed `$encryption` records — there is no separate
+key-delivery protocol. The dapp does not ask for delegated
 `Protocols.Configure` access and does not need the wallet's private keys.
 
-On startup, the dapp runs the SDK readiness/import path for both protocols and
-verifies that the installed wallet-owned definitions contain the expected meshd
-types and paths before enabling dashboard actions.
+On startup, the dapp runs the SDK readiness/import path for the mesh protocol
+and verifies that the installed wallet-owned definition contains the expected
+meshd types and paths before enabling dashboard actions.
 
 ## Environment
 
