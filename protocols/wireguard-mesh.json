@@ -439,8 +439,7 @@
       },
       "preAuthKey": {
         "$recordLimit": {
-          "max": 100,
-          "strategy": "reject"
+          "max": 100
         },
         "$actions": [
           {
