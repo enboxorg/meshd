@@ -1,0 +1,131 @@
+{
+  "generatedBy": "bun scratchpad/fixtures/generate.ts (enbox@main, dwn-sdk-js src executed directly); fixed Ed25519 seed 0x01..0x20",
+  "projectionIds": [
+    {
+      "name": "full-scope",
+      "tenantDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6ImViVldMb19tVlBsQWVMRVM2S21McDVBZmhUcm1sYjdYNE9PUkM2MEVsbVEifQ",
+      "scope": {
+        "kind": "full"
+      },
+      "projectionId": "5Tk4-lTjMLHdR7yZo4JvkWc92s5GgLvoNjkpHq3mRg4"
+    },
+    {
+      "name": "protocol-set-single",
+      "tenantDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6ImViVldMb19tVlBsQWVMRVM2S21McDVBZmhUcm1sYjdYNE9PUkM2MEVsbVEifQ",
+      "scope": {
+        "kind": "protocolSet",
+        "protocols": [
+          "https://example.com/protocols/mesh"
+        ]
+      },
+      "projectionId": "EJ9blfEE7H6KMZjjZ0z-reF73-TFWfJ92sXZyKzmhYA"
+    },
+    {
+      "name": "protocol-set-unsorted-dupes",
+      "tenantDid": "did:dht:tenant123",
+      "scope": {
+        "kind": "protocolSet",
+        "protocols": [
+          "https://example.com/z",
+          "https://example.com/a",
+          "https://example.com/z"
+        ]
+      },
+      "projectionId": "4wjeR3RyuLut_sm0fANvL4QV0yF6OlDdNr7ym7NAHrQ"
+    },
+    {
+      "name": "protocol-set-unicode-and-html-chars",
+      "tenantDid": "did:dht:tenant123",
+      "scope": {
+        "kind": "protocolSet",
+        "protocols": [
+          "https://example.com/prötocols/😀",
+          "https://example.com/a?x=1&y=<2>",
+          "https://example.com/�"
+        ]
+      },
+      "projectionId": "_KbAXt4vJYa0H17nJu2Do5uDIhsxJGbjDYaH21I0SRA"
+    }
+  ],
+  "authorizationEpochs": [
+    {
+      "name": "owner",
+      "input": {
+        "kind": "owner"
+      },
+      "epoch": "DSJcSmkcjSfZDpCUWogVinCvpvCCRNRFre6GL0PG2iQ"
+    },
+    {
+      "name": "delegate-two-grants-unsorted",
+      "input": {
+        "kind": "delegate",
+        "delegateDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6ImViVldMb19tVlBsQWVMRVM2S21McDVBZmhUcm1sYjdYNE9PUkM2MEVsbVEifQ",
+        "grants": [
+          {
+            "id": "bafyreigrantbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "dateExpires": "2026-08-01T00:00:00.000000Z",
+            "dateGranted": "2026-07-01T00:00:00.000000Z"
+          },
+          {
+            "id": "bafyreigrantaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "dateExpires": "2026-09-01T00:00:00.000000Z",
+            "dateGranted": "2026-07-02T10:20:30.400500Z"
+          }
+        ]
+      },
+      "epoch": "BzCEaopdOQJwS8WXIQ6TqKw_xZOl4monwJ3dIiTsBGE"
+    },
+    {
+      "name": "delegate-unicode-optional-dategranted",
+      "input": {
+        "kind": "delegate",
+        "delegateDid": "did:dht:delegate<&>😀",
+        "grants": [
+          {
+            "id": "z-grant-😀",
+            "dateExpires": "2027-01-01T00:00:00.000000Z"
+          },
+          {
+            "id": "a-grant-�",
+            "dateExpires": "2026-12-31T23:59:59.999999Z",
+            "dateGranted": "2026-06-01T00:00:00.000000Z"
+          },
+          {
+            "id": "😀-astral-first",
+            "dateExpires": "2026-10-01T00:00:00.000000Z",
+            "dateGranted": "2026-05-01T00:00:00.000000Z"
+          }
+        ]
+      },
+      "epoch": "TMYbD9KAcUn0lbqC0-bFbUUmyLfenTVIRulE0_-Q9pA"
+    }
+  ],
+  "linkKeys": [
+    {
+      "name": "basic",
+      "tenantDid": "did:dht:tenant123",
+      "remoteEndpoint": "https://dwn.example.com",
+      "projectionId": "proj-id",
+      "authorizationEpoch": "epoch-id",
+      "linkKey": "did:dht:tenant123^https://dwn.example.com^proj-id^epoch-id"
+    }
+  ],
+  "normalizeSyncProtocols": [
+    {
+      "name": "unsorted-dupes-unicode",
+      "input": [
+        "https://z.example",
+        "https://a.example",
+        "https://z.example",
+        "https://example.com/😀",
+        "https://example.com/�"
+      ],
+      "normalized": [
+        "https://a.example",
+        "https://example.com/😀",
+        "https://example.com/�",
+        "https://z.example"
+      ]
+    }
+  ]
+}
