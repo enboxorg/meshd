@@ -104,6 +104,19 @@ type DwnReply struct {
 	Record  json.RawMessage `json:"record,omitempty"`
 	Error   json.RawMessage `json:"error,omitempty"`
 
+	// Drained reports whether a MessagesQuery scan reached the log head.
+	Drained bool `json:"drained,omitempty"`
+
+	// Fingerprint is the feed set fingerprint on MessagesQuery and
+	// MessagesSubscribe replies, when the filters map onto fingerprint
+	// domains.
+	Fingerprint string `json:"fingerprint,omitempty"`
+
+	// Head is the replication-log high-water token on MessagesSubscribe
+	// replies. NOT a delivery cursor: adopt as a checkpoint only after the
+	// fingerprint verifies against the local feed.
+	Head *ProgressToken `json:"head,omitempty"`
+
 	// Subscription is populated in the initial subscribe response.
 	Subscription *SubscriptionConfirm `json:"subscription,omitempty"`
 }
