@@ -7,6 +7,24 @@ import {
   MESHD_PROTOCOL_URI
 } from "@/enbox/config";
 
+// Shape of a dwn-sdk-js RecordsQuery pagination cursor (PaginationCursor).
+export type MeshdQueryCursor = {
+  messageCid: string;
+  value: string | number;
+};
+
+// Subset of the sync engine's DeadLetterEntry the dapp reports on: a message
+// that permanently failed to push to a remote (terminal, not quota-deferred).
+export type MeshdDeadLetter = {
+  messageCid: string;
+  tenantDid: string;
+  remoteEndpoint: string;
+  protocol?: string;
+  errorCode?: string;
+  errorDetail: string;
+  failedAt: string;
+};
+
 export type MeshdAdminAgent = {
   permissions?: {
     getPermissionForRequest?: (request: {
@@ -22,6 +40,7 @@ export type MeshdAdminAgent = {
     reply: {
       status: { code: number; detail?: string };
       entries?: unknown[];
+      cursor?: MeshdQueryCursor;
     };
     message?: {
       recordId?: string;
@@ -41,6 +60,7 @@ export type MeshdAdminAgent = {
   }>;
   sync?: {
     sync?: (direction?: "push" | "pull") => Promise<void>;
+    getDeadLetters?: (tenantDid?: string) => Promise<MeshdDeadLetter[]>;
   };
   dwn?: {
     getDwnEndpointUrlsForTarget?: (targetDid: string) => Promise<string[]>;
@@ -340,6 +360,36 @@ async function pushChangesToRemote(session: MeshdAdminSession): Promise<void> {
       console.warn("[meshd-admin] Remote DWN push failed (sync will retry):", detail);
     }
   }
+  await warnAboutDeadLetteredPushes(session);
+}
+
+/**
+ * Terminal push failures never surface through `sync("push")` — the engine
+ * dead-letters them and resolves. Report mesh-protocol dead letters after each
+ * push so a record that will NEVER reach the owner's remote DWN (and thus the
+ * meshd daemons polling it) is at least visible in the console; the sync
+ * health panel shows the same state as per-remote failed counts.
+ */
+async function warnAboutDeadLetteredPushes(session: MeshdAdminSession): Promise<void> {
+  const getDeadLetters = session.agent.sync?.getDeadLetters;
+  if (!getDeadLetters) {
+    return;
+  }
+  try {
+    const deadLetters = (await getDeadLetters(session.ownerDid))
+      .filter((entry) => !entry.protocol || entry.protocol === MESHD_PROTOCOL_URI);
+    if (deadLetters.length === 0) {
+      return;
+    }
+    const first = deadLetters[0];
+    console.warn(
+      `[meshd-admin] ${deadLetters.length} mesh record(s) permanently failed to sync to a remote DWN `
+      + `(latest: ${first.messageCid} -> ${first.remoteEndpoint}: ${first.errorDetail}). `
+      + "These will not retry on their own — see the Sync panel."
+    );
+  } catch {
+    // Best-effort observability only; never fail the write that triggered it.
+  }
 }
 
 function recordIdFromMessage(message?: { recordId?: string; descriptor?: { dateCreated?: string } }): string {
@@ -411,6 +461,14 @@ async function deleteRecord(
   await pushChangesToRemote(session);
 }
 
+// Query pagination: bounded record materialization on the server means the
+// unpaginated "everything in one reply" assumption is fragile. Walk the reply
+// cursor with a fixed page size, capped so one runaway query can never loop
+// forever (100 x 20 = 2000 records per protocolPath is far beyond any
+// realistic mesh today).
+export const QUERY_PAGE_LIMIT = 100;
+export const QUERY_MAX_PAGES = 20;
+
 async function queryRecords(
   session: MeshdAdminSession,
   protocol: string,
@@ -418,38 +476,57 @@ async function queryRecords(
   contextId?: string,
   extraFilter: Record<string, unknown> = {}
 ): Promise<unknown[]> {
-  const result = await processDwnRequest(
-    session,
-    {
-      author: session.ownerDid,
-      target: session.ownerDid,
-      messageType: DwnInterface.RecordsQuery,
-      messageParams: {
-        filter: {
-          protocol,
-          protocolPath,
-          ...(contextId ? { contextId } : {}),
-          ...extraFilter
-        },
-        dateSort: "createdAscending"
-      },
-      // Mesh records (preAuthKey, member/node payloads) are written with
-      // encryption: true. The agent only auto-decrypts reply data when the
-      // *query* also carries this flag (maybeDecryptReply early-returns
-      // otherwise), so without it encrypted records come back as ciphertext
-      // that decodeRecordPayload cannot parse — leaving preAuthKey lookups and
-      // the topology invite list silently empty. Plaintext records (e.g.
-      // network) are unaffected: decryption only touches entries whose own
-      // encryption descriptor is set.
-      encryption: true
-    },
-    protocol
-  );
+  const entries: unknown[] = [];
+  let cursor: MeshdQueryCursor | undefined;
 
-  if (result.reply.status.code !== 200) {
-    throw new Error(`Could not fetch ${protocolPath} records: ${result.reply.status.detail ?? result.reply.status.code}`);
+  for (let page = 0; page < QUERY_MAX_PAGES; page++) {
+    const result = await processDwnRequest(
+      session,
+      {
+        author: session.ownerDid,
+        target: session.ownerDid,
+        messageType: DwnInterface.RecordsQuery,
+        messageParams: {
+          filter: {
+            protocol,
+            protocolPath,
+            ...(contextId ? { contextId } : {}),
+            ...extraFilter
+          },
+          dateSort: "createdAscending",
+          pagination: {
+            limit: QUERY_PAGE_LIMIT,
+            ...(cursor ? { cursor } : {})
+          }
+        },
+        // Mesh records (preAuthKey, member/node payloads) are written with
+        // encryption: true. The agent only auto-decrypts reply data when the
+        // *query* also carries this flag (maybeDecryptReply early-returns
+        // otherwise), so without it encrypted records come back as ciphertext
+        // that decodeRecordPayload cannot parse — leaving preAuthKey lookups and
+        // the topology invite list silently empty. Plaintext records (e.g.
+        // network) are unaffected: decryption only touches entries whose own
+        // encryption descriptor is set.
+        encryption: true
+      },
+      protocol
+    );
+
+    if (result.reply.status.code !== 200) {
+      throw new Error(`Could not fetch ${protocolPath} records: ${result.reply.status.detail ?? result.reply.status.code}`);
+    }
+    entries.push(...(result.reply.entries ?? []));
+    cursor = result.reply.cursor;
+    if (!cursor) {
+      return entries;
+    }
   }
-  return result.reply.entries ?? [];
+
+  console.warn(
+    `[meshd-admin] ${protocolPath} query still had more pages after `
+    + `${QUERY_MAX_PAGES * QUERY_PAGE_LIMIT} records; returning a truncated list.`
+  );
+  return entries;
 }
 
 export function parseMeshdNetworkRecord(rawEntry: unknown): MeshdNetworkSummary | undefined {

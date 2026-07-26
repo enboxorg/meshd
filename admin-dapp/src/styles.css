@@ -1014,6 +1014,104 @@ dd {
   font-variant-numeric: tabular-nums;
 }
 
+/* ── Sync health (per-remote DWN status) ───────────────────────────────── */
+
+.sync-health {
+  display: grid;
+  gap: 0.55rem;
+  border-top: 1px solid #edf0ec;
+  padding-top: 1rem;
+}
+
+.sync-health-note {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #6b746f;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.sync-health-note.error {
+  color: #8d2c2c;
+}
+
+.sync-remote-list {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sync-remote-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border: 1px solid #e3e9e1;
+  border-radius: 9px;
+  padding: 0.55rem 0.65rem;
+  min-width: 0;
+}
+
+.sync-remote-row[data-state="quota-blocked"],
+.sync-remote-row[data-state="degraded"] {
+  border-color: #e6cf9a;
+  background: #fffdf6;
+}
+
+.sync-remote-main {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.sync-remote-host {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.sync-remote-host strong {
+  overflow: hidden;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sync-remote-main small {
+  color: #6b746f;
+  font-size: 0.74rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.sync-remote-error {
+  color: #8a6316;
+}
+
+.sync-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+}
+
+.sync-dot.ok {
+  background: #17a08d;
+}
+
+.sync-dot.warn {
+  background: #d9930d;
+}
+
+.sync-dot.off {
+  background: #aab3ad;
+}
+
 /* ── Shared brand (meshd.sh cohesion) ──────────────────────────────────── */
 
 h1,

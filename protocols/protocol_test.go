@@ -16,13 +16,13 @@ func TestProtocolDeleteActionsIncludeCreate(t *testing.T) {
 	}
 }
 
-func TestProtocolDoesNotUseUnsupportedRecordLimitStrategies(t *testing.T) {
+func TestProtocolRecordLimitAllowsOnlyMax(t *testing.T) {
 	for name, data := range protocolFixtures() {
 		var doc any
 		if err := json.Unmarshal(data, &doc); err != nil {
 			t.Fatalf("%s: unmarshal protocol JSON: %v", name, err)
 		}
-		assertNoUnsupportedRecordLimitStrategies(t, name, doc)
+		assertRecordLimitAllowsOnlyMax(t, name, doc)
 	}
 }
 
@@ -63,22 +63,27 @@ func assertDeleteActionsIncludeCreate(t *testing.T, path string, value any) {
 	}
 }
 
-func assertNoUnsupportedRecordLimitStrategies(t *testing.T, path string, value any) {
+// dwn-sdk-js 0.4.17 (#1446) tightened the $recordLimit schema to
+// additionalProperties:false with "max" as the only property; any other key
+// (e.g. the old "strategy") makes ProtocolsConfigure reject the definition.
+func assertRecordLimitAllowsOnlyMax(t *testing.T, path string, value any) {
 	t.Helper()
 
 	switch v := value.(type) {
 	case map[string]any:
 		if limit, ok := v["$recordLimit"].(map[string]any); ok {
-			if strategy, _ := limit["strategy"].(string); strategy == "purgeOldest" {
-				t.Fatalf("%s.$recordLimit uses unsupported strategy %q", path, strategy)
+			for key := range limit {
+				if key != "max" {
+					t.Fatalf("%s.$recordLimit carries unsupported property %q (only \"max\" is allowed)", path, key)
+				}
 			}
 		}
 		for key, child := range v {
-			assertNoUnsupportedRecordLimitStrategies(t, fmt.Sprintf("%s.%s", path, key), child)
+			assertRecordLimitAllowsOnlyMax(t, fmt.Sprintf("%s.%s", path, key), child)
 		}
 	case []any:
 		for i, child := range v {
-			assertNoUnsupportedRecordLimitStrategies(t, fmt.Sprintf("%s[%d]", path, i), child)
+			assertRecordLimitAllowsOnlyMax(t, fmt.Sprintf("%s[%d]", path, i), child)
 		}
 	}
 }

@@ -1,1 +1,4 @@
 dev-dist
+# PlatformAgentTestHarness debris + local repro scripts
+__TESTDATA__/
+_peervis.mjs

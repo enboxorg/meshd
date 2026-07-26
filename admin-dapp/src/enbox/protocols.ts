@@ -1,21 +1,9 @@
-import { defineProtocol } from "@enbox/browser";
-import type { Enbox } from "@enbox/browser";
+import { defineProtocol, recordCodecs } from "@enbox/browser";
+import type { Enbox, RecordCodec } from "@enbox/browser";
 import type { ConnectPermissionRequest } from "@enbox/browser";
+import type { TypedProtocol } from "@enbox/api";
 
 import { MESHD_PROTOCOL_URI, MeshProtocolDefinition } from "./config";
-
-type MeshProtocolSchemaMap = {
-  network: Record<string, unknown>;
-  member: Record<string, unknown>;
-  nodeRequest: Record<string, unknown>;
-  nodeApproval: Record<string, unknown>;
-  node: Record<string, unknown>;
-  nodeInfo: Record<string, unknown>;
-  endpoint: Record<string, unknown>;
-  aclPolicy: Record<string, unknown>;
-  relay: Record<string, unknown>;
-  preAuthKey: Record<string, unknown>;
-};
 
 type ProtocolDefinition = {
   protocol?: unknown;
@@ -27,10 +15,31 @@ type InstalledProtocol = {
   definition?: unknown;
 };
 
-export const MeshProtocol = defineProtocol(
-  MeshProtocolDefinition as never,
-  {} as MeshProtocolSchemaMap
-);
+// defineProtocol infers protocol paths from a `const`-literal definition; ours
+// comes from imported JSON (a wide type), which sends that inference into
+// excessively-deep instantiation. Call it through a loosely-typed alias — the
+// runtime codec-completeness validation still runs.
+const defineMeshProtocol = defineProtocol as unknown as (
+  definition: unknown,
+  codecs: Record<string, RecordCodec<unknown>>
+) => TypedProtocol;
+
+// defineProtocol requires one runtime codec per reachable protocol type. The
+// dapp reads/writes records through the raw agent path (src/meshd/admin.ts),
+// so plain JSON codecs are sufficient — the typed handle is only used for
+// configure/verify.
+export const MeshProtocol = defineMeshProtocol(MeshProtocolDefinition, {
+  network: recordCodecs.json<Record<string, unknown>>(),
+  member: recordCodecs.json<Record<string, unknown>>(),
+  node: recordCodecs.json<Record<string, unknown>>(),
+  nodeInfo: recordCodecs.json<Record<string, unknown>>(),
+  endpoint: recordCodecs.json<Record<string, unknown>>(),
+  nodeRequest: recordCodecs.json<Record<string, unknown>>(),
+  nodeApproval: recordCodecs.json<Record<string, unknown>>(),
+  preAuthKey: recordCodecs.json<Record<string, unknown>>(),
+  aclPolicy: recordCodecs.json<Record<string, unknown>>(),
+  relay: recordCodecs.json<Record<string, unknown>>()
+});
 
 export const MeshNodePermissionRequest: ConnectPermissionRequest = {
   protocolDefinition: MeshProtocolDefinition as never,

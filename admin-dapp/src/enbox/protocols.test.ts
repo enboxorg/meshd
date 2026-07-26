@@ -1,6 +1,7 @@
 import { normalizeProtocolRequests } from "@enbox/auth";
 import type { Enbox } from "@enbox/browser";
-import { DwnInterfaceName, DwnMethodName } from "@enbox/dwn-sdk-js";
+import { DwnInterfaceName, DwnMethodName, PrivateKeySigner, ProtocolsConfigure, Secp256k1 } from "@enbox/dwn-sdk-js";
+import type { ProtocolDefinition } from "@enbox/dwn-sdk-js";
 import { describe, expect, it, vi } from "vitest";
 
 import rawMeshProtocolDefinition from "../../../protocols/wireguard-mesh.json";
@@ -73,6 +74,41 @@ describe("meshd admin protocol requests", () => {
       expect(JSON.stringify(request.protocolDefinition)).not.toContain("$keyAgreement");
       expect(JSON.stringify(request.protocolDefinition)).not.toContain("rootKeyId");
     }
+  });
+});
+
+describe("shipped protocol definition against the installed dwn-sdk-js validator", () => {
+  async function testSigner() {
+    const { privateJwk } = await Secp256k1.generateKeyPair();
+    return new PrivateKeySigner({ privateJwk, keyId: "did:example:alice#key-1" });
+  }
+
+  it("passes the full ProtocolsConfigure validation gate", async () => {
+    // ProtocolsConfigure.create runs Message.validateJsonSchema plus
+    // validateProtocolDefinition — the exact gate ensureProtocolsReady hits at
+    // startup. This pins protocols/wireguard-mesh.json to whatever dwn-sdk-js
+    // is installed, so schema-tightening SDK releases fail here at test time
+    // instead of killing the dashboard at runtime. The semantic gate requires
+    // the owner-derived $keyAgreement blocks the wallet injects at install
+    // time, so validate the installed shape, not the bare authored JSON.
+    await expect(ProtocolsConfigure.create({
+      definition: withInjectedKeyAgreement(rawMeshProtocolDefinition) as ProtocolDefinition,
+      signer: await testSigner()
+    })).resolves.toBeDefined();
+  });
+
+  it("rejects $recordLimit.strategy, removed by dwn-sdk-js 0.4.17", async () => {
+    // Non-tautology check: prove the gate above actually validates
+    // $recordLimit by re-adding the property 0.4.17 (#1446) removed.
+    const withStrategy = withInjectedKeyAgreement(rawMeshProtocolDefinition) as {
+      structure: { network: { preAuthKey: { $recordLimit: Record<string, unknown> } } };
+    };
+    withStrategy.structure.network.preAuthKey.$recordLimit.strategy = "reject";
+
+    await expect(ProtocolsConfigure.create({
+      definition: withStrategy as unknown as ProtocolDefinition,
+      signer: await testSigner()
+    })).rejects.toThrow(/additional properties/i);
   });
 });
 
