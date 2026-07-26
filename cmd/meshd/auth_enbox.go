@@ -38,10 +38,6 @@ func runEnboxAuthConnect(ctx context.Context, profileFlag string, opts authConne
 	if err != nil {
 		return err
 	}
-	password, err := vaultPasswordForUnlock(stateDir)
-	if err != nil {
-		return err
-	}
 	delegateIdentity, err := ensureWalletDelegateIdentity(stateDir)
 	if err != nil {
 		return err
@@ -97,7 +93,7 @@ func runEnboxAuthConnect(ctx context.Context, profileFlag string, opts authConne
 		ConnectServerURL:   connectServerURL,
 		SessionRevocations: sessionRevocationsFromResult(result.SessionRevocations),
 	}
-	if err := state.StoreWalletSession(stateDir, password, session); err != nil {
+	if err := state.StoreWalletSession(stateDir, session); err != nil {
 		return err
 	}
 
@@ -125,7 +121,7 @@ func runEnboxAuthConnect(ctx context.Context, profileFlag string, opts authConne
 	if session.ExpiresAt != "" {
 		fmt.Printf("  Expires: %s\n", session.ExpiresAt)
 	}
-	fmt.Printf("  Session: encrypted\n")
+	fmt.Printf("  Session: stored\n")
 	fmt.Printf("\nRun 'meshd network create <name>' to create a mesh network, or 'meshd up' to join one.\n")
 	return nil
 }

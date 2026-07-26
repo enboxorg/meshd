@@ -7,7 +7,7 @@ import (
 	"syscall"
 )
 
-// alignOwnerToDir best-effort chowns path to the owner of dir so that a state
+// AlignOwnerToDir best-effort chowns path to the owner of dir so that a state
 // file written by the root daemon (after the sudo TUN re-exec) stays readable
 // by the non-root user who owns the profile directory. The decision is made by
 // fileOwnerForDir.
@@ -20,7 +20,7 @@ import (
 // just wrote behaves identically to Chown, and matches restoreSudoUserOwnership
 // in cmd/meshd. Any chown error is intentionally ignored: failing to realign
 // ownership must never block state persistence.
-func alignOwnerToDir(dir, path string) {
+func AlignOwnerToDir(dir, path string) {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return

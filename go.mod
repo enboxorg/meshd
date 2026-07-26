@@ -15,7 +15,6 @@ require (
 	github.com/tailscale/peercred v0.0.0-20250107143737-35a0c7bd7edc
 	github.com/tailscale/wireguard-go v0.0.0-20250716170648-1d0488a3d7da
 	github.com/tv42/zbase32 v0.0.0-20220222190657-f76a9fc892fa
-	github.com/zalando/go-keyring v0.2.8
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745
 	golang.org/x/crypto v0.48.0
 	golang.org/x/net v0.50.0
@@ -27,7 +26,6 @@ require (
 	github.com/akutz/memconn v0.1.0 // indirect
 	github.com/axiomhq/hyperloglog v0.0.0-20240319100328-84253e514e02 // indirect
 	github.com/creachadair/msync v0.7.1 // indirect
-	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/dblohm7/wingoes v0.0.0-20240119213807-a09d6be7affa // indirect
 	github.com/dgryski/go-metro v0.0.0-20180109044635-280f6062b5bc // indirect
 	github.com/gaissmai/bart v0.18.0 // indirect

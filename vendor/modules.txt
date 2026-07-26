@@ -23,9 +23,6 @@ github.com/coder/websocket/internal/wsjs
 # github.com/creachadair/msync v0.7.1
 ## explicit; go 1.25
 github.com/creachadair/msync/trigger
-# github.com/danieljoos/wincred v1.2.3
-## explicit; go 1.18
-github.com/danieljoos/wincred
 # github.com/dblohm7/wingoes v0.0.0-20240119213807-a09d6be7affa
 ## explicit; go 1.21
 github.com/dblohm7/wingoes
@@ -365,11 +362,6 @@ github.com/tv42/zbase32
 # github.com/x448/float16 v0.8.4
 ## explicit; go 1.11
 github.com/x448/float16
-# github.com/zalando/go-keyring v0.2.8
-## explicit; go 1.18
-github.com/zalando/go-keyring
-github.com/zalando/go-keyring/internal/shellescape
-github.com/zalando/go-keyring/secret_service
 # go4.org/mem v0.0.0-20240501181205-ae6ca9944745
 ## explicit; go 1.14
 go4.org/mem

@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"github.com/enboxorg/meshd/internal/vault"
 )
 
-const walletSessionFile = "session.vault.json"
+const walletSessionFile = "session.json"
 
 type WalletSession struct {
 	Version int `json:"version"`
@@ -79,7 +77,7 @@ func (s *WalletSession) EffectiveNodeMultiPartyProtocols() []string {
 	return s.DelegateMultiPartyProtocols
 }
 
-func StoreWalletSession(stateDir string, password string, session *WalletSession) error {
+func StoreWalletSession(stateDir string, session *WalletSession) error {
 	if session == nil {
 		return fmt.Errorf("wallet session is required")
 	}
@@ -96,52 +94,60 @@ func StoreWalletSession(stateDir string, password string, session *WalletSession
 	if len(session.NodeMultiPartyProtocols) == 0 && len(session.DelegateMultiPartyProtocols) > 0 {
 		session.NodeMultiPartyProtocols = append([]string(nil), session.DelegateMultiPartyProtocols...)
 	}
+	if err := CheckNoLegacyVault(stateDir, walletSessionFile); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
 	}
-	plaintext, err := json.Marshal(session)
+	// Grants are raw DWN messages: marshal compact so their bytes survive the
+	// round trip verbatim (MarshalIndent would reformat json.RawMessage).
+	data, err := json.Marshal(session)
 	if err != nil {
 		return fmt.Errorf("marshal wallet session: %w", err)
-	}
-	sealed, err := vault.Seal(plaintext, password)
-	if err != nil {
-		return err
 	}
 
 	target := filepath.Join(stateDir, walletSessionFile)
 	tmp := target + ".tmp"
-	if err := os.WriteFile(tmp, sealed, 0600); err != nil {
-		return fmt.Errorf("write encrypted wallet session: %w", err)
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return fmt.Errorf("write wallet session: %w", err)
 	}
+	// Keep root-written sessions readable by the profile owner, exactly like
+	// SaveNetworkState does after the sudo TUN re-exec.
+	AlignOwnerToDir(stateDir, tmp)
 	if err := os.Rename(tmp, target); err != nil {
 		os.Remove(tmp)
-		return fmt.Errorf("rename encrypted wallet session: %w", err)
+		return fmt.Errorf("rename wallet session: %w", err)
 	}
 	return nil
 }
 
-func LoadWalletSession(stateDir string, password string) (*WalletSession, error) {
+func LoadWalletSession(stateDir string) (*WalletSession, error) {
+	if err := CheckNoLegacyVault(stateDir, walletSessionFile); err != nil {
+		return nil, err
+	}
 	target := filepath.Join(stateDir, walletSessionFile)
 	data, err := os.ReadFile(target)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read encrypted wallet session: %w", err)
-	}
-	plaintext, err := vault.Open(data, password)
-	if err != nil {
-		return nil, fmt.Errorf("open encrypted wallet session: %w", err)
+		return nil, fmt.Errorf("read wallet session: %w", err)
 	}
 	var session WalletSession
-	if err := json.Unmarshal(plaintext, &session); err != nil {
+	if err := json.Unmarshal(data, &session); err != nil {
 		return nil, fmt.Errorf("unmarshal wallet session: %w", err)
 	}
 	session.NormalizeOwnerDID()
 	return &session, nil
 }
 
+// WalletSessionExists also reports legacy encrypted session files so callers
+// route through LoadWalletSession and surface the vaults-removed error
+// instead of treating the profile as never connected.
 func WalletSessionExists(stateDir string) bool {
-	_, err := os.Stat(filepath.Join(stateDir, walletSessionFile))
-	return err == nil
+	if _, err := os.Stat(filepath.Join(stateDir, walletSessionFile)); err == nil {
+		return true
+	}
+	return CheckNoLegacyVault(stateDir, walletSessionFile) != nil
 }
