@@ -17,8 +17,7 @@ package state
 //   - dirUID == 0: the directory is root-owned (e.g. a system service under
 //     /var/lib, or a direct `sudo meshd up` fresh install where the profile
 //     directory is created by root). A root-owned file is then expected; leave
-//     it. The exit-time restoreSudoUserOwnership safety net in cmd/meshd covers
-//     the direct-sudo fresh-install case for those who need the CLI afterwards.
+//     it, and expect the CLI in that deployment to keep running under sudo.
 //   - otherwise: chown the file to the directory's uid/gid.
 func fileOwnerForDir(procEUID, dirUID, dirGID int, dirStatOK bool) (uid, gid int, chown bool) {
 	if !dirStatOK {

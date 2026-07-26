@@ -241,6 +241,97 @@ destination: 10.200.26.192
 	}
 }
 
+func TestKeyFileHygieneChecks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not meaningful on Windows")
+	}
+
+	writeKeyFile := func(t *testing.T, dir, name string, mode os.FileMode) {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// Chmod explicitly so the test is immune to the process umask.
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		name  string
+		files map[string]os.FileMode
+		// wantWarnDetails lists substrings expected in the warn checks, one
+		// per warning; empty means the single "Key files private" OK row.
+		wantWarnDetails []string
+	}{
+		{
+			name: "all private",
+			files: map[string]os.FileMode{
+				"identity.json":          0o600,
+				"delegate.identity.json": 0o600,
+				"session.json":           0o600,
+			},
+		},
+		{
+			name: "missing files are skipped",
+		},
+		{
+			name: "world readable identity",
+			files: map[string]os.FileMode{
+				"identity.json": 0o644,
+				"session.json":  0o600,
+			},
+			wantWarnDetails: []string{"identity.json has mode 0644"},
+		},
+		{
+			name: "group readable delegate and session",
+			files: map[string]os.FileMode{
+				"identity.json":          0o600,
+				"delegate.identity.json": 0o640,
+				"session.json":           0o660,
+			},
+			wantWarnDetails: []string{
+				"delegate.identity.json has mode 0640",
+				"session.json has mode 0660",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			for name, mode := range tt.files {
+				writeKeyFile(t, stateDir, name, mode)
+			}
+
+			checks := keyFileHygieneChecks(stateDir)
+
+			if len(tt.wantWarnDetails) == 0 {
+				if len(checks) != 1 || checks[0].Level != doctorOK || checks[0].Title != "Key files private" {
+					t.Fatalf("expected single OK check, got %+v", checks)
+				}
+				return
+			}
+			if len(checks) != len(tt.wantWarnDetails) {
+				t.Fatalf("expected %d warnings, got %+v", len(tt.wantWarnDetails), checks)
+			}
+			for i, want := range tt.wantWarnDetails {
+				check := checks[i]
+				if check.Level != doctorWarn {
+					t.Fatalf("check %d level = %q, want warn: %+v", i, check.Level, check)
+				}
+				if !strings.Contains(check.Detail, want) {
+					t.Fatalf("check %d detail %q missing %q", i, check.Detail, want)
+				}
+				if !strings.Contains(check.Next, "chmod 600") {
+					t.Fatalf("check %d next %q missing chmod advice", i, check.Next)
+				}
+			}
+		})
+	}
+}
+
 func TestPrintDoctorCheck(t *testing.T) {
 	var buf bytes.Buffer
 	printDoctorCheck(&buf, doctorCheck{

@@ -17,9 +17,8 @@ import (
 // could otherwise unlink the root-written tmp file and plant a symlink between
 // the write and the chown, tricking root into chowning an attacker-chosen path
 // (a race-based local privilege escalation). Lchown on the regular tmp file we
-// just wrote behaves identically to Chown, and matches restoreSudoUserOwnership
-// in cmd/meshd. Any chown error is intentionally ignored: failing to realign
-// ownership must never block state persistence.
+// just wrote behaves identically to Chown. Any chown error is intentionally
+// ignored: failing to realign ownership must never block state persistence.
 func AlignOwnerToDir(dir, path string) {
 	info, err := os.Stat(dir)
 	if err != nil {
