@@ -131,10 +131,10 @@ const (
 )
 
 // ErrSubscriptionAuthorizationRevoked marks a terminal subscription error
-// caused by the server permanently stopping delivery — grant revocation,
-// grant expiry, or an unrecoverable delivery failure. The terminal lifecycle
-// error wraps this sentinel so callers can distinguish "re-resolve the grant
-// set" from other terminal conditions via errors.Is.
+// caused by delivery-time grant revalidation failing — grant revocation or
+// grant expiry. The terminal lifecycle error wraps this sentinel so callers
+// can distinguish "re-resolve the grant set" from other terminal conditions
+// (including generic delivery failures) via errors.Is.
 var ErrSubscriptionAuthorizationRevoked = errors.New("subscription delivery authorization revoked")
 
 // ProgressGapInfo describes why a stored cursor cannot be resumed.
@@ -804,9 +804,10 @@ func (s *Subscription) handleSubscriptionFrame(ctx context.Context, conn *websoc
 	var terminalErr error
 	if messageType == SubscriptionErrorType {
 		switch message.Error.Code {
-		case MessagesSubscribeDeliveryAuthorizationFailedCode, MessagesSubscribeDeliveryFailedCode:
-			// Grant revocation/expiry (or unrecoverable delivery failure):
-			// wrap the sentinel so callers can react specifically.
+		case MessagesSubscribeDeliveryAuthorizationFailedCode:
+			// Grant revocation/expiry: wrap the sentinel so callers can react
+			// specifically. DeliveryFailed is a server-side delivery fault, not
+			// a grant problem, so it takes the plain terminal path below.
 			terminalErr = fmt.Errorf("terminal subscription error: %s: %s: %w",
 				message.Error.Code, message.Error.Detail, ErrSubscriptionAuthorizationRevoked)
 		default:

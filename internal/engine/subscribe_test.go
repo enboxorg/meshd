@@ -1186,20 +1186,42 @@ func TestSubscriptionWatcherFeedTerminalAuthDegradesToPolling(t *testing.T) {
 }
 
 func TestSubscriptionWatcherFeedTerminalWithoutAuthSentinelKeepsCoverage(t *testing.T) {
-	coordinator := newRecordingRefreshCoordinator()
-	w := newTestFeedWatcher(nil, coordinator, nil, nil)
-	w.initializeStreamCoverage(map[RefreshStream]bool{RefreshStreamFeed: true})
-	coordinator.takeCalls()
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "generic transport error", err: errors.New("connection torn down")},
+		{
+			// A server-side delivery fault is not a grant problem: it must
+			// not trip the auth-degraded reason (which prescribes a wallet
+			// remedy inapplicable on owner nodes).
+			name: "delivery failed terminal",
+			err: fmt.Errorf("terminal subscription error: %s: %s",
+				dwn.MessagesSubscribeDeliveryFailedCode, "delivery stopped"),
+		},
+	}
 
-	w.handleFeedLifecycle(dwn.SubscriptionLifecycleEvent{
-		Kind: dwn.SubscriptionLifecycleTerminal,
-		Err:  errors.New("connection torn down"),
-	})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			coordinator := newRecordingRefreshCoordinator()
+			w := newTestFeedWatcher(nil, coordinator, nil, nil)
+			w.initializeStreamCoverage(map[RefreshStream]bool{RefreshStreamFeed: true})
+			coordinator.takeCalls()
 
-	requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{
-		{method: "live", stream: RefreshStreamFeed},
-		{method: "notify", reason: RefreshReasonFeed},
-	})
+			w.handleFeedLifecycle(dwn.SubscriptionLifecycleEvent{
+				Kind: dwn.SubscriptionLifecycleTerminal,
+				Err:  tc.err,
+			})
+
+			requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{
+				{method: "live", stream: RefreshStreamFeed},
+				{method: "notify", reason: RefreshReasonFeed},
+			})
+			if health := coordinator.streamHealth(RefreshStreamFeed); !health.Covered {
+				t.Fatalf("feed stream health = %+v, want covered", health)
+			}
+		})
+	}
 }
 
 func TestEngineCreatesSubscriptionWatcher(t *testing.T) {
