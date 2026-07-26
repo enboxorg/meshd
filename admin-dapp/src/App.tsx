@@ -22,6 +22,7 @@ import { toast } from "sonner";
 import { useEnbox } from "./enbox/use-enbox";
 import { MESHD_PROTOCOL_URI } from "./enbox/config";
 import { createMeshSyncRefreshScheduler } from "./meshd/topology-refresh";
+import { SyncHealthPanel } from "./sync-health";
 import {
   dashboardContextFromSearch,
   ownerMatchesDashboardContext,
@@ -665,6 +666,8 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
             </button>
           </div>
         ) : null}
+
+        <SyncHealthPanel />
       </aside>
 
       <section className="main-panel">
