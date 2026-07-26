@@ -21,6 +21,7 @@ const (
 	RefreshReasonPeriodic RefreshReason = "periodic"
 	RefreshReasonTopology RefreshReason = "topology"
 	RefreshReasonDelivery RefreshReason = "delivery"
+	RefreshReasonFeed     RefreshReason = "feed"
 	RefreshReasonEndpoint RefreshReason = "endpoint"
 	RefreshReasonManual   RefreshReason = "manual"
 )
@@ -31,6 +32,12 @@ type RefreshStream string
 const (
 	RefreshStreamTopology RefreshStream = "topology"
 	RefreshStreamDelivery RefreshStream = "delivery"
+
+	// RefreshStreamFeed is the single Messages replication-log stream used by
+	// nodes eligible for feed mode. Its core-protocol shadow filters carry the
+	// delivery and permission records too, so it subsumes both Records
+	// streams.
+	RefreshStreamFeed RefreshStream = "feed"
 )
 
 // RefreshBatch is the immutable set of invalidations represented by one
@@ -63,12 +70,17 @@ type RefreshClock interface {
 type RefreshCoordinatorConfig struct {
 	Refresh RefreshFunc
 
-	// FallbackInterval is used whenever either required stream is uncovered,
+	// Streams is the authoritative subscription stream set this coordinator
+	// tracks. Stream operations naming a stream outside this set are ignored.
+	// Nil defaults to the two Records streams (topology, delivery).
+	Streams []RefreshStream
+
+	// FallbackInterval is used whenever any required stream is uncovered,
 	// disconnected, or has not yet been repaired. Default: 30 seconds.
 	FallbackInterval time.Duration
 
-	// HealthyInterval is the anti-entropy interval when both topology and
-	// delivery streams are covered, live, and repaired. Default: 5 minutes.
+	// HealthyInterval is the anti-entropy interval when every required stream
+	// is covered, live, and repaired. Default: 5 minutes.
 	HealthyInterval time.Duration
 
 	// Debounce waits for a quiet window after event invalidations. MaxDebounce
@@ -112,11 +124,15 @@ type RefreshStreamHealth struct {
 
 // RefreshCoordinatorHealth is a point-in-time, deep-copied scheduler view.
 type RefreshCoordinatorHealth struct {
-	Running             bool
-	Paused              bool
-	InFlight            bool
-	Mode                RefreshMode
-	StreamsHealthy      bool
+	Running        bool
+	Paused         bool
+	InFlight       bool
+	Mode           RefreshMode
+	StreamsHealthy bool
+	// DegradedReason is an operator-facing explanation of why subscription
+	// coverage was lost terminally (e.g. wallet session grants expired).
+	// Empty while coverage is intact.
+	DegradedReason      string
 	Streams             map[RefreshStream]RefreshStreamHealth
 	PendingReasons      []RefreshReason
 	ConsecutiveFailures int
@@ -156,10 +172,11 @@ type RefreshCoordinator struct {
 	retryJitter      func(time.Duration) time.Duration
 	clock            RefreshClock
 
-	mu      sync.Mutex
-	pending map[RefreshReason]refreshPending
-	streams map[RefreshStream]refreshStreamState
-	wake    chan struct{}
+	mu             sync.Mutex
+	pending        map[RefreshReason]refreshPending
+	streams        map[RefreshStream]refreshStreamState
+	degradedReason string
+	wake           chan struct{}
 
 	sequence            uint64
 	started             bool
@@ -231,6 +248,18 @@ func NewRefreshCoordinator(cfg RefreshCoordinatorConfig) (*RefreshCoordinator, e
 		retryJitter = defaultRefreshRetryJitter
 	}
 
+	streamSet := cfg.Streams
+	if len(streamSet) == 0 {
+		streamSet = []RefreshStream{RefreshStreamTopology, RefreshStreamDelivery}
+	}
+	streams := make(map[RefreshStream]refreshStreamState, len(streamSet))
+	for _, stream := range streamSet {
+		if stream == "" {
+			return nil, fmt.Errorf("refresh coordinator stream names must not be empty")
+		}
+		streams[stream] = refreshStreamState{}
+	}
+
 	return &RefreshCoordinator{
 		refresh:          cfg.Refresh,
 		fallbackInterval: fallbackInterval,
@@ -243,11 +272,8 @@ func NewRefreshCoordinator(cfg RefreshCoordinatorConfig) (*RefreshCoordinator, e
 		retryJitter:      retryJitter,
 		clock:            clock,
 		pending:          make(map[RefreshReason]refreshPending),
-		streams: map[RefreshStream]refreshStreamState{
-			RefreshStreamTopology: {},
-			RefreshStreamDelivery: {},
-		},
-		wake: make(chan struct{}, 1),
+		streams:          streams,
+		wake:             make(chan struct{}, 1),
 	}, nil
 }
 
@@ -354,7 +380,11 @@ func (c *RefreshCoordinator) SetStreamCovered(stream RefreshStream, covered bool
 		c.mu.Unlock()
 		return
 	}
-	state := c.streams[stream]
+	state, known := c.streams[stream]
+	if !known {
+		c.mu.Unlock()
+		return
+	}
 	if state.covered == covered {
 		c.mu.Unlock()
 		return
@@ -393,7 +423,11 @@ func (c *RefreshCoordinator) SetStreamLive(stream RefreshStream, live, needsFull
 		c.mu.Unlock()
 		return
 	}
-	state := c.streams[stream]
+	state, known := c.streams[stream]
+	if !known {
+		c.mu.Unlock()
+		return
+	}
 	wasLive := state.live
 	changed := wasLive != live
 	state.live = live
@@ -440,7 +474,11 @@ func (c *RefreshCoordinator) InvalidateStream(stream RefreshStream, reason Refre
 		c.mu.Unlock()
 		return
 	}
-	state := c.streams[stream]
+	state, known := c.streams[stream]
+	if !known {
+		c.mu.Unlock()
+		return
+	}
 	c.sequence++
 	state.repaired = false
 	state.repairSequence = c.sequence
@@ -452,6 +490,17 @@ func (c *RefreshCoordinator) InvalidateStream(stream RefreshStream, reason Refre
 	c.resetPeriodicLocked(c.clock.Now())
 	c.mu.Unlock()
 	c.signal()
+}
+
+// SetDegradedReason records (or clears, with an empty string) the
+// operator-facing explanation surfaced through Health and the daemon status
+// when subscription coverage is lost terminally.
+func (c *RefreshCoordinator) SetDegradedReason(reason string) {
+	c.mu.Lock()
+	if !c.stopped {
+		c.degradedReason = reason
+	}
+	c.mu.Unlock()
 }
 
 // Health returns a deep copy. Mutating its maps or slices cannot affect the
@@ -467,6 +516,7 @@ func (c *RefreshCoordinator) Health() RefreshCoordinatorHealth {
 		InFlight:            c.inFlight,
 		Mode:                modeForHealth(healthy),
 		StreamsHealthy:      healthy,
+		DegradedReason:      c.degradedReason,
 		Streams:             make(map[RefreshStream]RefreshStreamHealth, len(c.streams)),
 		PendingReasons:      sortedPendingReasons(c.pending),
 		ConsecutiveFailures: c.consecutiveFailures,
@@ -705,8 +755,7 @@ func (c *RefreshCoordinator) currentIntervalLocked() time.Duration {
 }
 
 func (c *RefreshCoordinator) streamsHealthyLocked() bool {
-	for _, source := range []RefreshStream{RefreshStreamTopology, RefreshStreamDelivery} {
-		state := c.streams[source]
+	for _, state := range c.streams {
 		if !state.covered || !state.live || !state.repaired {
 			return false
 		}
@@ -727,6 +776,8 @@ func reasonForStream(stream RefreshStream) RefreshReason {
 		return RefreshReasonTopology
 	case RefreshStreamDelivery:
 		return RefreshReasonDelivery
+	case RefreshStreamFeed:
+		return RefreshReasonFeed
 	default:
 		return RefreshReason(stream)
 	}

@@ -100,6 +100,11 @@ type SnapshotStatus struct {
 	RetryNotBefore      string                          `json:"retryNotBefore,omitempty"`
 	NextAttemptAt       string                          `json:"nextAttemptAt,omitempty"`
 	Streams             map[string]SnapshotStreamStatus `json:"streams,omitempty"`
+
+	// DegradedReason explains a terminal loss of subscription coverage in
+	// operator terms (e.g. wallet session grants expired). Empty while
+	// coverage is intact.
+	DegradedReason string `json:"degradedReason,omitempty"`
 }
 
 // SnapshotStreamStatus describes whether one invalidation stream is

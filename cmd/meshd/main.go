@@ -1734,6 +1734,10 @@ func cmdNetworkLeave(ctx context.Context, args []string, flagProfile string) err
 	if err := state.ClearNetworkState(stateDir); err != nil {
 		return fmt.Errorf("clearing network state: %w", err)
 	}
+	// The feed checkpoint belongs to the departed network's replication link.
+	if err := state.ClearFeedSyncState(stateDir); err != nil {
+		fmt.Printf("Warning: clearing feed sync state: %v\n", err)
+	}
 
 	name := "unknown"
 	if ns != nil {
@@ -2968,6 +2972,11 @@ func printDaemonRuntimeStatus(w io.Writer, live *daemon.Status) {
 		}
 	} else if live.RoutingReady {
 		fmt.Fprintln(w, "  Routing: userspace ready")
+	}
+	if live.Snapshot != nil {
+		if reason := strings.TrimSpace(live.Snapshot.DegradedReason); reason != "" {
+			fmt.Fprintf(w, "  Control plane: degraded — %s\n", reason)
+		}
 	}
 }
 
@@ -4217,6 +4226,14 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		ListenPort:             f.listenPort,
 		PollInterval:           f.pollInterval,
 		Logger:                 logger,
+		// The engine derives feed eligibility (owner signing identity or feed
+		// grants below) and never learns where the checkpoint lives.
+		FeedSyncLoad: func() (*state.FeedSyncState, error) {
+			return state.LoadFeedSyncState(stateDir)
+		},
+		FeedSyncSave: func(fs state.FeedSyncState) error {
+			return state.SaveFeedSyncState(stateDir, &fs)
+		},
 	}
 	if delegateSession != nil {
 		engCfg.DelegatedGrant = delegateSession.ReadGrant
@@ -4224,6 +4241,8 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		engCfg.GrantKeys = delegateSession.GrantKeys
 		engCfg.AudienceSource = delegateSession.AudienceSource
 		engCfg.ProtocolDefinition = delegateSession.ProtocolDefinition
+		engCfg.FeedGrantIDs = delegateSession.FeedGrantIDs
+		engCfg.FeedGrants = delegateSession.FeedGrants
 	}
 	socketPath := daemon.DefaultSocketPath()
 	instanceID, err := resolveDaemonInstanceID(backgroundChild, os.Getenv(startupInstanceEnv))
@@ -4352,6 +4371,7 @@ func applyDaemonRefreshHealth(status *daemon.SnapshotStatus, snapshot *engine.Me
 
 	status.State = daemonRefreshState(snapshot, refresh)
 	status.Mode = string(refresh.Mode)
+	status.DegradedReason = refresh.DegradedReason
 	status.InFlight = refresh.InFlight
 	status.Pending = daemonRefreshReasons(refresh.PendingReasons)
 	status.Paused = refresh.Paused

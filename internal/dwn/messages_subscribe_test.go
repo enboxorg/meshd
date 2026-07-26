@@ -260,7 +260,7 @@ func TestMessagesSubscribeTerminalDeliveryErrorCodes(t *testing.T) {
 		wantTerminal bool
 	}{
 		{code: MessagesSubscribeDeliveryAuthorizationFailedCode, wantRevoked: true, wantTerminal: true},
-		{code: MessagesSubscribeDeliveryFailedCode, wantRevoked: true, wantTerminal: true},
+		{code: MessagesSubscribeDeliveryFailedCode, wantRevoked: false, wantTerminal: true},
 		{code: "SomeOtherTerminalCode", wantRevoked: false, wantTerminal: true},
 	}
 

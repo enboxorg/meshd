@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
+	"github.com/enboxorg/meshd/internal/state"
 	"github.com/enboxorg/meshd/protocols"
 
 	"github.com/enboxorg/meshnet/control/controlclient"
@@ -29,12 +31,21 @@ type recordedSubscription struct {
 	lifecycle dwn.SubscriptionLifecycleHandler
 }
 
+type recordedMessagesSubscription struct {
+	target    string
+	signer    *dwn.Signer
+	opts      dwn.MessagesSubscribeOptions
+	handler   dwn.EventHandler
+	lifecycle dwn.SubscriptionLifecycleHandler
+}
+
 type recordingSubscriptionManager struct {
-	mu        sync.Mutex
-	calls     []recordedSubscription
-	failCall  int
-	closeHook func()
-	closeCall atomic.Int32
+	mu            sync.Mutex
+	calls         []recordedSubscription
+	messagesCalls []recordedMessagesSubscription
+	failCall      int
+	closeHook     func()
+	closeCall     atomic.Int32
 }
 
 func (m *recordingSubscriptionManager) SubscribeWithAuthAndLifecycle(
@@ -48,7 +59,7 @@ func (m *recordingSubscriptionManager) SubscribeWithAuthAndLifecycle(
 ) (*dwn.Subscription, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	callNumber := len(m.calls) + 1
+	callNumber := len(m.calls) + len(m.messagesCalls) + 1
 	if m.failCall == callNumber {
 		return nil, errors.New("subscribe failed")
 	}
@@ -58,6 +69,30 @@ func (m *recordingSubscriptionManager) SubscribeWithAuthAndLifecycle(
 		signer:    signer,
 		filter:    filter,
 		auth:      cloneMessageAuth(auth),
+		handler:   handler,
+		lifecycle: lifecycle,
+	})
+	return nil, nil
+}
+
+func (m *recordingSubscriptionManager) SubscribeMessagesWithLifecycle(
+	_ context.Context,
+	target string,
+	signer *dwn.Signer,
+	opts dwn.MessagesSubscribeOptions,
+	handler dwn.EventHandler,
+	lifecycle dwn.SubscriptionLifecycleHandler,
+) (*dwn.Subscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	callNumber := len(m.calls) + len(m.messagesCalls) + 1
+	if m.failCall == callNumber {
+		return nil, errors.New("subscribe failed")
+	}
+	m.messagesCalls = append(m.messagesCalls, recordedMessagesSubscription{
+		target:    target,
+		signer:    signer,
+		opts:      opts,
 		handler:   handler,
 		lifecycle: lifecycle,
 	})
@@ -78,6 +113,7 @@ type refreshCoordinatorCall struct {
 	live             bool
 	needsFullRefresh bool
 	reason           RefreshReason
+	degradedReason   string
 }
 
 type recordingRefreshCoordinator struct {
@@ -126,6 +162,12 @@ func (c *recordingRefreshCoordinator) Notify(reason RefreshReason) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls = append(c.calls, refreshCoordinatorCall{method: "notify", reason: reason})
+}
+
+func (c *recordingRefreshCoordinator) SetDegradedReason(reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, refreshCoordinatorCall{method: "degraded", degradedReason: reason})
 }
 
 func (c *recordingRefreshCoordinator) takeCalls() []refreshCoordinatorCall {
@@ -298,7 +340,7 @@ func TestSubscriptionWatcherReplacementCoordinatorReplaysLiveCoverage(t *testing
 	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{})
 	first := newRecordingRefreshCoordinator()
 	w.SetRefreshCoordinator(first)
-	w.initializeStreamCoverage(true)
+	w.initializeStreamCoverage(map[RefreshStream]bool{RefreshStreamTopology: true, RefreshStreamDelivery: true})
 	w.handleSubscriptionLifecycle(RefreshStreamTopology, dwn.SubscriptionLifecycleEvent{
 		Kind: dwn.SubscriptionLifecycleEstablished,
 	})
@@ -321,7 +363,7 @@ func TestSubscriptionWatcherReplacementHandoffDoesNotOverwriteConcurrentDisconne
 	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{})
 	first := newRecordingRefreshCoordinator()
 	w.SetRefreshCoordinator(first)
-	w.initializeStreamCoverage(true)
+	w.initializeStreamCoverage(map[RefreshStream]bool{RefreshStreamTopology: true, RefreshStreamDelivery: true})
 	w.handleSubscriptionLifecycle(RefreshStreamTopology, dwn.SubscriptionLifecycleEvent{
 		Kind: dwn.SubscriptionLifecycleEstablished,
 	})
@@ -370,7 +412,7 @@ func TestSubscriptionWatcherEventIsFencedByCoordinatorHandoff(t *testing.T) {
 	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{})
 	first := newBlockingInvalidationCoordinator()
 	w.SetRefreshCoordinator(first)
-	w.initializeStreamCoverage(true)
+	w.initializeStreamCoverage(map[RefreshStream]bool{RefreshStreamTopology: true, RefreshStreamDelivery: true})
 	w.handleSubscriptionLifecycle(RefreshStreamTopology, dwn.SubscriptionLifecycleEvent{
 		Kind: dwn.SubscriptionLifecycleEstablished,
 	})
@@ -568,6 +610,7 @@ func TestSubscriptionWatcherStartUsesReadGrantAndRecipientDeliveryFilter(t *test
 	}
 	defer w.Stop()
 	requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{
+		{method: "degraded"},
 		{method: "live", stream: RefreshStreamTopology},
 		{method: "live", stream: RefreshStreamDelivery},
 		{method: "covered", stream: RefreshStreamTopology, covered: true},
@@ -634,6 +677,7 @@ func TestSubscriptionWatcherRoleOnlyUsesDeliveryAndPolling(t *testing.T) {
 	}
 	defer w.Stop()
 	requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{
+		{method: "degraded"},
 		{method: "live", stream: RefreshStreamTopology},
 		{method: "live", stream: RefreshStreamDelivery},
 		{method: "covered", stream: RefreshStreamTopology, covered: false},
@@ -971,6 +1015,215 @@ func TestSubscriptionWatcherStartWaitsForConcurrentStop(t *testing.T) {
 	}
 }
 
+func newTestFeedWatcher(manager subscriptionManager, coordinator subscriptionRefreshCoordinator, feedSync *feedSyncRecorder, grantIDs []string) *SubscriptionWatcher {
+	w := NewSubscriptionWatcher(SubscriptionWatcherConfig{
+		AnchorEndpoint:  "https://example.com",
+		AnchorTenant:    "did:dht:anchor",
+		NetworkRecordID: "network-record",
+		SelfDID:         "did:jwk:self",
+		Signer:          &dwn.Signer{DID: "did:jwk:delegate"},
+		FeedMode:        true,
+		FeedGrantIDs:    grantIDs,
+	})
+	w.feedSync = feedSync
+	if manager != nil {
+		w.newManager = func(_ string, _ *slog.Logger) subscriptionManager { return manager }
+	}
+	if coordinator != nil {
+		w.SetRefreshCoordinator(coordinator)
+	}
+	return w
+}
+
+func TestSubscriptionWatcherFeedModeStartsSingleFeedSubscription(t *testing.T) {
+	manager := &recordingSubscriptionManager{}
+	coordinator := newRecordingRefreshCoordinator()
+	feedSync := newFeedSyncRecorder(testFeedLinkKey, nil, nil)
+	feedSync.adopt(&state.FeedSyncState{LinkKey: testFeedLinkKey, Cursor: testCursor("5")})
+	w := newTestFeedWatcher(manager, coordinator, feedSync, []string{"grant-a", "grant-b"})
+
+	if err := w.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer w.Stop()
+
+	requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{
+		{method: "degraded"},
+		{method: "live", stream: RefreshStreamFeed},
+		{method: "covered", stream: RefreshStreamFeed, covered: true},
+	})
+
+	if len(manager.calls) != 0 {
+		t.Fatalf("records subscriptions = %d, want none in feed mode", len(manager.calls))
+	}
+	if len(manager.messagesCalls) != 1 {
+		t.Fatalf("messages subscriptions = %d, want 1", len(manager.messagesCalls))
+	}
+	call := manager.messagesCalls[0]
+	if call.target != "did:dht:anchor" {
+		t.Fatalf("target = %q, want anchor tenant", call.target)
+	}
+	wantFilters := []dwn.MessagesFilter{{Protocol: protocols.MeshProtocolURI}}
+	if !reflect.DeepEqual(call.opts.Filters, wantFilters) {
+		t.Fatalf("filters = %#v, want %#v", call.opts.Filters, wantFilters)
+	}
+	if !reflect.DeepEqual(call.opts.PermissionGrantIDs, []string{"grant-a", "grant-b"}) {
+		t.Fatalf("grant IDs = %v, want [grant-a grant-b]", call.opts.PermissionGrantIDs)
+	}
+	if call.opts.Cursor == nil || call.opts.Cursor.Position != "5" {
+		t.Fatalf("cursor = %+v, want resumed position 5", call.opts.Cursor)
+	}
+	if call.handler == nil || call.lifecycle == nil {
+		t.Fatal("feed handlers were not installed")
+	}
+}
+
+func TestSubscriptionWatcherFeedModeOwnerOmitsCursorAndGrants(t *testing.T) {
+	manager := &recordingSubscriptionManager{}
+	// A checkpoint recorded under a different link key must not resume.
+	feedSync := newFeedSyncRecorder(testFeedLinkKey, nil, nil)
+	feedSync.adopt(&state.FeedSyncState{LinkKey: "stale^link^key^x", Cursor: testCursor("5")})
+	w := newTestFeedWatcher(manager, newRecordingRefreshCoordinator(), feedSync, nil)
+
+	if err := w.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer w.Stop()
+
+	call := manager.messagesCalls[0]
+	if len(call.opts.PermissionGrantIDs) != 0 {
+		t.Fatalf("grant IDs = %v, want none for owner", call.opts.PermissionGrantIDs)
+	}
+	if call.opts.Cursor != nil {
+		t.Fatalf("cursor = %+v, want nil after link key mismatch", call.opts.Cursor)
+	}
+}
+
+func TestSubscriptionWatcherFeedEventsInvalidateAndPersistCursor(t *testing.T) {
+	saves := &feedSaveRecorder{}
+	feedSync := newFeedSyncRecorder(testFeedLinkKey, saves.save, nil)
+	feedSync.debounce = time.Hour // only EOSE persists synchronously here
+	coordinator := newRecordingRefreshCoordinator()
+	w := newTestFeedWatcher(nil, coordinator, feedSync, nil)
+
+	if err := w.handleFeedMessage(&dwn.SubscriptionMessage{
+		Type:   dwn.SubscriptionEventType,
+		Cursor: testCursor("7"),
+	}); err != nil {
+		t.Fatalf("handleFeedMessage event: %v", err)
+	}
+	requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{{
+		method: "invalidate", stream: RefreshStreamFeed, reason: RefreshReasonFeed,
+	}})
+	if got := saves.takeSaves(); len(got) != 0 {
+		t.Fatalf("event persisted synchronously: %+v", got)
+	}
+	if got := feedSync.resumeCursor(); got == nil || got.Position != "7" {
+		t.Fatalf("recorded cursor = %+v, want position 7", got)
+	}
+
+	// EOSE is a barrier: cursor persists immediately, no invalidation.
+	if err := w.handleFeedMessage(&dwn.SubscriptionMessage{
+		Type:   dwn.SubscriptionEOSEType,
+		Cursor: testCursor("9"),
+	}); err != nil {
+		t.Fatalf("handleFeedMessage eose: %v", err)
+	}
+	requireRefreshCoordinatorCalls(t, coordinator, nil)
+	got := saves.takeSaves()
+	if len(got) != 1 || got[0].Cursor == nil || got[0].Cursor.Position != "9" {
+		t.Fatalf("eose saves = %+v, want one save at position 9", got)
+	}
+}
+
+func TestSubscriptionWatcherFeedProgressGapClearsCursor(t *testing.T) {
+	saves := &feedSaveRecorder{}
+	feedSync := newFeedSyncRecorder(testFeedLinkKey, saves.save, nil)
+	feedSync.flushCursor(testCursor("7"))
+	saves.takeSaves()
+	coordinator := newRecordingRefreshCoordinator()
+	w := newTestFeedWatcher(nil, coordinator, feedSync, nil)
+
+	w.handleFeedLifecycle(dwn.SubscriptionLifecycleEvent{
+		Kind: dwn.SubscriptionLifecycleProgressGap,
+		Gap:  &dwn.ProgressGapInfo{Reason: "epoch_mismatch"},
+	})
+
+	requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{{
+		method: "live", stream: RefreshStreamFeed, needsFullRefresh: true,
+	}})
+	got := saves.takeSaves()
+	if len(got) != 1 || got[0].Cursor != nil {
+		t.Fatalf("gap saves = %+v, want one save with a cleared cursor", got)
+	}
+	if feedSync.resumeCursor() != nil {
+		t.Fatal("cursor survived a progress gap")
+	}
+}
+
+func TestSubscriptionWatcherFeedTerminalAuthDegradesToPolling(t *testing.T) {
+	coordinator := newRecordingRefreshCoordinator()
+	w := newTestFeedWatcher(nil, coordinator, nil, nil)
+	w.initializeStreamCoverage(map[RefreshStream]bool{RefreshStreamFeed: true})
+	coordinator.takeCalls()
+
+	authErr := fmt.Errorf("terminal subscription error: %s: revoked: %w",
+		dwn.MessagesSubscribeDeliveryAuthorizationFailedCode, dwn.ErrSubscriptionAuthorizationRevoked)
+	w.handleFeedLifecycle(dwn.SubscriptionLifecycleEvent{
+		Kind: dwn.SubscriptionLifecycleTerminal,
+		Err:  authErr,
+	})
+
+	requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{
+		{method: "live", stream: RefreshStreamFeed},
+		{method: "covered", stream: RefreshStreamFeed},
+		{method: "degraded", degradedReason: feedAuthDegradedReason},
+		{method: "notify", reason: RefreshReasonFeed},
+	})
+	if health := coordinator.streamHealth(RefreshStreamFeed); health.Covered || health.Live {
+		t.Fatalf("feed stream health = %+v, want uncovered", health)
+	}
+}
+
+func TestSubscriptionWatcherFeedTerminalWithoutAuthSentinelKeepsCoverage(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "generic transport error", err: errors.New("connection torn down")},
+		{
+			// A server-side delivery fault is not a grant problem: it must
+			// not trip the auth-degraded reason (which prescribes a wallet
+			// remedy inapplicable on owner nodes).
+			name: "delivery failed terminal",
+			err: fmt.Errorf("terminal subscription error: %s: %s",
+				dwn.MessagesSubscribeDeliveryFailedCode, "delivery stopped"),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			coordinator := newRecordingRefreshCoordinator()
+			w := newTestFeedWatcher(nil, coordinator, nil, nil)
+			w.initializeStreamCoverage(map[RefreshStream]bool{RefreshStreamFeed: true})
+			coordinator.takeCalls()
+
+			w.handleFeedLifecycle(dwn.SubscriptionLifecycleEvent{
+				Kind: dwn.SubscriptionLifecycleTerminal,
+				Err:  tc.err,
+			})
+
+			requireRefreshCoordinatorCalls(t, coordinator, []refreshCoordinatorCall{
+				{method: "live", stream: RefreshStreamFeed},
+				{method: "notify", reason: RefreshReasonFeed},
+			})
+			if health := coordinator.streamHealth(RefreshStreamFeed); !health.Covered {
+				t.Fatalf("feed stream health = %+v, want covered", health)
+			}
+		})
+	}
+}
+
 func TestEngineCreatesSubscriptionWatcher(t *testing.T) {
 	cfg := Config{
 		AnchorEndpoint:  "https://example.com",
@@ -994,5 +1247,51 @@ func TestEngineCreatesSubscriptionWatcher(t *testing.T) {
 	}
 	if eng.subWatcher.readAuth.ProtocolRole != "network/node" {
 		t.Fatalf("watcher read role = %q, want network/node", eng.subWatcher.readAuth.ProtocolRole)
+	}
+	// A role-only node is not feed-eligible: records streams, no recorder.
+	if eng.subWatcher.feedMode || eng.feedSync != nil {
+		t.Fatalf("feedMode = %v, feedSync = %v; want records mode", eng.subWatcher.feedMode, eng.feedSync)
+	}
+}
+
+func TestEngineOwnerRunsFeedModeAndAdoptsCheckpoint(t *testing.T) {
+	cfg := Config{
+		AnchorEndpoint:  "https://example.com",
+		AnchorTenant:    "did:dht:owner",
+		NetworkRecordID: "record123",
+		SelfDID:         "did:dht:owner",
+		Signer:          &dwn.Signer{DID: "did:dht:owner"},
+	}
+	linkKey, err := feedLinkKey(cfg)
+	if err != nil {
+		t.Fatalf("feedLinkKey: %v", err)
+	}
+	saves := &feedSaveRecorder{}
+	cfg.FeedSyncLoad = func() (*state.FeedSyncState, error) {
+		return &state.FeedSyncState{
+			LinkKey:     linkKey,
+			Cursor:      testCursor("11"),
+			Fingerprint: "ff00",
+		}, nil
+	}
+	cfg.FeedSyncSave = saves.save
+
+	eng, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer eng.Stop()
+
+	if !eng.subWatcher.feedMode {
+		t.Fatal("owner engine should run in feed mode")
+	}
+	if eng.feedSync == nil || eng.subWatcher.feedSync != eng.feedSync {
+		t.Fatal("feed sync recorder not shared between engine and watcher")
+	}
+	if got := eng.feedSync.resumeCursor(); got == nil || got.Position != "11" {
+		t.Fatalf("resume cursor = %+v, want adopted position 11", got)
+	}
+	if got := eng.feedSync.storedFingerprint(); got != "ff00" {
+		t.Fatalf("stored fingerprint = %q, want adopted ff00", got)
 	}
 }

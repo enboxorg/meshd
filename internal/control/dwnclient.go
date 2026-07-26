@@ -254,6 +254,28 @@ func NewDWNClient(
 	}
 }
 
+// FeedFingerprint fetches the anchor tenant's replication-feed fingerprint
+// for the mesh protocol scope with a cheap cids-only, single-entry
+// MessagesQuery. permissionGrantIDs is the canonical feed grant set of a
+// wallet delegate; the anchor owner passes nil (tenant-authored Messages
+// operations bypass grants).
+//
+// An empty fingerprint with a nil error means the server did not provide one
+// for this filter set; callers must treat that as unknown and perform a full
+// state load.
+func (c *DWNClient) FeedFingerprint(ctx context.Context, permissionGrantIDs []string) (string, error) {
+	result, err := c.anchorDWN.MessagesQuery(ctx, c.anchorTenant, dwn.MessagesQueryOptions{
+		Filters:            []dwn.MessagesFilter{{Protocol: protocols.MeshProtocolURI}},
+		PermissionGrantIDs: permissionGrantIDs,
+		Limit:              1,
+		CidsOnly:           true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("querying feed fingerprint: %w", err)
+	}
+	return result.Fingerprint, nil
+}
+
 // UndecryptablePeerCount returns the cumulative number of node records this
 // client has failed to decrypt since it was created. A non-zero, growing value
 // means role-audience keys are not reaching this node (issue #187): its peers

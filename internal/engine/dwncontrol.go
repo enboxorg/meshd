@@ -58,12 +58,32 @@ type DWNControlConfig struct {
 	// subscription coverage is incomplete or unhealthy. Default: 30 seconds.
 	PollInterval time.Duration
 
-	// HealthyPollInterval is the slow anti-entropy interval while topology and
-	// delivery streams are both live and repaired. Default: 5 minutes.
+	// HealthyPollInterval is the slow anti-entropy interval while every
+	// required stream is live and repaired. Default: 5 minutes.
 	HealthyPollInterval time.Duration
 
 	// RefreshTimeout bounds one complete DWN state rebuild. Default: 2 minutes.
 	RefreshTimeout time.Duration
+
+	// Streams is the coordinator's authoritative stream set. Nil defaults to
+	// the two Records streams (topology, delivery); feed mode passes [feed].
+	Streams []RefreshStream
+
+	// FeedFingerprintFunc fetches the current remote replication-feed
+	// fingerprint (cids-only MessagesQuery). Non-nil enables fingerprint-gated
+	// periodic refreshes: a periodic-only batch whose fingerprint matches the
+	// one recorded at the last full rebuild skips the full state load.
+	FeedFingerprintFunc func(ctx context.Context) (string, error)
+
+	// FeedSync stores the fingerprint recorded immediately before each
+	// successful full rebuild. Required for gating when FeedFingerprintFunc
+	// is set.
+	FeedSync *feedSyncRecorder
+
+	// FeedFullRefreshInterval bounds how long periodic refreshes may be
+	// fingerprint-skipped before a full rebuild is forced regardless of a
+	// stable fingerprint. Default: 30 minutes.
+	FeedFullRefreshInterval time.Duration
 
 	// StartupSubscriptionWait gives asynchronous subscription handshakes a
 	// bounded chance to establish before the initial full rebuild.
@@ -134,6 +154,10 @@ type DWNControl struct {
 	cancel            context.CancelFunc
 	coordinator       *RefreshCoordinator
 	initialMapApplied atomic.Bool
+
+	// lastFullRefreshAt is when the last complete state load finished. Only
+	// touched from the coordinator's single refresh worker.
+	lastFullRefreshAt time.Time
 }
 
 // NewDWNControlFactory returns a factory function suitable for
@@ -174,6 +198,10 @@ func NewDWNControl(config *DWNControlConfig, opts controlclient.Options) (*DWNCo
 	if refreshTimeout == 0 {
 		refreshTimeout = 2 * time.Minute
 	}
+	feedFullRefreshInterval := config.FeedFullRefreshInterval
+	if feedFullRefreshInterval == 0 {
+		feedFullRefreshInterval = 30 * time.Minute
+	}
 
 	p := opts.Persist.Clone()
 	if p == nil {
@@ -202,6 +230,10 @@ func NewDWNControl(config *DWNControlConfig, opts controlclient.Options) (*DWNCo
 			StartupSubscriptionWait: config.StartupSubscriptionWait,
 			NodePrivateKey:          config.NodePrivateKey,
 			DiscoKeyRegistry:        config.DiscoKeyRegistry,
+			Streams:                 config.Streams,
+			FeedFingerprintFunc:     config.FeedFingerprintFunc,
+			FeedSync:                config.FeedSync,
+			FeedFullRefreshInterval: feedFullRefreshInterval,
 			Logf:                    logf,
 		},
 		observer: opts.Observer,
@@ -212,6 +244,7 @@ func NewDWNControl(config *DWNControlConfig, opts controlclient.Options) (*DWNCo
 	}
 	coordinator, err := NewRefreshCoordinator(RefreshCoordinatorConfig{
 		Refresh:          cc.refreshControlState,
+		Streams:          config.Streams,
 		FallbackInterval: pollInterval,
 		HealthyInterval:  healthyPollInterval,
 		RetryBackoff:     time.Second,
@@ -287,8 +320,7 @@ func (cc *DWNControl) waitForStartupSubscriptions(ctx context.Context, maximum t
 
 func refreshStreamsReadyForStartup(health RefreshCoordinatorHealth) bool {
 	covered := 0
-	for _, stream := range []RefreshStream{RefreshStreamTopology, RefreshStreamDelivery} {
-		state := health.Streams[stream]
+	for _, state := range health.Streams {
 		if !state.Covered {
 			continue
 		}
@@ -303,7 +335,14 @@ func refreshStreamsReadyForStartup(health RefreshCoordinatorHealth) bool {
 // refreshControlState performs one bounded remote rebuild. The first usable
 // map is applied locally a second time after the event bus has observed its peer
 // views; this preserves the startup ordering workaround without a second DWN load.
-func (cc *DWNControl) refreshControlState(ctx context.Context, _ RefreshBatch) error {
+//
+// In feed mode the remote feed fingerprint is fetched immediately before the
+// load: a periodic-only anti-entropy pass whose fingerprint matches the one
+// recorded at the last full rebuild skips the load entirely (the attempt
+// still counts as a success, keeping health fresh). Event-driven, startup,
+// manual, and endpoint reasons always rebuild, and a full rebuild is forced
+// at least every FeedFullRefreshInterval even when the fingerprint is stable.
+func (cc *DWNControl) refreshControlState(ctx context.Context, batch RefreshBatch) error {
 	refreshCtx := ctx
 	cancel := func() {}
 	if cc.config.RefreshTimeout > 0 {
@@ -311,9 +350,34 @@ func (cc *DWNControl) refreshControlState(ctx context.Context, _ RefreshBatch) e
 	}
 	defer cancel()
 
+	fingerprint := ""
+	fingerprintKnown := false
+	if cc.config.FeedFingerprintFunc != nil {
+		fp, err := cc.config.FeedFingerprintFunc(refreshCtx)
+		if err != nil {
+			// Probe failures are non-fatal: fall through to the full load.
+			cc.logf("dwn-control: feed fingerprint probe failed: %v", err)
+		} else {
+			fingerprint = fp
+			fingerprintKnown = fp != ""
+		}
+		if fingerprintKnown && cc.canSkipPeriodicRefresh(batch, fingerprint) {
+			cc.logf("dwn-control: feed fingerprint unchanged; skipping periodic rebuild")
+			return nil
+		}
+	}
+
 	replay, err := cc.loadAndPush(refreshCtx)
 	if err != nil {
 		return err
+	}
+	if cc.config.FeedFingerprintFunc != nil {
+		// Record the fingerprint fetched BEFORE the load succeeded: a write
+		// racing the load leaves the stored fingerprint stale, which only
+		// costs one redundant refresh (the safe direction). A failed probe
+		// stores "" so the next periodic pass cannot skip.
+		cc.config.FeedSync.recordFingerprint(fingerprint)
+		cc.lastFullRefreshAt = time.Now()
 	}
 	if replay == nil || cc.observer == nil || !cc.initialMapApplied.CompareAndSwap(false, true) {
 		return nil
@@ -323,6 +387,28 @@ func (cc *DWNControl) refreshControlState(ctx context.Context, _ RefreshBatch) e
 	}
 	cc.pushNetMap(replay)
 	return nil
+}
+
+// canSkipPeriodicRefresh reports whether a batch is pure periodic
+// anti-entropy whose remote fingerprint matches the stored one from the last
+// full rebuild, within the forced-rebuild interval.
+func (cc *DWNControl) canSkipPeriodicRefresh(batch RefreshBatch, fingerprint string) bool {
+	if cc.config.FeedSync == nil || len(batch.Reasons) == 0 {
+		return false
+	}
+	for _, reason := range batch.Reasons {
+		if reason != RefreshReasonPeriodic {
+			return false
+		}
+	}
+	stored := cc.config.FeedSync.storedFingerprint()
+	if stored == "" || stored != fingerprint {
+		return false
+	}
+	if cc.lastFullRefreshAt.IsZero() {
+		return false
+	}
+	return time.Since(cc.lastFullRefreshAt) < cc.config.FeedFullRefreshInterval
 }
 
 // loadAndPush reads DWN state, applies it once, and returns an observer-safe

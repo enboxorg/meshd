@@ -11,6 +11,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -30,6 +31,14 @@ type subscriptionManager interface {
 		dwn.EventHandler,
 		dwn.SubscriptionLifecycleHandler,
 	) (*dwn.Subscription, error)
+	SubscribeMessagesWithLifecycle(
+		context.Context,
+		string,
+		*dwn.Signer,
+		dwn.MessagesSubscribeOptions,
+		dwn.EventHandler,
+		dwn.SubscriptionLifecycleHandler,
+	) (*dwn.Subscription, error)
 	CloseAll()
 }
 
@@ -45,7 +54,12 @@ type subscriptionRefreshCoordinator interface {
 	SetStreamLive(RefreshStream, bool, bool)
 	InvalidateStream(RefreshStream, RefreshReason)
 	Notify(RefreshReason)
+	SetDegradedReason(string)
 }
+
+// feedAuthDegradedReason is surfaced through the daemon status when the feed
+// subscription dies terminally with the delivery-authorization sentinel.
+const feedAuthDegradedReason = "wallet session grants expired or revoked — run 'meshd auth connect' to refresh them"
 
 // SubscriptionWatcher subscribes to DWN record changes and reports stream
 // health and invalidations to the engine's refresh coordinator.
@@ -62,6 +76,17 @@ type SubscriptionWatcher struct {
 	readAuth        dwn.MessageAuth
 	logger          *slog.Logger
 	newManager      subscriptionManagerFactory
+
+	// feedMode replaces the two Records streams with the single Messages
+	// replication-feed stream. feedSync (optional) persists the resume
+	// cursor across restarts.
+	feedMode     bool
+	feedGrantIDs []string
+	feedSync     *feedSyncRecorder
+
+	// streamNames is the fixed stream set this watcher reports on:
+	// [feed] in feed mode, [topology, delivery] otherwise.
+	streamNames []RefreshStream
 
 	mu      sync.Mutex
 	manager subscriptionManager
@@ -100,6 +125,17 @@ type SubscriptionWatcherConfig struct {
 	// subscriptions and therefore keeps polling for topology changes.
 	ReadAuth dwn.MessageAuth
 
+	// FeedMode runs the single Messages replication-feed stream instead of
+	// the two Records streams. The server's core-protocol shadow filters make
+	// that one stream carry $encryption/delivery and mesh-tagged permission
+	// records too. Requires the anchor owner signing identity or active
+	// protocol-root Messages.Read grants.
+	FeedMode bool
+
+	// FeedGrantIDs is the canonical permissionGrantIds list invoked on the
+	// feed subscription. Empty for the anchor owner (tenant bypass).
+	FeedGrantIDs []string
+
 	// Logger is the structured logger.
 	Logger *slog.Logger
 }
@@ -112,6 +148,15 @@ func NewSubscriptionWatcher(cfg SubscriptionWatcherConfig) *SubscriptionWatcher 
 		l = slog.Default()
 	}
 
+	streamNames := []RefreshStream{RefreshStreamTopology, RefreshStreamDelivery}
+	if cfg.FeedMode {
+		streamNames = []RefreshStream{RefreshStreamFeed}
+	}
+	streams := make(map[RefreshStream]subscriptionWatcherStreamState, len(streamNames))
+	for _, stream := range streamNames {
+		streams[stream] = subscriptionWatcherStreamState{}
+	}
+
 	return &SubscriptionWatcher{
 		endpoint:        cfg.AnchorEndpoint,
 		anchorTenant:    cfg.AnchorTenant,
@@ -119,14 +164,14 @@ func NewSubscriptionWatcher(cfg SubscriptionWatcherConfig) *SubscriptionWatcher 
 		selfDID:         cfg.SelfDID,
 		signer:          cfg.Signer,
 		readAuth:        cloneMessageAuth(cfg.ReadAuth),
+		feedMode:        cfg.FeedMode,
+		feedGrantIDs:    append([]string(nil), cfg.FeedGrantIDs...),
+		streamNames:     streamNames,
 		logger:          l.With(slog.String("component", "subscription-watcher")),
 		newManager: func(endpoint string, logger *slog.Logger) subscriptionManager {
 			return dwn.NewSubscriptionManager(endpoint, logger)
 		},
-		streams: map[RefreshStream]subscriptionWatcherStreamState{
-			RefreshStreamTopology: {},
-			RefreshStreamDelivery: {},
-		},
+		streams: streams,
 	}
 }
 
@@ -154,10 +199,10 @@ func (w *SubscriptionWatcher) SetRefreshCoordinator(coordinator subscriptionRefr
 	w.coordinatorMu.Lock()
 	defer w.coordinatorMu.Unlock()
 	if coordinator != nil && w.streamsConfigured {
-		for _, stream := range []RefreshStream{RefreshStreamTopology, RefreshStreamDelivery} {
+		for _, stream := range w.streamNames {
 			coordinator.SetStreamCovered(stream, w.streams[stream].covered)
 		}
-		for _, stream := range []RefreshStream{RefreshStreamTopology, RefreshStreamDelivery} {
+		for _, stream := range w.streamNames {
 			state := w.streams[stream]
 			coordinator.SetStreamLive(stream, state.live, state.live)
 		}
@@ -268,64 +313,75 @@ func (w *SubscriptionWatcher) handleSubscriptionLifecycle(stream RefreshStream, 
 	}
 }
 
-func (w *SubscriptionWatcher) initializeStreamCoverage(topologyCovered bool) {
+func (w *SubscriptionWatcher) initializeStreamCoverage(coverage map[RefreshStream]bool) {
 	w.coordinatorMu.Lock()
 	defer w.coordinatorMu.Unlock()
 	w.streamsConfigured = true
-	w.streams[RefreshStreamTopology] = subscriptionWatcherStreamState{covered: topologyCovered}
-	w.streams[RefreshStreamDelivery] = subscriptionWatcherStreamState{covered: true}
+	for _, stream := range w.streamNames {
+		w.streams[stream] = subscriptionWatcherStreamState{covered: coverage[stream]}
+	}
 	if w.coordinator == nil {
 		return
 	}
-	w.coordinator.SetStreamLive(RefreshStreamTopology, false, false)
-	w.coordinator.SetStreamLive(RefreshStreamDelivery, false, false)
-	w.coordinator.SetStreamCovered(RefreshStreamTopology, topologyCovered)
-	w.coordinator.SetStreamCovered(RefreshStreamDelivery, true)
+	// Fresh coverage supersedes any terminal degradation from a previous run.
+	w.coordinator.SetDegradedReason("")
+	for _, stream := range w.streamNames {
+		w.coordinator.SetStreamLive(stream, false, false)
+	}
+	for _, stream := range w.streamNames {
+		w.coordinator.SetStreamCovered(stream, coverage[stream])
+	}
 }
 
 func (w *SubscriptionWatcher) clearStreamCoverage() {
 	w.coordinatorMu.Lock()
 	defer w.coordinatorMu.Unlock()
 	w.streamsConfigured = false
-	w.streams[RefreshStreamTopology] = subscriptionWatcherStreamState{}
-	w.streams[RefreshStreamDelivery] = subscriptionWatcherStreamState{}
+	for _, stream := range w.streamNames {
+		w.streams[stream] = subscriptionWatcherStreamState{}
+	}
 	if w.coordinator == nil {
 		return
 	}
-	w.coordinator.SetStreamLive(RefreshStreamTopology, false, false)
-	w.coordinator.SetStreamLive(RefreshStreamDelivery, false, false)
-	w.coordinator.SetStreamCovered(RefreshStreamTopology, false)
-	w.coordinator.SetStreamCovered(RefreshStreamDelivery, false)
+	for _, stream := range w.streamNames {
+		w.coordinator.SetStreamLive(stream, false, false)
+	}
+	for _, stream := range w.streamNames {
+		w.coordinator.SetStreamCovered(stream, false)
+	}
 }
 
-// Start begins subscribing to DWN record changes. It subscribes to all
-// records under the wireguard-mesh protocol within the network context.
-//
-// The subscription automatically reconnects on failure (handled by
-// SubscriptionManager). When any record changes, it triggers an
-// immediate engine re-poll.
-func (w *SubscriptionWatcher) Start(ctx context.Context) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if w.cancel != nil {
-		return nil // already started
+// setStreamUncovered drops one stream out of coverage after a terminal
+// authorization failure and records the operator-facing reason. The
+// coordinator falls back to the polling cadence.
+func (w *SubscriptionWatcher) setStreamUncovered(stream RefreshStream, reason string) {
+	w.coordinatorMu.Lock()
+	defer w.coordinatorMu.Unlock()
+	state := w.streams[stream]
+	state.covered = false
+	state.live = false
+	w.streams[stream] = state
+	if w.coordinator == nil {
+		return
 	}
-	if w.selfDID == "" {
-		return fmt.Errorf("subscription watcher requires a self DID")
-	}
+	w.coordinator.SetStreamLive(stream, false, false)
+	w.coordinator.SetStreamCovered(stream, false)
+	w.coordinator.SetDegradedReason(reason)
+}
 
-	subCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	manager := w.newManager(w.endpoint, w.logger)
-
+// startRecordsSubscriptions opens the two Records streams: the broad
+// mesh-protocol topology stream and the recipient-scoped delivery stream.
+func (w *SubscriptionWatcher) startRecordsSubscriptions(subCtx context.Context, manager subscriptionManager) error {
 	// Subscribe to all records under the wireguard-mesh protocol for
 	// this network. This catches node, endpoint, and relay
 	// record changes in a single subscription. Read grants authorize
 	// RecordsSubscribe broadly. A role-only invocation cannot use this filter:
 	// production DWN requires protocolPath and direct-parent scoping.
 	meshAuth, topologySupported := broadSubscriptionAuth(w.readAuth)
-	w.initializeStreamCoverage(topologySupported)
+	w.initializeStreamCoverage(map[RefreshStream]bool{
+		RefreshStreamTopology: topologySupported,
+		RefreshStreamDelivery: true,
+	})
 	if topologySupported {
 		filter := dwn.RecordsFilter{
 			Protocol:  protocols.MeshProtocolURI,
@@ -344,10 +400,6 @@ func (w *SubscriptionWatcher) Start(ctx context.Context) error {
 				w.handleSubscriptionLifecycle(RefreshStreamTopology, event)
 			},
 		); err != nil {
-			w.clearStreamCoverage()
-			cancel()
-			manager.CloseAll()
-			w.clearStreamCoverage()
 			return fmt.Errorf("subscribing to mesh records: %w", err)
 		}
 	} else {
@@ -384,11 +436,113 @@ func (w *SubscriptionWatcher) Start(ctx context.Context) error {
 			w.handleSubscriptionLifecycle(RefreshStreamDelivery, event)
 		},
 	); err != nil {
+		return fmt.Errorf("subscribing to delivery records: %w", err)
+	}
+	return nil
+}
+
+// startFeedSubscription opens the single Messages replication-feed stream.
+// The server's core-protocol shadow filters make a protocol-scoped feed
+// subscription also carry the $encryption/delivery control records and the
+// mesh-tagged permission records, so this one stream subsumes both Records
+// streams. Events remain invalidation-only wake hints.
+func (w *SubscriptionWatcher) startFeedSubscription(subCtx context.Context, manager subscriptionManager) error {
+	// The feed stream is always authorized: the anchor owner bypasses grants
+	// and delegates hold protocol-root Messages.Read grants (feed mode is not
+	// selected otherwise).
+	w.initializeStreamCoverage(map[RefreshStream]bool{RefreshStreamFeed: true})
+
+	opts := dwn.MessagesSubscribeOptions{
+		Filters:            []dwn.MessagesFilter{{Protocol: protocols.MeshProtocolURI}},
+		PermissionGrantIDs: append([]string(nil), w.feedGrantIDs...),
+		Cursor:             w.feedSync.resumeCursor(),
+	}
+	if _, err := manager.SubscribeMessagesWithLifecycle(
+		subCtx,
+		w.anchorTenant,
+		w.signer,
+		opts,
+		w.handleFeedMessage,
+		w.handleFeedLifecycle,
+	); err != nil {
+		return fmt.Errorf("subscribing to replication feed: %w", err)
+	}
+	return nil
+}
+
+// handleFeedMessage records cursor progress for resume and translates feed
+// events into invalidations. Events are never checkpoint evidence for the
+// control-plane state — only the cursor advances; repairs still require a
+// full refresh.
+func (w *SubscriptionWatcher) handleFeedMessage(message *dwn.SubscriptionMessage) error {
+	if message == nil {
+		return nil
+	}
+	switch message.Type {
+	case dwn.SubscriptionEventType:
+		w.feedSync.recordCursor(message.Cursor)
+	case dwn.SubscriptionEOSEType:
+		w.feedSync.flushCursor(message.Cursor)
+	}
+	return w.handleSubscriptionMessage(RefreshStreamFeed, message)
+}
+
+func (w *SubscriptionWatcher) handleFeedLifecycle(event dwn.SubscriptionLifecycleEvent) {
+	switch event.Kind {
+	case dwn.SubscriptionLifecycleProgressGap:
+		// The server can no longer resume the persisted cursor. Discard it so
+		// the reconnect replays from scratch; the lifecycle handler below
+		// holds the repair until the fresh stream is live.
+		w.feedSync.clearCursor()
+	case dwn.SubscriptionLifecycleTerminal:
+		if errors.Is(event.Err, dwn.ErrSubscriptionAuthorizationRevoked) {
+			// Grants revoked or expired mid-stream: the subscription cannot be
+			// re-established with the current session. Drop to uncovered
+			// polling fallback and surface the reason to `meshd status`.
+			w.logger.Warn("feed subscription authorization revoked; falling back to polling",
+				slog.Any("error", event.Err),
+			)
+			w.setStreamUncovered(RefreshStreamFeed, feedAuthDegradedReason)
+			w.notify(RefreshReasonFeed)
+			return
+		}
+	}
+	w.handleSubscriptionLifecycle(RefreshStreamFeed, event)
+}
+
+// Start begins subscribing to DWN record changes. It subscribes to all
+// records under the wireguard-mesh protocol within the network context.
+//
+// The subscription automatically reconnects on failure (handled by
+// SubscriptionManager). When any record changes, it triggers an
+// immediate engine re-poll.
+func (w *SubscriptionWatcher) Start(ctx context.Context) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.cancel != nil {
+		return nil // already started
+	}
+	if w.selfDID == "" {
+		return fmt.Errorf("subscription watcher requires a self DID")
+	}
+
+	subCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	manager := w.newManager(w.endpoint, w.logger)
+
+	var subscribeErr error
+	if w.feedMode {
+		subscribeErr = w.startFeedSubscription(subCtx, manager)
+	} else {
+		subscribeErr = w.startRecordsSubscriptions(subCtx, manager)
+	}
+	if subscribeErr != nil {
 		w.clearStreamCoverage()
 		cancel()
 		manager.CloseAll()
 		w.clearStreamCoverage()
-		return fmt.Errorf("subscribing to delivery records: %w", err)
+		return subscribeErr
 	}
 
 	w.cancel = cancel
