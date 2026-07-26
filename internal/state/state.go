@@ -3,9 +3,14 @@
 // State is stored in a profile-specific directory:
 //
 //	~/.enbox/profiles/<name>/meshd/
-//	  identity.vault.json  # encrypted DID private key (from the did package)
-//	  identity.json        # legacy plaintext DID private key
-//	  network.json         # current network membership info
+//	  identity.json           # DID private key (from the did package)
+//	  delegate.identity.json  # wallet session delegate DID private key
+//	  session.json            # imported wallet session (grants, owner DID)
+//	  network.json            # current network membership info
+//
+// Key and session files are plaintext JSON, 0600 in 0700 directories: the
+// local OS account is the trust boundary, and the authoritative identity is
+// the network owner, who can revoke any device from the admin dashboard.
 //
 // The state directory is resolved by the profile package. The functions in
 // this package accept a stateDir parameter and are agnostic to profiles.
@@ -186,7 +191,7 @@ func SaveNetworkState(stateDir string, ns *NetworkState) error {
 	// writes this file. Align its ownership to the profile directory's owner
 	// before the atomic rename, so the non-root CLI can still read it while the
 	// daemon keeps running. No-op for normal user runs and on non-POSIX platforms.
-	alignOwnerToDir(stateDir, tmp)
+	AlignOwnerToDir(stateDir, tmp)
 	if err := os.Rename(tmp, target); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("rename: %w", err)

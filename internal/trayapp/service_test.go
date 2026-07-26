@@ -46,10 +46,10 @@ func TestServiceConnectReportsCommandOutput(t *testing.T) {
 	service.client = daemon.NewClient(service.socket)
 	service.findMeshd = func() (string, error) { return "/opt/meshd", nil }
 	service.launchConnect = func(context.Context, string, []string, []string) ([]byte, error) {
-		return []byte("vault password required\nrun meshd vault remember"), errors.New("exit status 1")
+		return []byte("sudo authentication failed\nrun meshd up in a terminal"), errors.New("exit status 1")
 	}
 	err := service.Connect(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "meshd vault remember") {
+	if err == nil || !strings.Contains(err.Error(), "sudo authentication failed") {
 		t.Fatalf("Connect error = %v", err)
 	}
 }

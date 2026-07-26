@@ -26,7 +26,7 @@ meshd --version
 ```bash
 # On your first machine
 meshd up
-# choose "Create a new local-vault network", then enter the DWN endpoint and network name
+# choose "Create a new local network", then enter the DWN endpoint and network name
 
 # In another terminal on the first machine, create an invite URL
 meshd invite create
@@ -58,19 +58,14 @@ mesh IP. Linux tray packaging is deferred for the first release.
 
 The curl installer enables the tray at login and starts it immediately on the
 first macOS install. Windows users, and macOS users who need to restore a
-removed login item, can enable it explicitly. For password-encrypted profiles,
-opt in to OS credential storage once from a terminal:
+removed login item, can enable it explicitly:
 
 ```bash
-meshd vault remember       # macOS Keychain / Windows Credential Manager
 meshd-tray install         # Explicit LaunchAgent / Startup shortcut setup
 ```
 
-Use `meshd vault forget` to remove the saved credential. On macOS, Connect
-opens the normal `meshd up` flow in Terminal so the system-routing sudo prompt
-stays visible; Keychain removes the separate vault-password prompt. Windows
-launches the CLI directly. The vault password is never placed on a command
-line.
+On macOS, Connect opens the normal `meshd up` flow in Terminal so the
+system-routing sudo prompt stays visible. Windows launches the CLI directly.
 
 ### Wallet-delegate onboarding (enbox connect)
 
@@ -196,11 +191,6 @@ Identity:
   auth list         List all profiles
   auth use <name>   Set the default profile
   auth logout       Remove a profile from config
-  vault status      Show local vault state
-  vault init        Encrypt a legacy plaintext identity
-  vault unlock      Verify the vault password and show identity
-  vault remember    Store the vault password in the OS credential store
-  vault forget      Remove it from the OS credential store
 
 Network:
   network create    Create a new mesh network on a DWN
@@ -224,7 +214,7 @@ Network:
 Run `meshd network create` or `meshd network join` without all arguments in
 an interactive terminal and meshd will prompt for the missing values.
 `meshd up` also acts as the first-run wizard: it can create a local node DID,
-request access from a wallet owner DID, create a local-vault network, or join
+request access from a wallet owner DID, create a locally owned network, or join
 with an invite URL.
 At the first setup prompt you can press Enter for owner approval, paste a
 wallet owner DID, paste a `meshd://invite/...` URL, or choose create/join
@@ -238,8 +228,9 @@ flow instead of asking for a DWN endpoint.
 
 meshd supports two identity modes:
 
-**Local vault.** The device DID is also the mesh member DID. This is the
-simplest no-wallet path and is what `meshd auth login` creates today.
+**Local.** The device DID is also the mesh member DID. This is the
+simplest no-wallet path and is what `meshd auth login` creates today. (Profile
+configs record it as the `local-vault` auth type.)
 
 **Wallet-owned node.** The wallet DID is the mesh member/owner DID, while each
 machine keeps its own local node DID. The default beta path is dashboard-owned:
@@ -260,7 +251,7 @@ wallet/member DID  -- owns mesh membership and approves nodes
 
 The CLI records this split in profile and network state, imports legacy wallet
 permission grants when present, and caches wallet-provided network context keys
-in the encrypted local secrets vault. The dashboard-owned path avoids direct
+in the local wallet session file. The dashboard-owned path avoids direct
 CLI-to-wallet approval pages for normal enrollment. The older wallet-connected
 network creation flow is still accepted for compatibility: the wallet owns the DWN
 encryption root, writes the network, member, and member-owned node records,
@@ -270,7 +261,7 @@ wallet-response record on a DWN endpoint. The DWN handoff lets an SSH/server
 install print a wallet URL that you can approve from another machine without
 relying on that other browser reaching the server's `127.0.0.1`. If both
 delivery channels fail, the wallet still shows a JSON response that can be
-imported with `meshd network create --response <response.json>`. Local-vault
+imported with `meshd network create --response <response.json>`. Local
 profiles can continue to create networks directly from the CLI. Set
 `MESHD_WALLET_RESPONSE_ENDPOINT` to choose the node DID mailbox DWN; otherwise
 meshd uses `DWN_ENDPOINT` or the beta default.
@@ -284,7 +275,7 @@ from `nodeDid`; direct node-DID grants are only a legacy fallback for older
 sessions that do not have a delegate key.
 
 Run `meshd doctor` when setup or connectivity does not look right. It checks
-the active profile, vault, wallet owner/delegate session, network state,
+the active profile, key file permissions, wallet owner/delegate session, network state,
 daemon socket, TUN device, and the route to a discovered peer, then prints the
 next command or admin action to try.
 
@@ -302,7 +293,7 @@ pending node requests normally appear without manual polling.
 
 For manual admin onboarding, use `meshd peer add <node-did> --owner
 <wallet-or-owner-did>` when the device DID and owning wallet/member DID are
-different. Omitting `--owner` keeps the local-vault behavior where the node
+different. Omitting `--owner` keeps the local behavior where the node
 owns itself. `--member` is still accepted as a compatibility alias. Use
 `meshd peer remove <node-did>` to remove a device from peer discovery and
 delete delivered context-key records for that node. Rotate network context
@@ -342,9 +333,10 @@ mesh. They never need a public IP. They never appear in your DID document.
 ## How it works under the hood
 
 **Identity:** Each device gets a `did:jwk` identity -- an Ed25519 key pair
-encoded as a DID. The private key is stored in a password-encrypted local
-vault, and delivered network context keys are stored in encrypted local
-secrets. The WireGuard key is derived from the same identity (Ed25519 to
+encoded as a DID. The private key is stored as a plaintext JSON file readable
+only by your OS account (0600); the trust boundary is the local machine
+account, and the network owner can revoke any device from the admin dashboard
+at any time. The WireGuard key is derived from the same identity (Ed25519 to
 X25519 birational map), so there is exactly one identity key to manage.
 
 **Networking:** meshd uses [meshnet](https://github.com/enboxorg/meshnet),
@@ -415,14 +407,12 @@ internal/
   engine/               WireGuard engine integration (meshnet)
   mesh/                 Mesh registration, node/endpoint/ACL writes
   did/                  DID generation (did:jwk), key derivation, persistence
-  vault/                Password-encrypted local secret storage
   state/                On-disk state management
   daemon/               Unix socket daemon for up/down/status
   dashboard/            Shared dashboard URL/context resolution
   profile/              Multi-identity profile management
   trayapp/              Platform-neutral tray state and actions
   trayicon/             Native template/ICO status icon renderer
-  vaultkey/             OS credential-store integration for vault unlock
 pkg/
   dids/                 DID resolution (did:jwk, did:web, did:dht)
   jwk/                  JWK key operations

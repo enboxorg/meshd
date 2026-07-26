@@ -174,8 +174,8 @@ func TestModelViewTransitions(t *testing.T) {
 }
 
 func TestModelViewIncludesErrorInTooltip(t *testing.T) {
-	view := (Model{LastError: "vault password required"}).View()
-	if view.Error != "vault password required" || view.Tooltip != "meshd — Disconnected: vault password required" {
+	view := (Model{LastError: "sudo authentication failed"}).View()
+	if view.Error != "sudo authentication failed" || view.Tooltip != "meshd — Disconnected: sudo authentication failed" {
 		t.Fatalf("error view = %+v", view)
 	}
 }

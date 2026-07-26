@@ -50,11 +50,7 @@ func newDelegateSessionForCLI(ctx context.Context, stateDir string, meta identit
 	if delegateIdentity == nil {
 		return nil, fmt.Errorf("delegate identity is required")
 	}
-	password, err := vaultPasswordForUnlock(stateDir)
-	if err != nil {
-		return nil, err
-	}
-	session, err := state.LoadWalletSession(stateDir, password)
+	session, err := state.LoadWalletSession(stateDir)
 	if err != nil {
 		return nil, err
 	}
@@ -132,11 +128,7 @@ func createNetworkAsDelegateCLI(ctx context.Context, stateDir string, identity *
 	if !state.WalletSessionExists(stateDir) {
 		return false, nil
 	}
-	password, err := vaultPasswordForUnlock(stateDir)
-	if err != nil {
-		return false, err
-	}
-	session, err := state.LoadWalletSession(stateDir, password)
+	session, err := state.LoadWalletSession(stateDir)
 	if err != nil {
 		return false, err
 	}
@@ -214,11 +206,7 @@ func setupDelegateJoin(ctx context.Context, f upFlags, stateDir string, identity
 	if !state.WalletSessionExists(stateDir) {
 		return nil, false, nil
 	}
-	password, err := vaultPasswordForUnlock(stateDir)
-	if err != nil {
-		return nil, false, err
-	}
-	session, err := state.LoadWalletSession(stateDir, password)
+	session, err := state.LoadWalletSession(stateDir)
 	if err != nil {
 		return nil, false, err
 	}

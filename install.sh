@@ -456,8 +456,8 @@ restart_windows_meshd_after_upgrade() {
 
 # run_meshd_up hands off to the freshly installed binary by absolute path
 # (PATH updates only reach future shells). Under `curl | bash` stdin is the
-# script pipe, so reattach /dev/tty when one exists — that keeps the vault
-# password and sudo prompts working.
+# script pipe, so reattach /dev/tty when one exists — that keeps the sudo
+# prompt for system routing working.
 run_meshd_up() {
   local bin="$1"
   local profile="$2"

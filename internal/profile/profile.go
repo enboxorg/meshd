@@ -11,10 +11,10 @@
 //	  profiles/
 //	    <name>/
 //	      meshd/                    # meshd-specific state
-//	        identity.vault.json     # password-encrypted DID private key
-//	        identity.json           # legacy plaintext DID state
+//	        identity.json           # DID private key (0600)
+//	        delegate.identity.json  # wallet session delegate key (0600)
+//	        session.json            # imported wallet session (0600)
 //	        network.json            # network membership state
-//	        secrets.vault.json      # encrypted network context keys
 //
 // Override base path with ENBOX_HOME env var.
 //

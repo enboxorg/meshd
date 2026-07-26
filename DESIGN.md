@@ -221,9 +221,9 @@ separate concepts.
 
 | Concept | What it is | Where the private key lives | What it controls |
 | ------- | ---------- | --------------------------- | ---------------- |
-| Owner DID | The user, wallet, or organization identity; represented by the DWN `network/member` role | Wallet or local vault | Mesh ownership, membership, revocation, policy |
-| Node DID | A specific installed device | Local meshd vault on that device | WireGuard identity, endpoint updates, node liveness |
-| Delegate DID | A local session/control identity associated with one node | Local meshd delegate vault on that device | DWN operations authorized by wallet grants; not WireGuard or node liveness |
+| Owner DID | The user, wallet, or organization identity; represented by the DWN `network/member` role | Wallet, or the local key file for local-vault profiles | Mesh ownership, membership, revocation, policy |
+| Node DID | A specific installed device | Local key file on that device (`identity.json`, mode 0600) | WireGuard identity, endpoint updates, node liveness |
+| Delegate DID | A local session/control identity associated with one node | Local key file on that device (`delegate.identity.json`, mode 0600) | DWN operations authorized by wallet grants; not WireGuard or node liveness |
 | Permission grant | Wallet-issued authority for a delegate DID, with legacy node-DID grant fallback | Stored as DWN permission records | What the local delegate may do on behalf of the member DID |
 
 The wallet should not generate the device's node DID for normal CLI use. The

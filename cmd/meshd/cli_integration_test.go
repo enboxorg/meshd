@@ -22,12 +22,10 @@ func TestCLIInviteJoinFlow(t *testing.T) {
 		t.Skip("DWN_ENDPOINT not set, skipping CLI integration test")
 	}
 
-	resetVaultPasswordCache(t)
 	home := t.TempDir()
 	t.Setenv("ENBOX_HOME", home)
 	t.Setenv("ENBOX_PROFILE", "")
 	t.Setenv("MESHD_STATE_DIR", "")
-	t.Setenv("MESHD_VAULT_PASSWORD", "cli-e2e-password")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -97,11 +95,11 @@ func TestCLIInviteJoinFlow(t *testing.T) {
 		t.Fatalf("joiner state was not approved/refreshed: %#v", joinerState)
 	}
 
-	if !did.EncryptedExists(anchorStateDir) {
-		t.Fatal("anchor identity was not stored in encrypted vault")
+	if !did.Exists(anchorStateDir) {
+		t.Fatal("anchor identity file missing")
 	}
-	if !did.EncryptedExists(joinerStateDir) {
-		t.Fatal("joiner identity was not stored in encrypted vault")
+	if !did.Exists(joinerStateDir) {
+		t.Fatal("joiner identity file missing")
 	}
 }
 

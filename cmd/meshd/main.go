@@ -3,8 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +16,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -35,7 +32,6 @@ import (
 	"github.com/enboxorg/meshd/internal/openurl"
 	"github.com/enboxorg/meshd/internal/profile"
 	"github.com/enboxorg/meshd/internal/state"
-	"github.com/enboxorg/meshd/internal/vaultkey"
 	"github.com/enboxorg/meshd/internal/walletconnect"
 	"github.com/enboxorg/meshd/pkg/dids"
 	"github.com/enboxorg/meshd/pkg/dids/didcore"
@@ -55,11 +51,6 @@ Identity:
   auth use <name>   Set the default profile
   auth logout       Remove a profile from config
   init              Generate DID identity and store locally
-  vault status      Show local vault state
-  vault init        Encrypt a legacy plaintext identity
-  vault unlock      Verify the vault password and show identity
-  vault remember    Store the vault password in the OS credential store
-  vault forget      Remove the vault password from the OS credential store
 
 Network:
   network create    Create a new mesh network on a DWN
@@ -128,10 +119,6 @@ Environment:
   ENBOX_HOME         Override ~/.enbox base directory
   ENBOX_PROFILE      Override active profile
   MESHD_STATE_DIR    Override state directory (bypasses profiles)
-  MESHD_VAULT_PASSWORD
-                     Unlock/create vault non-interactively
-  MESHD_VAULT_CACHE_TTL
-                     Cache interactive vault unlocks for this duration (default: 5m, 0 disables)
   DWN_ENDPOINT       Default DWN endpoint URL override
   ENBOX_CONNECT_SERVER_URL
                      Enbox connect relay URL override for 'auth connect'
@@ -176,8 +163,7 @@ func main() {
 			"invite create",
 			"peer list", "peer add", "peer remove", "peer approve",
 			"acl set", "acl show",
-			"auth login", "auth connect", "auth list", "auth use", "auth logout",
-			"vault status", "vault init", "vault unlock", "vault remember", "vault forget":
+			"auth login", "auth connect", "auth list", "auth use", "auth logout":
 			cmd = combined
 			args = os.Args[3:]
 		}
@@ -208,16 +194,6 @@ func main() {
 		err = cmdAuthLogout(args)
 	case "init":
 		err = cmdInit(ctx, args, flagProfile)
-	case "vault status":
-		err = cmdVaultStatus(args, flagProfile)
-	case "vault init":
-		err = cmdVaultInit(args, flagProfile)
-	case "vault unlock":
-		err = cmdVaultUnlock(args, flagProfile)
-	case "vault remember":
-		err = cmdVaultRemember(args, flagProfile)
-	case "vault forget":
-		err = cmdVaultForget(args, flagProfile)
 	case "network create":
 		err = cmdNetworkCreate(ctx, args, flagProfile)
 	case "network join":
@@ -294,7 +270,7 @@ func cmdInit(ctx context.Context, args []string, flagProfile string) error {
 		return fmt.Errorf("generating DID: %w", err)
 	}
 
-	if err := storeIdentityForCLI(identity, stateDir); err != nil {
+	if err := identity.Store(stateDir); err != nil {
 		return fmt.Errorf("storing identity: %w", err)
 	}
 	if profileName != "" {
@@ -306,152 +282,6 @@ func cmdInit(ctx context.Context, args []string, flagProfile string) error {
 	fmt.Printf("Initialized new identity.\n")
 	fmt.Printf("  DID: %s\n", identity.URI)
 	fmt.Printf("  State: %s\n", stateDir)
-	fmt.Printf("  Vault: encrypted\n")
-	return nil
-}
-
-func cmdVaultStatus(args []string, flagProfile string) error {
-	if len(args) > 0 {
-		return fmt.Errorf("usage: meshd vault status")
-	}
-
-	stateDir, err := resolveStateDir(flagProfile)
-	if err == profile.ErrNoProfiles {
-		fmt.Println("Vault: uninitialized")
-		fmt.Println("Identity: none")
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-
-	switch {
-	case did.EncryptedExists(stateDir):
-		fmt.Println("Vault: encrypted")
-		if did.Exists(stateDir) {
-			fmt.Println("Legacy plaintext identity: present")
-			fmt.Println("Run 'meshd vault init' to remove the plaintext identity after unlock.")
-		}
-	case did.Exists(stateDir):
-		fmt.Println("Vault: plaintext legacy")
-		fmt.Println("Run 'meshd vault init' to encrypt it.")
-	default:
-		fmt.Println("Vault: uninitialized")
-		fmt.Println("Identity: none")
-	}
-	fmt.Printf("State: %s\n", stateDir)
-	return nil
-}
-
-func cmdVaultInit(args []string, flagProfile string) error {
-	if len(args) > 0 {
-		return fmt.Errorf("usage: meshd vault init")
-	}
-
-	stateDir, err := resolveStateDir(flagProfile)
-	if err != nil {
-		return err
-	}
-	if did.EncryptedExists(stateDir) {
-		if did.Exists(stateDir) {
-			if _, err := loadIdentity(stateDir); err != nil {
-				return err
-			}
-			if err := did.RemovePlaintext(stateDir); err != nil {
-				return err
-			}
-			fmt.Println("Removed legacy plaintext identity.")
-		}
-		fmt.Println("Vault already initialized.")
-		fmt.Printf("State: %s\n", stateDir)
-		return nil
-	}
-	if !did.Exists(stateDir) {
-		return fmt.Errorf("no plaintext identity found to encrypt")
-	}
-
-	password, err := vaultPasswordForCreate(stateDir)
-	if err != nil {
-		return err
-	}
-	if err := did.MigrateToEncrypted(stateDir, password); err != nil {
-		return err
-	}
-
-	fmt.Println("Vault initialized.")
-	fmt.Printf("State: %s\n", stateDir)
-	return nil
-}
-
-func cmdVaultUnlock(args []string, flagProfile string) error {
-	if len(args) > 0 {
-		return fmt.Errorf("usage: meshd vault unlock")
-	}
-
-	stateDir, err := resolveStateDir(flagProfile)
-	if err != nil {
-		return err
-	}
-	identity, err := loadIdentity(stateDir)
-	if err != nil {
-		return err
-	}
-
-	fmt.Println("Vault unlocked.")
-	fmt.Printf("Local Node DID: %s\n", identity.URI)
-	fmt.Printf("State: %s\n", stateDir)
-	return nil
-}
-
-func cmdVaultRemember(args []string, flagProfile string) error {
-	if len(args) > 0 {
-		return fmt.Errorf("usage: meshd vault remember")
-	}
-	stateDir, err := resolveStateDir(flagProfile)
-	if err != nil {
-		return err
-	}
-	if !did.EncryptedExists(stateDir) {
-		return fmt.Errorf("vault is not initialized; run 'meshd vault init' first")
-	}
-
-	password, err := vaultPasswordForRemember()
-	if err != nil {
-		return err
-	}
-	identity, err := did.LoadEncrypted(stateDir, password)
-	if err != nil {
-		return fmt.Errorf("verify vault password: %w", err)
-	}
-	if identity == nil {
-		return fmt.Errorf("encrypted identity is missing")
-	}
-	if err := vaultKeySet(stateDir, password); err != nil {
-		return fmt.Errorf("remember vault password: %w", err)
-	}
-	rememberVaultPassword(stateDir, password, false)
-
-	fmt.Println("Vault password saved in the OS credential store.")
-	fmt.Printf("State: %s\n", stateDir)
-	return nil
-}
-
-func cmdVaultForget(args []string, flagProfile string) error {
-	if len(args) > 0 {
-		return fmt.Errorf("usage: meshd vault forget")
-	}
-	stateDir, err := resolveStateDir(flagProfile)
-	if err != nil {
-		return err
-	}
-	clearVaultPasswordCache(stateDir)
-	deleteErr := vaultKeyDelete(stateDir)
-	if deleteErr != nil && !errors.Is(deleteErr, vaultkey.ErrNotFound) {
-		return fmt.Errorf("forget vault password: %w", deleteErr)
-	}
-
-	fmt.Println("Vault password removed from the OS credential store.")
-	fmt.Printf("State: %s\n", stateDir)
 	return nil
 }
 
@@ -1246,14 +1076,10 @@ func importNetworkCreateResponseData(ctx context.Context, flagProfile string, da
 		return fmt.Errorf("already in a network. Use 'meshd network leave' first.")
 	}
 
-	password, err := vaultPasswordForUnlock(stateDir)
-	if err != nil {
-		return err
-	}
 	if _, err := requireWalletResponseDelegateIdentity(stateDir, resp.DelegateDID, resp.NodeDID, "network create response"); err != nil {
 		return err
 	}
-	existingSession, err := state.LoadWalletSession(stateDir, password)
+	existingSession, err := state.LoadWalletSession(stateDir)
 	if err != nil {
 		return err
 	}
@@ -1288,7 +1114,7 @@ func importNetworkCreateResponseData(ctx context.Context, flagProfile string, da
 			session.NodeMultiPartyProtocols = existingSession.EffectiveNodeMultiPartyProtocols()
 		}
 	}
-	if err := state.StoreWalletSession(stateDir, password, session); err != nil {
+	if err := state.StoreWalletSession(stateDir, session); err != nil {
 		return err
 	}
 
@@ -2865,11 +2691,6 @@ func cmdStatus(ctx context.Context, args []string, flagProfile string) error {
 		fmt.Printf("  Configured Node DID: %s\n", meta.NodeDID)
 	}
 	fmt.Printf("  State: %s\n", stateDir)
-	if did.EncryptedExists(stateDir) {
-		fmt.Printf("  Vault: encrypted\n")
-	} else {
-		fmt.Printf("  Vault: plaintext legacy\n")
-	}
 	if meta.AuthType == profile.AuthTypeWalletAuthorizedNode {
 		if err := printWalletSessionStatus(stateDir, meta); err != nil {
 			return err
@@ -3042,9 +2863,9 @@ func collectDoctorChecks(ctx context.Context, flagProfile string) []doctorCheck 
 	if err != nil {
 		checks = append(checks, doctorCheck{
 			Level:  doctorFail,
-			Title:  "Identity vault could not be opened",
+			Title:  "Identity could not be loaded",
 			Detail: err.Error(),
-			Next:   "Run 'meshd vault unlock' and check the vault password.",
+			Next:   "Inspect identity.json, or re-join the network (the owner can re-approve this device).",
 		})
 		return checks
 	}
@@ -3054,16 +2875,7 @@ func collectDoctorChecks(ctx context.Context, flagProfile string) []doctorCheck 
 		Title:  "Identity loaded",
 		Detail: fmt.Sprintf("node DID %s (%s)", firstNonEmpty(meta.NodeDID, identity.URI), authDisplayName(meta.AuthType)),
 	})
-	if did.EncryptedExists(stateDir) {
-		checks = append(checks, doctorCheck{Level: doctorOK, Title: "Vault encrypted"})
-	} else {
-		checks = append(checks, doctorCheck{
-			Level:  doctorWarn,
-			Title:  "Legacy plaintext identity",
-			Detail: "This profile is using the old plaintext identity file.",
-			Next:   "Run 'meshd vault init' to encrypt it.",
-		})
-	}
+	checks = append(checks, keyFileHygieneChecks(stateDir)...)
 
 	if meta.AuthType == profile.AuthTypeWalletAuthorizedNode {
 		checks = append(checks, walletDoctorChecks(stateDir, meta)...)
@@ -3154,6 +2966,36 @@ func collectDoctorChecks(ctx context.Context, flagProfile string) []doctorCheck 
 	return checks
 }
 
+// keyFileHygieneChecks verifies that on-disk key and session files stay
+// private to the owning OS account: they hold plaintext private keys, so a
+// group- or world-readable mode is a misconfiguration worth flagging.
+func keyFileHygieneChecks(stateDir string) []doctorCheck {
+	if runtime.GOOS == "windows" {
+		// os.Stat permission bits are not meaningful on Windows.
+		return nil
+	}
+	var checks []doctorCheck
+	for _, name := range []string{"identity.json", "delegate.identity.json", "session.json"} {
+		path := filepath.Join(stateDir, name)
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if info.Mode().Perm()&0o077 != 0 {
+			checks = append(checks, doctorCheck{
+				Level:  doctorWarn,
+				Title:  "Key file readable by other users",
+				Detail: fmt.Sprintf("%s has mode %04o", path, info.Mode().Perm()),
+				Next:   fmt.Sprintf("Run 'chmod 600 %s'.", path),
+			})
+		}
+	}
+	if len(checks) == 0 {
+		return []doctorCheck{{Level: doctorOK, Title: "Key files private"}}
+	}
+	return checks
+}
+
 func walletDoctorChecks(stateDir string, meta identityMetadata) []doctorCheck {
 	if !state.WalletSessionExists(stateDir) {
 		return []doctorCheck{{
@@ -3169,7 +3011,7 @@ func walletDoctorChecks(stateDir string, meta identityMetadata) []doctorCheck {
 			Level:  doctorFail,
 			Title:  "Wallet session could not be opened",
 			Detail: err.Error(),
-			Next:   "Run 'meshd vault unlock' and reconnect with 'meshd auth connect' if needed.",
+			Next:   "Reconnect with 'meshd auth connect'.",
 		}}
 	}
 	if status == nil || !status.Exists {
@@ -3194,7 +3036,7 @@ func walletDoctorChecks(stateDir string, meta identityMetadata) []doctorCheck {
 	} else if _, err := verifyWalletDelegateIdentity(stateDir, status.DelegateDID); err != nil {
 		checks = append(checks, doctorCheck{
 			Level:  doctorFail,
-			Title:  "Delegate vault mismatch",
+			Title:  "Delegate identity mismatch",
 			Detail: err.Error(),
 			Next:   "Run 'meshd auth connect' again from this profile.",
 		})
@@ -3662,7 +3504,7 @@ func shouldReexecWithSudoForTun(f upFlags, uid int, goos string) bool {
 	return true
 }
 
-func reexecUpWithSudo(args []string, flagProfile, stateDir string) error {
+func reexecUpWithSudo(args []string, flagProfile string) error {
 	sudoPath, err := exec.LookPath("sudo")
 	if err != nil {
 		return fmt.Errorf("system routing requires administrator privileges, but sudo was not found; run meshd as root or use --no-tun")
@@ -3681,10 +3523,6 @@ func reexecUpWithSudo(args []string, flagProfile, stateDir string) error {
 	if err := validate.Run(); err != nil {
 		return fmt.Errorf("sudo authentication failed: %w", err)
 	}
-	if err := prepareVaultPasswordHandoff(stateDir); err != nil {
-		return fmt.Errorf("prepare vault unlock for privileged daemon: %w", err)
-	}
-	defer removeVaultPasswordHandoff(stateDir)
 
 	sudoArgs := []string{"-n", "env"}
 	sudoArgs = append(sudoArgs, sudoEnvironmentAssignments()...)
@@ -3757,10 +3595,6 @@ func startUpInBackground(ctx context.Context, args []string, flagProfile, stateD
 		if err := validate.Run(); err != nil {
 			return fmt.Errorf("sudo authentication failed: %w", err)
 		}
-		if err := prepareVaultPasswordHandoff(stateDir); err != nil {
-			return fmt.Errorf("prepare vault unlock for privileged daemon: %w", err)
-		}
-		defer removeVaultPasswordHandoff(stateDir)
 
 		sudoArgs := []string{"-n", "env"}
 		sudoArgs = append(sudoArgs, sudoEnvironmentAssignments()...)
@@ -3943,13 +3777,7 @@ func sudoEnvironmentAssignments() []string {
 		assignments = append(assignments, "ENBOX_HOME="+enboxHome)
 	}
 
-	if cacheDir := strings.TrimSpace(os.Getenv(vaultPasswordCacheDirEnv)); cacheDir != "" {
-		assignments = append(assignments, vaultPasswordCacheDirEnv+"="+cacheDir)
-	} else if cacheDir, err := vaultPasswordCacheDir(); err == nil && cacheDir != "" {
-		assignments = append(assignments, vaultPasswordCacheDirEnv+"="+cacheDir)
-	}
-
-	for _, key := range []string{"DWN_ENDPOINT", "ENBOX_PROFILE", "MESHD_STATE_DIR", vaultPasswordCacheTTLEnv, walletResponseEndpointEnv} {
+	for _, key := range []string{"DWN_ENDPOINT", "ENBOX_PROFILE", "MESHD_STATE_DIR", walletResponseEndpointEnv} {
 		if value := os.Getenv(key); value != "" {
 			assignments = append(assignments, key+"="+value)
 		}
@@ -4064,7 +3892,7 @@ func cmdUp(ctx context.Context, args []string, flagProfile string) error {
 		if !backgroundChild && !f.foreground {
 			return startUpInBackground(ctx, args, flagProfile, stateDir, true, requireTUN)
 		}
-		return reexecUpWithSudo(args, flagProfile, stateDir)
+		return reexecUpWithSudo(args, flagProfile)
 	}
 	if !backgroundChild && !f.foreground {
 		return startUpInBackground(ctx, args, flagProfile, stateDir, false, requireTUN)
@@ -4455,7 +4283,7 @@ func ensureIdentity(ctx context.Context, flagProfile, endpoint string) (*did.DID
 	if !useProfiles {
 		dataPath = os.Getenv("MESHD_STATE_DIR")
 	}
-	if err := storeIdentityForCLI(identity, dataPath); err != nil {
+	if err := identity.Store(dataPath); err != nil {
 		return nil, fmt.Errorf("storing identity: %w", err)
 	}
 	if useProfiles {
@@ -4468,7 +4296,7 @@ func ensureIdentity(ctx context.Context, flagProfile, endpoint string) (*did.DID
 		fmt.Printf("  Profile: %s\n", profileName)
 	}
 	fmt.Printf("  DID:     %s\n", identity.URI)
-	fmt.Printf("  Vault:   encrypted\n")
+	fmt.Printf("  Keys:    %s\n", dataPath)
 	fmt.Println()
 
 	return identity, nil
@@ -4870,7 +4698,7 @@ func setupInteractive(ctx context.Context, f upFlags, stateDir string, identity 
 	fmt.Println("  Paste an owner DID or invite URL, or choose:")
 	fmt.Println()
 	fmt.Println("  1) Request access from an owner DID")
-	fmt.Println("  2) Create a new local-vault network")
+	fmt.Println("  2) Create a new local network")
 	fmt.Println("  3) Join with an invite URL")
 	fmt.Println()
 	fmt.Print("Setup [owner DID/invite URL/1/2/3, default 1]: ")
@@ -5125,32 +4953,14 @@ func shutdownDaemonProcess(
 }
 
 const (
-	vaultPasswordEnv           = "MESHD_VAULT_PASSWORD"
-	vaultPasswordCacheTTLEnv   = "MESHD_VAULT_CACHE_TTL"
-	vaultPasswordCacheDirEnv   = "MESHD_VAULT_CACHE_DIR"
-	nodeIdentityVaultFile      = "node.identity.vault.json"
-	delegateIdentityVaultFile  = "delegate.identity.vault.json"
-	defaultVaultPasswordCache  = 5 * time.Minute
-	vaultPasswordHandoffTTL    = time.Minute
-	vaultPasswordCacheFileMode = 0o600
-	vaultPasswordCacheDirMode  = 0o700
-)
+	// nodeIdentityFile is a retired second-key layout: newer flows always use
+	// the profile identity as the node identity. Only its legacy vault form is
+	// ever looked for, to fail loudly instead of ignoring a recorded node DID.
+	nodeIdentityFile = "node.identity.json"
 
-var (
-	cachedVaultPassword             string
-	cachedVaultPasswordStateDir     string
-	cachedVaultPasswordFromKeychain bool
-	vaultKeyGet                     = vaultkey.Get
-	vaultKeySet                     = vaultkey.Set
-	vaultKeyDelete                  = vaultkey.Delete
+	// delegateIdentityFile holds the wallet session delegate DID keypair.
+	delegateIdentityFile = "delegate.identity.json"
 )
-
-type vaultPasswordCacheEntry struct {
-	Version  int       `json:"version"`
-	StateDir string    `json:"stateDir"`
-	Password string    `json:"password"`
-	Expires  time.Time `json:"expires"`
-}
 
 func defaultProfileName(flagProfile string) string {
 	if flagProfile != "" {
@@ -5303,11 +5113,7 @@ func walletDWNAuthForOperation(stateDir string, meta identityMetadata, messageTy
 		}
 		return dwn.MessageAuth{}, nil
 	}
-	password, err := vaultPasswordForUnlock(stateDir)
-	if err != nil {
-		return dwn.MessageAuth{}, err
-	}
-	session, err := state.LoadWalletSession(stateDir, password)
+	session, err := state.LoadWalletSession(stateDir)
 	if err != nil {
 		return dwn.MessageAuth{}, err
 	}
@@ -5436,11 +5242,7 @@ func loadWalletSessionStatus(stateDir string, meta identityMetadata) (*walletSes
 	if !state.WalletSessionExists(stateDir) {
 		return status, nil
 	}
-	password, err := vaultPasswordForUnlock(stateDir)
-	if err != nil {
-		return nil, err
-	}
-	session, err := state.LoadWalletSession(stateDir, password)
+	session, err := state.LoadWalletSession(stateDir)
 	if err != nil {
 		return nil, err
 	}
@@ -5553,389 +5355,29 @@ func networkOwnerDID(ns *state.NetworkState, fallbackDID string) string {
 	return ns.EffectiveOwnerDID(fallbackDID)
 }
 
+// identityExists also reports legacy encrypted identity vaults so callers
+// route through loadIdentity and surface the vaults-removed error instead of
+// minting a fresh identity next to an orphaned network.json.
 func identityExists(stateDir string) bool {
-	return did.EncryptedExists(stateDir) || did.Exists(stateDir)
-}
-
-func storeIdentityForCLI(identity *did.DID, stateDir string) error {
-	password, err := vaultPasswordForCreate(stateDir)
-	if err != nil {
-		return err
-	}
-	return identity.StoreEncrypted(stateDir, password)
-}
-
-func vaultPasswordForUnlock(stateDir string) (string, error) {
-	if password := os.Getenv(vaultPasswordEnv); password != "" {
-		rememberVaultPassword(stateDir, password, true)
-		return password, nil
-	}
-	// Privileged children consume a one-shot, user-owned handoff created only
-	// after sudo authentication. Looking in root's keychain would target the
-	// wrong login session and can trigger an unrelated credential prompt.
-	if os.Getenv(sudoChildEnv) != "1" {
-		if password, err := vaultKeyGet(stateDir); err == nil && password != "" {
-			rememberVaultPasswordSource(stateDir, password, false, true)
-			return password, nil
-		}
-	}
-	if os.Getenv(sudoChildEnv) == "1" {
-		if password, ok := readVaultPasswordHandoff(stateDir); ok {
-			rememberVaultPassword(stateDir, password, false)
-			return password, nil
-		}
-	}
-	if cachedVaultPassword != "" && cachedVaultPasswordStateDir == normalizeVaultStateDir(stateDir) {
-		return cachedVaultPassword, nil
-	}
-	if password, ok := readVaultPasswordCache(stateDir); ok {
-		rememberVaultPassword(stateDir, password, false)
-		return password, nil
-	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return "", fmt.Errorf("vault password required; run 'meshd vault remember' in a terminal or set %s", vaultPasswordEnv)
-	}
-
-	password, err := readVaultPassword("Vault password: ")
-	if err != nil {
-		return "", err
-	}
-	rememberVaultPassword(stateDir, password, true)
-	return password, nil
-}
-
-func vaultPasswordForRemember() (string, error) {
-	if password := os.Getenv(vaultPasswordEnv); password != "" {
-		return password, nil
-	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return "", fmt.Errorf("vault password required; run in a terminal or set %s", vaultPasswordEnv)
-	}
-	return readVaultPassword("Vault password: ")
-}
-
-func readVaultPassword(prompt string) (string, error) {
-	fmt.Print(prompt)
-	passwordBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
-	fmt.Println()
-	if err != nil {
-		return "", fmt.Errorf("reading vault password: %w", err)
-	}
-	password := string(passwordBytes)
-	if password == "" {
-		return "", fmt.Errorf("vault password is required")
-	}
-	return password, nil
-}
-
-func vaultPasswordForCreate(stateDir string) (string, error) {
-	if password := os.Getenv(vaultPasswordEnv); password != "" {
-		rememberVaultPassword(stateDir, password, true)
-		return password, nil
-	}
-	if cachedVaultPassword != "" && cachedVaultPasswordStateDir == normalizeVaultStateDir(stateDir) {
-		return cachedVaultPassword, nil
-	}
-	if password, ok := readVaultPasswordCache(stateDir); ok {
-		rememberVaultPassword(stateDir, password, false)
-		return password, nil
-	}
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return "", fmt.Errorf("vault password required; run in a terminal or set %s", vaultPasswordEnv)
-	}
-
-	fmt.Println()
-	fmt.Println("meshd keeps this device's identity keys in an encrypted vault on disk.")
-	fmt.Println("Pick a vault password to protect it — meshd asks for it again after a")
-	fmt.Println("restart. (Unattended machines can set MESHD_VAULT_PASSWORD instead.)")
-	fmt.Print("Create vault password: ")
-	firstBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
-	fmt.Println()
-	if err != nil {
-		return "", fmt.Errorf("reading vault password: %w", err)
-	}
-	password := string(firstBytes)
-	if password == "" {
-		return "", fmt.Errorf("vault password is required")
-	}
-
-	fmt.Print("Confirm vault password: ")
-	confirmBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
-	fmt.Println()
-	if err != nil {
-		return "", fmt.Errorf("reading vault password confirmation: %w", err)
-	}
-	if password != string(confirmBytes) {
-		return "", fmt.Errorf("vault passwords do not match")
-	}
-	rememberVaultPassword(stateDir, password, true)
-	return password, nil
-}
-
-func rememberVaultPassword(stateDir, password string, persist bool) {
-	rememberVaultPasswordSource(stateDir, password, persist, false)
-}
-
-func rememberVaultPasswordSource(stateDir, password string, persist, fromKeychain bool) {
-	if password == "" {
-		return
-	}
-	normalized := normalizeVaultStateDir(stateDir)
-	cachedVaultPassword = password
-	cachedVaultPasswordStateDir = normalized
-	cachedVaultPasswordFromKeychain = fromKeychain
-	if persist {
-		writeVaultPasswordCache(normalized, password)
-	}
-}
-
-func forgetVaultPassword(stateDir string) {
-	normalized := normalizeVaultStateDir(stateDir)
-	deleteKeychain := cachedVaultPasswordStateDir == normalized && cachedVaultPasswordFromKeychain
-	clearVaultPasswordCache(normalized)
-	if deleteKeychain {
-		_ = vaultKeyDelete(normalized)
-	}
-}
-
-func clearVaultPasswordCache(stateDir string) {
-	normalized := normalizeVaultStateDir(stateDir)
-	if cachedVaultPasswordStateDir == normalized {
-		cachedVaultPassword = ""
-		cachedVaultPasswordStateDir = ""
-		cachedVaultPasswordFromKeychain = false
-	}
-	removeVaultPasswordCache(normalized)
-	removeVaultPasswordHandoff(normalized)
-}
-
-func normalizeVaultStateDir(stateDir string) string {
-	if abs, err := filepath.Abs(stateDir); err == nil {
-		return filepath.Clean(abs)
-	}
-	return filepath.Clean(stateDir)
-}
-
-func vaultPasswordCacheTTL() time.Duration {
-	raw := strings.TrimSpace(os.Getenv(vaultPasswordCacheTTLEnv))
-	if raw == "" {
-		return defaultVaultPasswordCache
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil {
-		return defaultVaultPasswordCache
-	}
-	if d < 0 {
-		return 0
-	}
-	return d
-}
-
-func vaultPasswordCacheDir() (string, error) {
-	if dir := strings.TrimSpace(os.Getenv(vaultPasswordCacheDirEnv)); dir != "" {
-		return dir, nil
-	}
-	if dir := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")); dir != "" {
-		return filepath.Join(dir, "meshd"), nil
-	}
-	if runtime.GOOS == "linux" {
-		runUser := filepath.Join("/run/user", strconv.Itoa(os.Getuid()))
-		if info, err := os.Stat(runUser); err == nil && info.IsDir() {
-			return filepath.Join(runUser, "meshd"), nil
-		}
-	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("meshd-%d", os.Getuid())), nil
-}
-
-func vaultPasswordCachePath(stateDir string) (string, error) {
-	dir, err := vaultPasswordCacheDir()
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256([]byte(normalizeVaultStateDir(stateDir)))
-	name := hex.EncodeToString(sum[:]) + ".json"
-	return filepath.Join(dir, "vault", name), nil
-}
-
-func vaultPasswordHandoffPath(stateDir string) (string, error) {
-	path, err := vaultPasswordCachePath(stateDir)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSuffix(path, ".json") + ".handoff.json", nil
-}
-
-func readVaultPasswordCache(stateDir string) (string, bool) {
-	if vaultPasswordCacheTTL() <= 0 {
-		return "", false
-	}
-	normalized := normalizeVaultStateDir(stateDir)
-	path, err := vaultPasswordCachePath(normalized)
-	if err != nil {
-		return "", false
-	}
-	return readVaultPasswordFile(path, normalized, false)
-}
-
-func readVaultPasswordHandoff(stateDir string) (string, bool) {
-	normalized := normalizeVaultStateDir(stateDir)
-	path, err := vaultPasswordHandoffPath(normalized)
-	if err != nil {
-		return "", false
-	}
-	return readVaultPasswordFile(path, normalized, true)
-}
-
-func readVaultPasswordFile(path, normalizedStateDir string, consume bool) (string, bool) {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() {
-		return "", false
-	}
-	if info.Mode().Perm() != vaultPasswordCacheFileMode {
-		_ = os.Remove(path)
-		return "", false
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", false
-	}
-	var entry vaultPasswordCacheEntry
-	if err := json.Unmarshal(data, &entry); err != nil {
-		_ = os.Remove(path)
-		return "", false
-	}
-	if entry.Version != 1 || entry.StateDir != normalizedStateDir || entry.Password == "" || !entry.Expires.After(time.Now()) {
-		_ = os.Remove(path)
-		return "", false
-	}
-	if consume {
-		if err := os.Remove(path); err != nil {
-			return "", false
-		}
-	}
-	return entry.Password, true
-}
-
-func writeVaultPasswordCache(stateDir, password string) {
-	ttl := vaultPasswordCacheTTL()
-	if ttl <= 0 {
-		return
-	}
-	normalized := normalizeVaultStateDir(stateDir)
-	path, err := vaultPasswordCachePath(normalized)
-	if err != nil {
-		return
-	}
-	_ = writeVaultPasswordFile(path, normalized, password, ttl)
-}
-
-func prepareVaultPasswordHandoff(stateDir string) error {
-	normalized := normalizeVaultStateDir(stateDir)
-	removeVaultPasswordHandoff(normalized)
-	if cachedVaultPassword == "" || cachedVaultPasswordStateDir != normalized {
-		if did.EncryptedExists(normalized) {
-			return fmt.Errorf("vault password is unavailable for privilege handoff")
-		}
-		return nil
-	}
-	path, err := vaultPasswordHandoffPath(normalized)
-	if err != nil {
-		return err
-	}
-	return writeVaultPasswordFile(path, normalized, cachedVaultPassword, vaultPasswordHandoffTTL)
-}
-
-func writeVaultPasswordFile(path, normalizedStateDir, password string, ttl time.Duration) error {
-	if password == "" || ttl <= 0 {
-		return fmt.Errorf("vault password and positive lifetime are required")
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, vaultPasswordCacheDirMode); err != nil {
-		return fmt.Errorf("create vault handoff directory: %w", err)
-	}
-	if err := os.Chmod(dir, vaultPasswordCacheDirMode); err != nil {
-		return fmt.Errorf("secure vault handoff directory: %w", err)
-	}
-	entry := vaultPasswordCacheEntry{
-		Version:  1,
-		StateDir: normalizedStateDir,
-		Password: password,
-		Expires:  time.Now().Add(ttl),
-	}
-	data, err := json.Marshal(entry)
-	if err != nil {
-		return fmt.Errorf("encode vault handoff: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, ".vault-secret-*")
-	if err != nil {
-		return fmt.Errorf("create vault handoff: %w", err)
-	}
-	tmpName := tmp.Name()
-	cleanup := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-	}
-	if err := os.Chmod(tmpName, vaultPasswordCacheFileMode); err != nil {
-		cleanup()
-		return fmt.Errorf("secure vault handoff: %w", err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		cleanup()
-		return fmt.Errorf("write vault handoff: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("close vault handoff: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		_ = os.Remove(tmpName)
-		return fmt.Errorf("publish vault handoff: %w", err)
-	}
-	return nil
-}
-
-func removeVaultPasswordCache(stateDir string) {
-	path, err := vaultPasswordCachePath(stateDir)
-	if err == nil {
-		_ = os.Remove(path)
-	}
-}
-
-func removeVaultPasswordHandoff(stateDir string) {
-	path, err := vaultPasswordHandoffPath(stateDir)
-	if err == nil {
-		_ = os.Remove(path)
-	}
+	return did.Exists(stateDir) || did.LegacyVaultExists(stateDir)
 }
 
 // loadIdentity loads the DID identity, or returns an error if not initialized.
 func loadIdentity(stateDir string) (*did.DID, error) {
-	if did.EncryptedExists(stateDir) {
-		password, err := vaultPasswordForUnlock(stateDir)
-		if err != nil {
-			return nil, err
-		}
-		identity, err := did.LoadEncrypted(stateDir, password)
-		if err != nil {
-			forgetVaultPassword(stateDir)
-			return nil, fmt.Errorf("unlocking vault: %w", err)
-		}
-		if identity == nil {
-			return nil, fmt.Errorf("encrypted identity is missing")
-		}
-		return identity, nil
-	}
-
-	if !did.Exists(stateDir) {
-		return nil, fmt.Errorf("not initialized. Run 'meshd auth login' to create a profile")
-	}
 	identity, err := did.Load(stateDir)
 	if err != nil {
 		return nil, fmt.Errorf("loading identity: %w", err)
 	}
+	if identity == nil {
+		return nil, fmt.Errorf("not initialized. Run 'meshd auth login' to create a profile")
+	}
 	return identity, nil
 }
 
+// loadNodeIdentity resolves the identity for the network's node DID. The only
+// supported layout keeps the node key as the profile identity; a divergent
+// recorded node DID comes from a retired flow that stored a second, vaulted
+// key this build can no longer read.
 func loadNodeIdentity(stateDir string, nodeDID string, fallback *did.DID) (*did.DID, error) {
 	if fallback == nil {
 		return nil, fmt.Errorf("fallback identity is required")
@@ -5943,24 +5385,10 @@ func loadNodeIdentity(stateDir string, nodeDID string, fallback *did.DID) (*did.
 	if nodeDID == "" || nodeDID == fallback.URI {
 		return fallback, nil
 	}
-	if !did.EncryptedExistsAs(stateDir, nodeIdentityVaultFile) {
-		return nil, fmt.Errorf("node identity %s is recorded, but %s is missing", nodeDID, nodeIdentityVaultFile)
-	}
-	password, err := vaultPasswordForUnlock(stateDir)
-	if err != nil {
+	if err := state.CheckNoLegacyVault(stateDir, nodeIdentityFile); err != nil {
 		return nil, err
 	}
-	nodeIdentity, err := did.LoadEncryptedAs(stateDir, nodeIdentityVaultFile, password)
-	if err != nil {
-		return nil, fmt.Errorf("unlocking node identity vault: %w", err)
-	}
-	if nodeIdentity == nil {
-		return nil, fmt.Errorf("node identity vault is missing")
-	}
-	if nodeIdentity.URI != nodeDID {
-		return nil, fmt.Errorf("node identity vault DID %s does not match network node DID %s", nodeIdentity.URI, nodeDID)
-	}
-	return nodeIdentity, nil
+	return nil, fmt.Errorf("node identity %s is recorded in network.json, but this device only holds the key for %s; run 'meshd network leave' and re-join the network", nodeDID, fallback.URI)
 }
 
 // newEncryptionKeyManager creates an EncryptionKeyManager from a DID identity.
@@ -5973,25 +5401,18 @@ func newEncryptionKeyManager(identity *did.DID) *dwncrypto.EncryptionKeyManager 
 }
 
 func ensureWalletDelegateIdentity(stateDir string) (*did.DID, error) {
-	password, err := vaultPasswordForUnlock(stateDir)
+	delegateIdentity, err := did.LoadAs(stateDir, delegateIdentityFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("loading delegate identity: %w", err)
 	}
-	if did.EncryptedExistsAs(stateDir, delegateIdentityVaultFile) {
-		delegateIdentity, err := did.LoadEncryptedAs(stateDir, delegateIdentityVaultFile, password)
-		if err != nil {
-			return nil, fmt.Errorf("unlocking delegate identity vault: %w", err)
-		}
-		if delegateIdentity == nil {
-			return nil, fmt.Errorf("delegate identity vault is missing")
-		}
+	if delegateIdentity != nil {
 		return delegateIdentity, nil
 	}
-	delegateIdentity, err := did.Generate()
+	delegateIdentity, err = did.Generate()
 	if err != nil {
 		return nil, fmt.Errorf("generating delegate DID: %w", err)
 	}
-	if err := delegateIdentity.StoreEncryptedAs(stateDir, delegateIdentityVaultFile, password); err != nil {
+	if err := delegateIdentity.StoreAs(stateDir, delegateIdentityFile); err != nil {
 		return nil, fmt.Errorf("storing delegate identity: %w", err)
 	}
 	return delegateIdentity, nil
@@ -6002,22 +5423,15 @@ func verifyWalletDelegateIdentity(stateDir string, delegateDID string) (*did.DID
 	if delegateDID == "" {
 		return nil, nil
 	}
-	if !did.EncryptedExistsAs(stateDir, delegateIdentityVaultFile) {
-		return nil, fmt.Errorf("wallet response grants to delegate DID %s, but the local delegate vault is missing; rerun 'meshd auth connect' from this profile", delegateDID)
-	}
-	password, err := vaultPasswordForUnlock(stateDir)
+	delegateIdentity, err := did.LoadAs(stateDir, delegateIdentityFile)
 	if err != nil {
-		return nil, err
-	}
-	delegateIdentity, err := did.LoadEncryptedAs(stateDir, delegateIdentityVaultFile, password)
-	if err != nil {
-		return nil, fmt.Errorf("unlocking delegate identity vault: %w", err)
+		return nil, fmt.Errorf("loading delegate identity: %w", err)
 	}
 	if delegateIdentity == nil {
-		return nil, fmt.Errorf("delegate identity vault is missing")
+		return nil, fmt.Errorf("wallet response grants to delegate DID %s, but the local delegate identity is missing; rerun 'meshd auth connect' from this profile", delegateDID)
 	}
 	if delegateIdentity.URI != delegateDID {
-		return nil, fmt.Errorf("delegate identity vault DID %s does not match wallet response delegate DID %s", delegateIdentity.URI, delegateDID)
+		return nil, fmt.Errorf("local delegate identity DID %s does not match wallet response delegate DID %s", delegateIdentity.URI, delegateDID)
 	}
 	return delegateIdentity, nil
 }
@@ -6166,7 +5580,7 @@ func cmdAuthLogin(ctx context.Context, args []string) error {
 
 	// Store identity in profile directory.
 	dataPath := profile.DataPath(profileName)
-	if err := storeIdentityForCLI(identity, dataPath); err != nil {
+	if err := identity.Store(dataPath); err != nil {
 		return fmt.Errorf("storing identity: %w", err)
 	}
 
@@ -6178,7 +5592,6 @@ func cmdAuthLogin(ctx context.Context, args []string) error {
 	fmt.Printf("Created profile %q.\n", profileName)
 	fmt.Printf("  DID:   %s\n", identity.URI)
 	fmt.Printf("  State: %s\n", dataPath)
-	fmt.Printf("  Vault: encrypted\n")
 
 	return nil
 }
@@ -6415,10 +5828,6 @@ func importAuthConnectResponseData(ctx context.Context, profileFlag string, data
 		return fmt.Errorf("wallet response node DID %s does not match local node DID %s", resp.NodeDID, identity.URI)
 	}
 
-	password, err := vaultPasswordForUnlock(stateDir)
-	if err != nil {
-		return err
-	}
 	if _, err := requireWalletResponseDelegateIdentity(stateDir, resp.DelegateDID, resp.NodeDID, "wallet response"); err != nil {
 		return err
 	}
@@ -6435,7 +5844,7 @@ func importAuthConnectResponseData(ctx context.Context, profileFlag string, data
 		NodeMultiPartyProtocols: nodeProtocols,
 		DelegateDecryptionKeys:  resp.DelegateDecryptionKeys,
 	}
-	if err := state.StoreWalletSession(stateDir, password, session); err != nil {
+	if err := state.StoreWalletSession(stateDir, session); err != nil {
 		return err
 	}
 
@@ -6462,7 +5871,7 @@ func importAuthConnectResponseData(ctx context.Context, profileFlag string, data
 		fmt.Printf("  Session Delegate DID: %s\n", resp.DelegateDID)
 	}
 	fmt.Printf("  Node DID: %s\n", resp.NodeDID)
-	fmt.Printf("  Session: encrypted\n")
+	fmt.Printf("  Session: stored\n")
 	return nil
 }
 

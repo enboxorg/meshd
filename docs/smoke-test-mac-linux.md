@@ -97,8 +97,8 @@ The older `meshd up --owner '<OWNER_DID>'` form still works. You can also run
 
 Expected result:
 
-- If the node has no local identity, meshd creates one and asks for a vault
-  password.
+- If the node has no local identity, meshd creates one automatically — no
+  prompts; the key is stored 0600 under the profile state directory.
 - meshd writes a signed owner-node request to the owner's DWN.
 - meshd prints the dashboard URL and keeps waiting for approval (default 15m,
   `--wait-timeout` to change, `--no-wait` for the old submit-and-exit

@@ -31,7 +31,6 @@ import (
 	"github.com/enboxorg/meshd/internal/mesh"
 	"github.com/enboxorg/meshd/internal/profile"
 	"github.com/enboxorg/meshd/internal/state"
-	"github.com/enboxorg/meshd/internal/vaultkey"
 	"github.com/enboxorg/meshd/internal/walletconnect"
 	"github.com/enboxorg/meshd/protocols"
 )
@@ -239,6 +238,97 @@ destination: 10.200.26.192
 	}
 	if routeUsesInterface("10.200.43.197 dev tailscale0 src 100.64.0.1", "meshd0") {
 		t.Fatal("expected routeUsesInterface to reject tailscale0")
+	}
+}
+
+func TestKeyFileHygieneChecks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits are not meaningful on Windows")
+	}
+
+	writeKeyFile := func(t *testing.T, dir, name string, mode os.FileMode) {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// Chmod explicitly so the test is immune to the process umask.
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		name  string
+		files map[string]os.FileMode
+		// wantWarnDetails lists substrings expected in the warn checks, one
+		// per warning; empty means the single "Key files private" OK row.
+		wantWarnDetails []string
+	}{
+		{
+			name: "all private",
+			files: map[string]os.FileMode{
+				"identity.json":          0o600,
+				"delegate.identity.json": 0o600,
+				"session.json":           0o600,
+			},
+		},
+		{
+			name: "missing files are skipped",
+		},
+		{
+			name: "world readable identity",
+			files: map[string]os.FileMode{
+				"identity.json": 0o644,
+				"session.json":  0o600,
+			},
+			wantWarnDetails: []string{"identity.json has mode 0644"},
+		},
+		{
+			name: "group readable delegate and session",
+			files: map[string]os.FileMode{
+				"identity.json":          0o600,
+				"delegate.identity.json": 0o640,
+				"session.json":           0o660,
+			},
+			wantWarnDetails: []string{
+				"delegate.identity.json has mode 0640",
+				"session.json has mode 0660",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			for name, mode := range tt.files {
+				writeKeyFile(t, stateDir, name, mode)
+			}
+
+			checks := keyFileHygieneChecks(stateDir)
+
+			if len(tt.wantWarnDetails) == 0 {
+				if len(checks) != 1 || checks[0].Level != doctorOK || checks[0].Title != "Key files private" {
+					t.Fatalf("expected single OK check, got %+v", checks)
+				}
+				return
+			}
+			if len(checks) != len(tt.wantWarnDetails) {
+				t.Fatalf("expected %d warnings, got %+v", len(tt.wantWarnDetails), checks)
+			}
+			for i, want := range tt.wantWarnDetails {
+				check := checks[i]
+				if check.Level != doctorWarn {
+					t.Fatalf("check %d level = %q, want warn: %+v", i, check.Level, check)
+				}
+				if !strings.Contains(check.Detail, want) {
+					t.Fatalf("check %d detail %q missing %q", i, check.Detail, want)
+				}
+				if !strings.Contains(check.Next, "chmod 600") {
+					t.Fatalf("check %d next %q missing chmod advice", i, check.Next)
+				}
+			}
+		})
 	}
 }
 
@@ -667,11 +757,8 @@ func TestAuthDisplayName(t *testing.T) {
 }
 
 func TestLoadWalletSessionStatus(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	stateDir := t.TempDir()
-	t.Setenv(vaultPasswordEnv, "test-password")
-	if err := state.StoreWalletSession(stateDir, "test-password", &state.WalletSession{
+	if err := state.StoreWalletSession(stateDir, &state.WalletSession{
 		Version:                 1,
 		OwnerDID:                "did:dht:wallet",
 		DelegateDID:             "did:jwk:control",
@@ -704,10 +791,7 @@ func TestLoadWalletSessionStatus(t *testing.T) {
 }
 
 func TestLoadWalletSessionStatusReportsRuntimeAndAdminAccess(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	stateDir := t.TempDir()
-	t.Setenv(vaultPasswordEnv, "test-password")
 	meta := identityMetadata{
 		AuthType: profile.AuthTypeWalletAuthorizedNode,
 		OwnerDID: "did:dht:wallet",
@@ -745,7 +829,7 @@ func TestLoadWalletSessionStatusReportsRuntimeAndAdminAccess(t *testing.T) {
 		}),
 	}
 
-	if err := state.StoreWalletSession(stateDir, "test-password", &state.WalletSession{
+	if err := state.StoreWalletSession(stateDir, &state.WalletSession{
 		Version:  1,
 		OwnerDID: meta.OwnerDID,
 		NodeDID:  meta.NodeDID,
@@ -777,7 +861,7 @@ func TestLoadWalletSessionStatusReportsRuntimeAndAdminAccess(t *testing.T) {
 			"protocol":  protocols.MeshProtocolURI,
 		}),
 	)
-	if err := state.StoreWalletSession(stateDir, "test-password", &state.WalletSession{
+	if err := state.StoreWalletSession(stateDir, &state.WalletSession{
 		Version:  1,
 		OwnerDID: meta.OwnerDID,
 		NodeDID:  meta.NodeDID,
@@ -1262,9 +1346,6 @@ func TestSudoEnvironmentAssignments(t *testing.T) {
 	t.Setenv("DWN_ENDPOINT", "https://dwn.example")
 	t.Setenv("ENBOX_PROFILE", "work")
 	t.Setenv("MESHD_STATE_DIR", filepath.Join(home, "state"))
-	t.Setenv("MESHD_VAULT_PASSWORD", "secret")
-	t.Setenv(vaultPasswordCacheDirEnv, filepath.Join(home, "runtime-cache"))
-	t.Setenv(vaultPasswordCacheTTLEnv, "2m")
 
 	assignments := sudoEnvironmentAssignments()
 	for _, want := range []string{
@@ -1275,8 +1356,6 @@ func TestSudoEnvironmentAssignments(t *testing.T) {
 		"DWN_ENDPOINT=https://dwn.example",
 		"ENBOX_PROFILE=work",
 		"MESHD_STATE_DIR=" + filepath.Join(home, "state"),
-		vaultPasswordCacheDirEnv + "=" + filepath.Join(home, "runtime-cache"),
-		vaultPasswordCacheTTLEnv + "=2m",
 	} {
 		if !hasString(assignments, want) {
 			t.Fatalf("sudoEnvironmentAssignments() missing %q in %v", want, assignments)
@@ -1285,9 +1364,6 @@ func TestSudoEnvironmentAssignments(t *testing.T) {
 	for _, got := range assignments {
 		if got == "PATH=/tmp/test-path" {
 			t.Fatal("sudoEnvironmentAssignments propagated the caller's PATH")
-		}
-		if strings.HasPrefix(got, "MESHD_VAULT_PASSWORD=") {
-			t.Fatal("sudoEnvironmentAssignments must not expose MESHD_VAULT_PASSWORD")
 		}
 	}
 }
@@ -1494,13 +1570,10 @@ func TestBrowserOpenCommand(t *testing.T) {
 }
 
 func TestNetworkCreateWalletAuthorizedNodeAllowsMissingEndpoint(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	home := t.TempDir()
 	t.Setenv("ENBOX_HOME", home)
 	t.Setenv("ENBOX_PROFILE", "")
 	t.Setenv("MESHD_STATE_DIR", "")
-	t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
 	t.Setenv("DWN_ENDPOINT", "")
 
 	_, identity, err := ensureIdentityForCommand(context.Background(), "walleted", "")
@@ -1543,13 +1616,10 @@ func TestNetworkCreateWalletAuthorizedNodeAllowsMissingEndpoint(t *testing.T) {
 }
 
 func TestSetupCreateNetworkWalletAuthorizedNodeRequiresInteractiveWithoutEndpoint(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	home := t.TempDir()
 	t.Setenv("ENBOX_HOME", home)
 	t.Setenv("ENBOX_PROFILE", "")
 	t.Setenv("MESHD_STATE_DIR", "")
-	t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
 	t.Setenv("DWN_ENDPOINT", "")
 
 	stateDir, identity, err := ensureIdentityForCommand(context.Background(), "walleted", "")
@@ -1573,13 +1643,10 @@ func TestSetupCreateNetworkWalletAuthorizedNodeRequiresInteractiveWithoutEndpoin
 }
 
 func TestNetworkCreateMissingEndpointDoesNotCreateLocalIdentity(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	home := t.TempDir()
 	t.Setenv("ENBOX_HOME", home)
 	t.Setenv("ENBOX_PROFILE", "")
 	t.Setenv("MESHD_STATE_DIR", "")
-	t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
 	t.Setenv("DWN_ENDPOINT", "")
 
 	err := cmdNetworkCreate(context.Background(), []string{"home"}, "")
@@ -1809,10 +1876,7 @@ func TestIsNetworkOwnerProfile(t *testing.T) {
 }
 
 func TestWalletDWNAuthForOperationDelegatedSession(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	stateDir := t.TempDir()
-	t.Setenv(vaultPasswordEnv, "test-password")
 
 	readGrant := testWalletPermissionGrant(t, "grant-read", "did:jwk:wallet", "did:jwk:node", map[string]any{
 		"interface": "Records",
@@ -1825,7 +1889,7 @@ func TestWalletDWNAuthForOperationDelegatedSession(t *testing.T) {
 		"protocol":     "https://enbox.id/protocols/wireguard-mesh",
 		"protocolPath": "network/member/node/endpoint",
 	})
-	if err := state.StoreWalletSession(stateDir, "test-password", &state.WalletSession{
+	if err := state.StoreWalletSession(stateDir, &state.WalletSession{
 		Version:  1,
 		OwnerDID: "did:jwk:wallet",
 		NodeDID:  "did:jwk:node",
@@ -1873,17 +1937,14 @@ func TestWalletDWNAuthForOperationDelegatedSession(t *testing.T) {
 }
 
 func TestWalletDWNAuthForOperationPlainSession(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	stateDir := t.TempDir()
-	t.Setenv(vaultPasswordEnv, "test-password")
 
 	readGrant := testWalletGrantMessage(t, "plain-grant-read", "did:jwk:wallet", "did:jwk:node", false, map[string]any{
 		"interface": "Records",
 		"method":    "Read",
 		"protocol":  "https://enbox.id/protocols/wireguard-mesh",
 	})
-	if err := state.StoreWalletSession(stateDir, "test-password", &state.WalletSession{
+	if err := state.StoreWalletSession(stateDir, &state.WalletSession{
 		Version:  1,
 		OwnerDID: "did:jwk:wallet",
 		NodeDID:  "did:jwk:node",
@@ -1909,10 +1970,7 @@ func TestWalletDWNAuthForOperationPlainSession(t *testing.T) {
 }
 
 func TestWalletDWNAuthForOperationDelegateGrantee(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	stateDir := t.TempDir()
-	t.Setenv(vaultPasswordEnv, "test-password")
 
 	nodeReadGrant := testWalletPermissionGrant(t, "grant-read", "did:jwk:wallet", "did:jwk:node", map[string]any{
 		"interface": "Records",
@@ -1931,7 +1989,7 @@ func TestWalletDWNAuthForOperationDelegateGrantee(t *testing.T) {
 		DelegateDID: "did:jwk:delegate",
 	}
 
-	if err := state.StoreWalletSession(stateDir, "test-password", &state.WalletSession{
+	if err := state.StoreWalletSession(stateDir, &state.WalletSession{
 		Version:     1,
 		OwnerDID:    "did:jwk:wallet",
 		NodeDID:     "did:jwk:node",
@@ -1945,7 +2003,7 @@ func TestWalletDWNAuthForOperationDelegateGrantee(t *testing.T) {
 		t.Fatalf("delegate session used node-DID grant or returned wrong error: %v", err)
 	}
 
-	if err := state.StoreWalletSession(stateDir, "test-password", &state.WalletSession{
+	if err := state.StoreWalletSession(stateDir, &state.WalletSession{
 		Version:     1,
 		OwnerDID:    "did:jwk:wallet",
 		NodeDID:     "did:jwk:node",
@@ -2030,194 +2088,6 @@ func testWalletGrantMessage(t *testing.T, id string, grantor string, grantee str
 	return msg
 }
 
-func resetVaultPasswordCache(t *testing.T) {
-	t.Helper()
-	previous := cachedVaultPassword
-	previousStateDir := cachedVaultPasswordStateDir
-	previousFromKeychain := cachedVaultPasswordFromKeychain
-	previousGet, previousSet, previousDelete := vaultKeyGet, vaultKeySet, vaultKeyDelete
-	cachedVaultPassword = ""
-	cachedVaultPasswordStateDir = ""
-	cachedVaultPasswordFromKeychain = false
-	vaultKeyGet = func(string) (string, error) { return "", vaultkey.ErrNotFound }
-	vaultKeySet = func(string, string) error { return nil }
-	vaultKeyDelete = func(string) error { return vaultkey.ErrNotFound }
-	t.Setenv(vaultPasswordCacheDirEnv, t.TempDir())
-	t.Setenv(vaultPasswordCacheTTLEnv, "")
-	t.Setenv(sudoChildEnv, "")
-	t.Cleanup(func() {
-		cachedVaultPassword = previous
-		cachedVaultPasswordStateDir = previousStateDir
-		cachedVaultPasswordFromKeychain = previousFromKeychain
-		vaultKeyGet, vaultKeySet, vaultKeyDelete = previousGet, previousSet, previousDelete
-	})
-}
-
-func TestVaultPasswordUnlockPrecedence(t *testing.T) {
-	resetVaultPasswordCache(t)
-	stateDir := t.TempDir()
-	rememberVaultPassword(stateDir, "cache-password", false)
-	vaultKeyGet = func(string) (string, error) { return "keychain-password", nil }
-
-	password, err := vaultPasswordForUnlock(stateDir)
-	if err != nil {
-		t.Fatalf("vaultPasswordForUnlock keychain: %v", err)
-	}
-	if password != "keychain-password" || !cachedVaultPasswordFromKeychain {
-		t.Fatalf("keychain password = %q, fromKeychain = %v", password, cachedVaultPasswordFromKeychain)
-	}
-	cachePath, err := vaultPasswordCachePath(stateDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
-		t.Fatalf("keychain lookup created persistent plaintext cache: %v", err)
-	}
-
-	t.Setenv(vaultPasswordEnv, "environment-password")
-	password, err = vaultPasswordForUnlock(stateDir)
-	if err != nil {
-		t.Fatalf("vaultPasswordForUnlock environment: %v", err)
-	}
-	if password != "environment-password" || cachedVaultPasswordFromKeychain {
-		t.Fatalf("environment password = %q, fromKeychain = %v", password, cachedVaultPasswordFromKeychain)
-	}
-}
-
-func TestVaultPasswordHandoffIsOneShot(t *testing.T) {
-	resetVaultPasswordCache(t)
-	stateDir := t.TempDir()
-	identity, err := did.Generate()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := identity.StoreEncrypted(stateDir, "keychain-password"); err != nil {
-		t.Fatal(err)
-	}
-	vaultKeyGet = func(string) (string, error) { return "keychain-password", nil }
-
-	if _, err := vaultPasswordForUnlock(stateDir); err != nil {
-		t.Fatalf("keychain unlock: %v", err)
-	}
-	if err := prepareVaultPasswordHandoff(stateDir); err != nil {
-		t.Fatalf("prepare handoff: %v", err)
-	}
-	handoffPath, err := vaultPasswordHandoffPath(stateDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info, err := os.Stat(handoffPath); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("handoff stat = %v, %v", info, err)
-	}
-
-	cachedVaultPassword = ""
-	cachedVaultPasswordStateDir = ""
-	cachedVaultPasswordFromKeychain = false
-	t.Setenv(sudoChildEnv, "1")
-	password, err := vaultPasswordForUnlock(stateDir)
-	if err != nil || password != "keychain-password" {
-		t.Fatalf("privileged handoff unlock = %q, %v", password, err)
-	}
-	if _, err := os.Stat(handoffPath); !os.IsNotExist(err) {
-		t.Fatalf("consumed handoff remains on disk: %v", err)
-	}
-}
-
-func TestLoadIdentityDeletesOnlyStaleKeychainCredential(t *testing.T) {
-	resetVaultPasswordCache(t)
-	stateDir := t.TempDir()
-	identity, err := did.Generate()
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if err := identity.StoreEncrypted(stateDir, "correct-password"); err != nil {
-		t.Fatalf("StoreEncrypted: %v", err)
-	}
-
-	deleted := false
-	vaultKeyGet = func(string) (string, error) { return "stale-password", nil }
-	vaultKeyDelete = func(string) error { deleted = true; return nil }
-	if _, err := loadIdentity(stateDir); err == nil {
-		t.Fatal("loadIdentity accepted stale Keychain password")
-	}
-	if !deleted {
-		t.Fatal("stale Keychain credential was not deleted")
-	}
-
-	deleted = false
-	t.Setenv(vaultPasswordEnv, "wrong-environment-password")
-	if _, err := loadIdentity(stateDir); err == nil {
-		t.Fatal("loadIdentity accepted wrong environment password")
-	}
-	if deleted {
-		t.Fatal("wrong environment override deleted the Keychain credential")
-	}
-}
-
-func TestVaultRememberAndForget(t *testing.T) {
-	resetVaultPasswordCache(t)
-	stateDir := t.TempDir()
-	t.Setenv("MESHD_STATE_DIR", stateDir)
-	t.Setenv(vaultPasswordEnv, "test-password")
-	identity, err := did.Generate()
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if err := identity.StoreEncrypted(stateDir, "test-password"); err != nil {
-		t.Fatalf("StoreEncrypted: %v", err)
-	}
-
-	var storedDir, storedPassword, deletedDir string
-	vaultKeySet = func(dir, password string) error {
-		storedDir, storedPassword = dir, password
-		return nil
-	}
-	vaultKeyDelete = func(dir string) error {
-		deletedDir = dir
-		return nil
-	}
-	if err := cmdVaultRemember(nil, ""); err != nil {
-		t.Fatalf("cmdVaultRemember: %v", err)
-	}
-	if storedDir != stateDir || storedPassword != "test-password" {
-		t.Fatalf("stored credential = %q %q", storedDir, storedPassword)
-	}
-	if err := cmdVaultForget(nil, ""); err != nil {
-		t.Fatalf("cmdVaultForget: %v", err)
-	}
-	if deletedDir != stateDir || cachedVaultPassword != "" {
-		t.Fatalf("deletedDir = %q, cached password remains = %v", deletedDir, cachedVaultPassword != "")
-	}
-}
-
-func TestVaultForgetClearsLocalSecretsWhenKeychainDeleteFails(t *testing.T) {
-	resetVaultPasswordCache(t)
-	stateDir := t.TempDir()
-	t.Setenv("MESHD_STATE_DIR", stateDir)
-	rememberVaultPassword(stateDir, "test-password", true)
-	if err := prepareVaultPasswordHandoff(stateDir); err != nil {
-		t.Fatal(err)
-	}
-	vaultKeyDelete = func(string) error { return errors.New("credential store unavailable") }
-
-	err := cmdVaultForget(nil, "")
-	if err == nil || !strings.Contains(err.Error(), "credential store unavailable") {
-		t.Fatalf("cmdVaultForget error = %v", err)
-	}
-	for _, pathFn := range []func(string) (string, error){vaultPasswordCachePath, vaultPasswordHandoffPath} {
-		path, pathErr := pathFn(stateDir)
-		if pathErr != nil {
-			t.Fatal(pathErr)
-		}
-		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-			t.Fatalf("local secret %s remains after forget: %v", path, statErr)
-		}
-	}
-	if cachedVaultPassword != "" {
-		t.Fatal("in-memory vault password remains after forget")
-	}
-}
-
 func TestDaemonPeerStatuses(t *testing.T) {
 	got := daemonPeerStatuses([]engine.PeerSnapshot{{
 		Name: "laptop", MeshIP: "10.200.0.2", Online: true,
@@ -2230,50 +2100,11 @@ func TestDaemonPeerStatuses(t *testing.T) {
 	}
 }
 
-func TestVaultPasswordCachePersistsAcrossCLIInvocations(t *testing.T) {
-	resetVaultPasswordCache(t)
-
-	stateDir := t.TempDir()
-	identity, err := did.Generate()
-	if err != nil {
-		t.Fatalf("Generate: %v", err)
-	}
-	if err := identity.StoreEncrypted(stateDir, "test-password"); err != nil {
-		t.Fatalf("StoreEncrypted: %v", err)
-	}
-
-	rememberVaultPassword(stateDir, "test-password", true)
-	cachePath, err := vaultPasswordCachePath(stateDir)
-	if err != nil {
-		t.Fatalf("vaultPasswordCachePath: %v", err)
-	}
-	info, err := os.Stat(cachePath)
-	if err != nil {
-		t.Fatalf("stat vault password cache: %v", err)
-	}
-	if info.Mode().Perm() != vaultPasswordCacheFileMode {
-		t.Fatalf("cache mode = %v, want %v", info.Mode().Perm(), vaultPasswordCacheFileMode)
-	}
-
-	cachedVaultPassword = ""
-	cachedVaultPasswordStateDir = ""
-	loaded, err := loadIdentity(stateDir)
-	if err != nil {
-		t.Fatalf("loadIdentity: %v", err)
-	}
-	if loaded.URI != identity.URI {
-		t.Fatalf("loaded DID = %q, want %q", loaded.URI, identity.URI)
-	}
-}
-
 func TestEnsureIdentityForCommandCreatesDefaultProfile(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	home := t.TempDir()
 	t.Setenv("ENBOX_HOME", home)
 	t.Setenv("ENBOX_PROFILE", "")
 	t.Setenv("MESHD_STATE_DIR", "")
-	t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
 
 	stateDir, identity, err := ensureIdentityForCommand(context.Background(), "", "")
 	if err != nil {
@@ -2285,11 +2116,11 @@ func TestEnsureIdentityForCommandCreatesDefaultProfile(t *testing.T) {
 	if !strings.HasPrefix(stateDir, home) {
 		t.Fatalf("stateDir = %q, want under %q", stateDir, home)
 	}
-	if !did.EncryptedExists(stateDir) {
-		t.Fatal("identity was not stored in encrypted vault")
+	if !did.Exists(stateDir) {
+		t.Fatal("identity file was not created")
 	}
-	if did.Exists(stateDir) {
-		t.Fatal("legacy plaintext identity should not be created")
+	if info, err := os.Stat(filepath.Join(stateDir, "identity.json")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("identity file mode = %v, err = %v, want 0600", info.Mode().Perm(), err)
 	}
 
 	cfg, err := profile.ReadConfig()
@@ -2304,14 +2135,82 @@ func TestEnsureIdentityForCommandCreatesDefaultProfile(t *testing.T) {
 	}
 }
 
-func TestEnsureIdentityForCommandUsesResolvedDefaultProfile(t *testing.T) {
-	resetVaultPasswordCache(t)
+func TestLoadIdentityFailsOnLegacyVault(t *testing.T) {
+	stateDir := t.TempDir()
+	legacyPath := filepath.Join(stateDir, "identity.vault.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"version":1,"kdf":"argon2id"}`), 0o600); err != nil {
+		t.Fatalf("write legacy vault: %v", err)
+	}
 
+	if !identityExists(stateDir) {
+		t.Fatal("identityExists = false with a legacy vault present; a fresh identity would be minted next to it")
+	}
+	_, err := loadIdentity(stateDir)
+	if err == nil || !strings.Contains(err.Error(), "encrypted vaults were removed") {
+		t.Fatalf("loadIdentity error = %v, want vaults-removed guidance", err)
+	}
+	if !strings.Contains(err.Error(), legacyPath) {
+		t.Fatalf("loadIdentity error = %v, want legacy path %s", err, legacyPath)
+	}
+}
+
+func TestEnsureIdentityForCommandRefusesLegacyVault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("ENBOX_HOME", home)
 	t.Setenv("ENBOX_PROFILE", "")
 	t.Setenv("MESHD_STATE_DIR", "")
-	t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
+
+	if err := profile.UpsertProfile("default", "did:jwk:placeholder"); err != nil {
+		t.Fatalf("UpsertProfile: %v", err)
+	}
+	stateDir := profile.DataPath("default")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "identity.vault.json"), []byte(`{"version":1}`), 0o600); err != nil {
+		t.Fatalf("write legacy vault: %v", err)
+	}
+
+	_, _, err := ensureIdentityForCommand(context.Background(), "", "")
+	if err == nil || !strings.Contains(err.Error(), "encrypted vaults were removed") {
+		t.Fatalf("ensureIdentityForCommand error = %v, want vaults-removed guidance", err)
+	}
+	if did.Exists(stateDir) {
+		t.Fatal("a fresh identity was minted next to the legacy vault")
+	}
+}
+
+func TestLoadNodeIdentityFailsOnDivergentNodeDID(t *testing.T) {
+	stateDir := t.TempDir()
+	identity, err := did.Generate()
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	got, err := loadNodeIdentity(stateDir, identity.URI, identity)
+	if err != nil || got != identity {
+		t.Fatalf("matching node DID = %v, %v, want fallback identity", got, err)
+	}
+
+	_, err = loadNodeIdentity(stateDir, "did:jwk:other", identity)
+	if err == nil || !strings.Contains(err.Error(), "re-join the network") {
+		t.Fatalf("divergent node DID error = %v, want re-join guidance", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(stateDir, "node.identity.vault.json"), []byte(`{"version":1}`), 0o600); err != nil {
+		t.Fatalf("write legacy node vault: %v", err)
+	}
+	_, err = loadNodeIdentity(stateDir, "did:jwk:other", identity)
+	if err == nil || !strings.Contains(err.Error(), "encrypted vaults were removed") {
+		t.Fatalf("legacy node vault error = %v, want vaults-removed guidance", err)
+	}
+}
+
+func TestEnsureIdentityForCommandUsesResolvedDefaultProfile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("ENBOX_HOME", home)
+	t.Setenv("ENBOX_PROFILE", "")
+	t.Setenv("MESHD_STATE_DIR", "")
 
 	if err := profile.UpsertProfile("work", "did:jwk:placeholder"); err != nil {
 		t.Fatalf("UpsertProfile: %v", err)
@@ -2327,8 +2226,8 @@ func TestEnsureIdentityForCommandUsesResolvedDefaultProfile(t *testing.T) {
 	if stateDir != profile.DataPath("work") {
 		t.Fatalf("stateDir = %q, want %q", stateDir, profile.DataPath("work"))
 	}
-	if !did.EncryptedExists(stateDir) {
-		t.Fatal("identity was not stored in encrypted vault")
+	if !did.Exists(stateDir) {
+		t.Fatal("identity file was not created")
 	}
 
 	cfg, err := profile.ReadConfig()
@@ -2344,13 +2243,10 @@ func TestEnsureIdentityForCommandUsesResolvedDefaultProfile(t *testing.T) {
 }
 
 func TestAuthConnectImportsWalletResponse(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	home := t.TempDir()
 	t.Setenv("ENBOX_HOME", home)
 	t.Setenv("ENBOX_PROFILE", "")
 	t.Setenv("MESHD_STATE_DIR", "")
-	t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
 
 	stateDir, identity, err := ensureIdentityForCommand(context.Background(), "walleted", "")
 	if err != nil {
@@ -2407,7 +2303,7 @@ func TestAuthConnectImportsWalletResponse(t *testing.T) {
 		t.Fatalf("delegate DID = %q", entry.DelegateDID)
 	}
 
-	session, err := state.LoadWalletSession(stateDir, "test-password")
+	session, err := state.LoadWalletSession(stateDir)
 	if err != nil {
 		t.Fatalf("LoadWalletSession: %v", err)
 	}
@@ -2417,13 +2313,10 @@ func TestAuthConnectImportsWalletResponse(t *testing.T) {
 }
 
 func TestAuthConnectImportRequiresDistinctDelegate(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	home := t.TempDir()
 	t.Setenv("ENBOX_HOME", home)
 	t.Setenv("ENBOX_PROFILE", "")
 	t.Setenv("MESHD_STATE_DIR", "")
-	t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
 
 	_, identity, err := ensureIdentityForCommand(context.Background(), "walleted", "")
 	if err != nil {
@@ -2458,13 +2351,10 @@ func TestAuthConnectImportRequiresDistinctDelegate(t *testing.T) {
 }
 
 func TestAuthConnectAdminRequestIncludesExplicitAdminPermission(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	home := t.TempDir()
 	t.Setenv("ENBOX_HOME", home)
 	t.Setenv("ENBOX_PROFILE", "")
 	t.Setenv("MESHD_STATE_DIR", "")
-	t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
 
 	requestFile := filepath.Join(t.TempDir(), "wallet-request.json")
 	if err := cmdAuthConnect(context.Background(), []string{
@@ -2499,13 +2389,10 @@ func TestAuthConnectAdminRequestIncludesExplicitAdminPermission(t *testing.T) {
 }
 
 func TestNetworkCreateImportsWalletResponse(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	home := t.TempDir()
 	t.Setenv("ENBOX_HOME", home)
 	t.Setenv("ENBOX_PROFILE", "")
 	t.Setenv("MESHD_STATE_DIR", "")
-	t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
 
 	stateDir, identity, err := ensureIdentityForCommand(context.Background(), "walleted", "")
 	if err != nil {
@@ -2567,7 +2454,7 @@ func TestNetworkCreateImportsWalletResponse(t *testing.T) {
 		t.Fatalf("member record ID = %q, want member-1", ns.MemberRecordID)
 	}
 
-	session, err := state.LoadWalletSession(stateDir, "test-password")
+	session, err := state.LoadWalletSession(stateDir)
 	if err != nil {
 		t.Fatalf("LoadWalletSession: %v", err)
 	}
@@ -2604,8 +2491,6 @@ func TestNetworkCreateImportsWalletResponse(t *testing.T) {
 }
 
 func TestNetworkCreateImportRequiresDistinctDelegate(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	for _, tc := range []struct {
 		name        string
 		delegateDID string
@@ -2618,7 +2503,6 @@ func TestNetworkCreateImportRequiresDistinctDelegate(t *testing.T) {
 			t.Setenv("ENBOX_HOME", home)
 			t.Setenv("ENBOX_PROFILE", "")
 			t.Setenv("MESHD_STATE_DIR", "")
-			t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
 
 			_, identity, err := ensureIdentityForCommand(context.Background(), "walleted", "")
 			if err != nil {
@@ -2654,13 +2538,10 @@ func TestNetworkCreateImportRequiresDistinctDelegate(t *testing.T) {
 }
 
 func TestNetworkCreateImportRejectsMismatchedExistingWalletSession(t *testing.T) {
-	resetVaultPasswordCache(t)
-
 	home := t.TempDir()
 	t.Setenv("ENBOX_HOME", home)
 	t.Setenv("ENBOX_PROFILE", "")
 	t.Setenv("MESHD_STATE_DIR", "")
-	t.Setenv("MESHD_VAULT_PASSWORD", "test-password")
 
 	stateDir, identity, err := ensureIdentityForCommand(context.Background(), "walleted", "")
 	if err != nil {
@@ -2670,7 +2551,7 @@ func TestNetworkCreateImportRejectsMismatchedExistingWalletSession(t *testing.T)
 	if err != nil {
 		t.Fatalf("ensureWalletDelegateIdentity: %v", err)
 	}
-	if err := state.StoreWalletSession(stateDir, "test-password", &state.WalletSession{
+	if err := state.StoreWalletSession(stateDir, &state.WalletSession{
 		Version:  1,
 		OwnerDID: "did:dht:wallet-a",
 		NodeDID:  identity.URI,
