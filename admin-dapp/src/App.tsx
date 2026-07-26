@@ -224,6 +224,12 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
   // in an earlier session (inviteResults is in-memory only).
   const [rebuiltCommand, setRebuiltCommand] = useState<string>();
   const [busyAction, setBusyAction] = useState<string>();
+  // Mirror busyAction into a ref so the topology-subscription effect can read
+  // it without listing it as a dependency: re-running that effect on every
+  // action start/finish would tear down the sync-event subscription and drop
+  // any pending debounced refresh scheduled in the gap.
+  const busyActionRef = useRef(busyAction);
+  busyActionRef.current = busyAction;
   const [topologyRefreshing, setTopologyRefreshing] = useState(false);
   const topologyRefreshInFlight = useRef(false);
   // Records the operator just approved/rejected/removed are dropped from the
@@ -311,7 +317,7 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     if (!session || !protocolsInitialized || !selectedNetwork || !ownerMatchesDashboardContext(context, did)) return;
 
     const tick = () => {
-      if (document.visibilityState !== "visible" || busyAction) return;
+      if (document.visibilityState !== "visible" || busyActionRef.current) return;
       void refreshTopology({ silent: true });
     };
 
@@ -328,7 +334,7 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
 
     const interval = window.setInterval(tick, TOPOLOGY_SAFETY_POLL_MS);
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible" && !busyAction) {
+      if (document.visibilityState === "visible" && !busyActionRef.current) {
         void refreshTopology({ silent: true });
       }
     };
@@ -340,7 +346,7 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [busyAction, context, did, enbox, protocolsInitialized, refreshTopology, selectedNetwork, session]);
+  }, [context, did, enbox, protocolsInitialized, refreshTopology, selectedNetwork, session]);
 
   useEffect(() => {
     if (!selectedNetwork) return;
