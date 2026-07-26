@@ -190,15 +190,15 @@ func TestSubscriptionCursorProgressionAllowsOnlyExactEOSE(t *testing.T) {
 	}
 
 	err := sub.validateCursorProgression(SubscriptionEventType, current.clone())
-	var gap *progressGapError
-	if !errors.As(err, &gap) || gap.info == nil || gap.info.Reason != "token_too_old" {
+	var gap *ProgressGapError
+	if !errors.As(err, &gap) || gap.Info == nil || gap.Info.Reason != "token_too_old" {
 		t.Fatalf("exact event token error = %v, want token_too_old gap", err)
 	}
 
 	epochMismatch := current
 	epochMismatch.Epoch = "other-epoch"
 	err = sub.validateCursorProgression(SubscriptionEOSEType, &epochMismatch)
-	if !errors.As(err, &gap) || gap.info == nil || gap.info.Reason != "epoch_mismatch" {
+	if !errors.As(err, &gap) || gap.Info == nil || gap.Info.Reason != "epoch_mismatch" {
 		t.Fatalf("cross-epoch EOSE error = %v, want epoch_mismatch gap", err)
 	}
 }

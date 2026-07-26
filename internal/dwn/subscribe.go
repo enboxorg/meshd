@@ -113,6 +113,23 @@ type SubscriptionError struct {
 	Detail string `json:"detail"`
 }
 
+// Wire error codes of terminal Messages subscription delivery failures. The
+// server emits these in-band (type:"error") and then closes the subscription:
+// AuthorizationFailed when delivery-time grant revalidation fails (grant
+// revoked or expired mid-subscription), DeliveryFailed for any other
+// unrecoverable delivery error.
+const (
+	MessagesSubscribeDeliveryAuthorizationFailedCode = "MessagesSubscribeDeliveryAuthorizationFailed"
+	MessagesSubscribeDeliveryFailedCode              = "MessagesSubscribeDeliveryFailed"
+)
+
+// ErrSubscriptionAuthorizationRevoked marks a terminal subscription error
+// caused by the server permanently stopping delivery — grant revocation,
+// grant expiry, or an unrecoverable delivery failure. The terminal lifecycle
+// error wraps this sentinel so callers can distinguish "re-resolve the grant
+// set" from other terminal conditions via errors.Is.
+var ErrSubscriptionAuthorizationRevoked = errors.New("subscription delivery authorization revoked")
+
 // ProgressGapInfo describes why a stored cursor cannot be resumed.
 type ProgressGapInfo struct {
 	Code            string        `json:"code,omitempty"`
@@ -139,6 +156,16 @@ type SubscriptionLifecycleEvent struct {
 	RetryIn          time.Duration
 	Gap              *ProgressGapInfo
 	Err              error
+
+	// Head is the replication-log high-water token from a MessagesSubscribe
+	// reply, set on established events when the server provided a feed
+	// snapshot. NOT a delivery cursor: adopt as a checkpoint only after
+	// Fingerprint verifies against the local feed.
+	Head *ProgressToken
+
+	// Fingerprint is the feed set fingerprint from a MessagesSubscribe
+	// reply, set on established events alongside Head.
+	Fingerprint string
 }
 
 // SubscriptionLifecycleHandler receives serialized connection lifecycle events.
@@ -187,6 +214,7 @@ type Subscription struct {
 	filter           RecordsFilter
 	signer           *Signer
 	auth             MessageAuth
+	messages         *messagesSubscribeConfig // nil for Records subscriptions
 	handler          EventHandler
 	lifecycleHandler SubscriptionLifecycleHandler
 	cursor           *ProgressToken // last known cursor for reconnection
@@ -297,18 +325,6 @@ func (m *SubscriptionManager) SubscribeWithAuthAndLifecycle(
 	handler EventHandler,
 	lifecycleHandler SubscriptionLifecycleHandler,
 ) (*Subscription, error) {
-	if ctx == nil {
-		return nil, fmt.Errorf("subscription context is required")
-	}
-	if target == "" {
-		return nil, fmt.Errorf("subscription target is required")
-	}
-	if signer == nil {
-		return nil, fmt.Errorf("subscription signer is required")
-	}
-	if handler == nil {
-		return nil, fmt.Errorf("subscription event handler is required")
-	}
 	if err := auth.validate(); err != nil {
 		return nil, fmt.Errorf("subscription auth: %w", err)
 	}
@@ -316,24 +332,109 @@ func (m *SubscriptionManager) SubscribeWithAuthAndLifecycle(
 	filter = cloneSubscriptionFilter(filter)
 	auth.DelegatedGrant = append(json.RawMessage(nil), auth.DelegatedGrant...)
 
-	subCtx, cancel := context.WithCancel(ctx)
-	subscriptionID := uuid.New().String()
-
-	sub := &Subscription{
-		SubscriptionID:   subscriptionID,
+	return m.start(ctx, &Subscription{
 		target:           target,
 		filter:           filter,
 		signer:           signer,
 		auth:             auth,
 		handler:          handler,
 		lifecycleHandler: lifecycleHandler,
-		logger: m.logger.With(
-			slog.String("subscription_id", subscriptionID),
-			slog.String("target", target),
-		),
-		cancel: cancel,
-		done:   make(chan struct{}),
+	})
+}
+
+// messagesSubscribeConfig holds the immutable wire parameters of a Messages
+// feed subscription; each (re)connect signs a fresh MessagesSubscribe from
+// them plus the current resume cursor.
+type messagesSubscribeConfig struct {
+	filters            []MessagesFilter
+	permissionGrantIDs []string // canonical
+}
+
+// SubscribeMessages starts a Messages-interface feed subscription against the
+// target tenant's replication log. See SubscribeMessagesWithLifecycle.
+func (m *SubscriptionManager) SubscribeMessages(
+	ctx context.Context,
+	target string,
+	signer *Signer,
+	opts MessagesSubscribeOptions,
+	handler EventHandler,
+) (*Subscription, error) {
+	return m.SubscribeMessagesWithLifecycle(ctx, target, signer, opts, handler, nil)
+}
+
+// SubscribeMessagesWithLifecycle starts a Messages-interface feed
+// subscription and reports transport lifecycle state.
+//
+// The signed message is a MessagesSubscribe descriptor (filters +
+// permissionGrantIds + cursor). opts.Cursor seeds the resume position; on
+// reconnect the last delivered cursor is used, exactly like Records
+// subscriptions. Established lifecycle events surface the subscribe reply's
+// head token and fingerprint when the server provides a feed snapshot.
+func (m *SubscriptionManager) SubscribeMessagesWithLifecycle(
+	ctx context.Context,
+	target string,
+	signer *Signer,
+	opts MessagesSubscribeOptions,
+	handler EventHandler,
+	lifecycleHandler SubscriptionLifecycleHandler,
+) (*Subscription, error) {
+	// Canonicalize and validate once so a bad grant list or filter fails
+	// fast instead of on every reconnect.
+	canonicalIDs, err := CanonicalPermissionGrantIDs(opts.PermissionGrantIDs)
+	if err != nil {
+		return nil, fmt.Errorf("subscription permission grant IDs: %w", err)
 	}
+	filters := cloneMessagesFilters(opts.Filters)
+	if _, err := messagesFiltersToWire(filters); err != nil {
+		return nil, fmt.Errorf("subscription filters: %w", err)
+	}
+	var initialCursor *ProgressToken
+	if opts.Cursor != nil {
+		if !opts.Cursor.valid() {
+			return nil, fmt.Errorf("subscription cursor is not a valid progress token")
+		}
+		initialCursor = opts.Cursor.clone()
+	}
+
+	return m.start(ctx, &Subscription{
+		target: target,
+		signer: signer,
+		messages: &messagesSubscribeConfig{
+			filters:            filters,
+			permissionGrantIDs: canonicalIDs,
+		},
+		handler:          handler,
+		lifecycleHandler: lifecycleHandler,
+		cursor:           initialCursor,
+	})
+}
+
+// start validates and registers a subscription with the shared
+// reconnect/ack/close machinery, then launches its run loop.
+func (m *SubscriptionManager) start(ctx context.Context, sub *Subscription) (*Subscription, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("subscription context is required")
+	}
+	if sub.target == "" {
+		return nil, fmt.Errorf("subscription target is required")
+	}
+	if sub.signer == nil {
+		return nil, fmt.Errorf("subscription signer is required")
+	}
+	if sub.handler == nil {
+		return nil, fmt.Errorf("subscription event handler is required")
+	}
+
+	subCtx, cancel := context.WithCancel(ctx)
+	subscriptionID := uuid.New().String()
+
+	sub.SubscriptionID = subscriptionID
+	sub.logger = m.logger.With(
+		slog.String("subscription_id", subscriptionID),
+		slog.String("target", sub.target),
+	)
+	sub.cancel = cancel
+	sub.done = make(chan struct{})
 
 	m.mu.Lock()
 	if m.closed {
@@ -357,6 +458,23 @@ func (m *SubscriptionManager) SubscribeWithAuthAndLifecycle(
 	}()
 
 	return sub, nil
+}
+
+// cloneMessagesFilters deep-copies a Messages filter list so later caller
+// mutations cannot change what reconnects sign.
+func cloneMessagesFilters(filters []MessagesFilter) []MessagesFilter {
+	if filters == nil {
+		return nil
+	}
+	clone := make([]MessagesFilter, len(filters))
+	for i, f := range filters {
+		if f.MessageTimestamp != nil {
+			r := *f.MessageTimestamp
+			f.MessageTimestamp = &r
+		}
+		clone[i] = f
+	}
+	return clone
 }
 
 // Close stops a subscription and sends rpc.subscribe.close to the server.
@@ -451,12 +569,12 @@ func (s *Subscription) run(ctx context.Context, endpoint string) {
 			return
 		}
 
-		var gapErr *progressGapError
+		var gapErr *ProgressGapError
 		if errors.As(err, &gapErr) {
 			s.clearCursor()
 			s.emitLifecycle(SubscriptionLifecycleEvent{
 				Kind: SubscriptionLifecycleProgressGap,
-				Gap:  gapErr.info,
+				Gap:  gapErr.Info,
 				Err:  err,
 			})
 			backoff = time.Second
@@ -522,7 +640,7 @@ func (s *Subscription) connect(ctx context.Context, endpoint string) (bool, erro
 func (s *Subscription) sendSubscribeRequest(ctx context.Context, conn *websocket.Conn) (string, *ProgressToken, error) {
 	cursor := s.Cursor()
 
-	msg, err := buildSubscribeMessage(s.signer, s.filter, cursor, s.auth)
+	msg, err := s.buildSubscribeWireMessage(cursor)
 	if err != nil {
 		return "", nil, fmt.Errorf("building subscribe message: %w", err)
 	}
@@ -538,18 +656,6 @@ func (s *Subscription) sendSubscribeRequest(ctx context.Context, conn *websocket
 	}
 
 	return rpcReq.ID, cursor, nil
-}
-
-// progressGapError marks a cursor that production can no longer resume.
-type progressGapError struct {
-	info *ProgressGapInfo
-}
-
-func (e *progressGapError) Error() string {
-	if e == nil || e.info == nil {
-		return "subscription progress gap"
-	}
-	return fmt.Sprintf("subscription progress gap: %s", e.info.Reason)
 }
 
 // readSubscribeResponse demultiplexes replay events and the request reply.
@@ -589,11 +695,7 @@ func (s *Subscription) readSubscribeResponse(ctx context.Context, conn *websocke
 
 		reply := rpcResp.Result.Reply
 		if reply.Status.Code == http.StatusGone {
-			gap := &ProgressGapInfo{}
-			if len(reply.Error) > 0 {
-				_ = json.Unmarshal(reply.Error, gap)
-			}
-			return &progressGapError{info: gap}
+			return parseProgressGapReply(reply)
 		}
 		if reply.Status.Code != http.StatusOK {
 			failure := fmt.Errorf("subscription failed: %d %s", reply.Status.Code, reply.Status.Detail)
@@ -609,6 +711,8 @@ func (s *Subscription) readSubscribeResponse(ctx context.Context, conn *websocke
 		s.emitLifecycle(SubscriptionLifecycleEvent{
 			Kind:             SubscriptionLifecycleEstablished,
 			NeedsFullRefresh: resumeCursor == nil,
+			Head:             reply.Head.clone(),
+			Fingerprint:      reply.Fingerprint,
 		})
 		s.logger.InfoContext(ctx, "subscription established")
 		return nil
@@ -692,7 +796,15 @@ func (s *Subscription) handleSubscriptionFrame(ctx context.Context, conn *websoc
 	}
 	var terminalErr error
 	if messageType == SubscriptionErrorType {
-		terminalErr = fmt.Errorf("terminal subscription error: %s: %s", message.Error.Code, message.Error.Detail)
+		switch message.Error.Code {
+		case MessagesSubscribeDeliveryAuthorizationFailedCode, MessagesSubscribeDeliveryFailedCode:
+			// Grant revocation/expiry (or unrecoverable delivery failure):
+			// wrap the sentinel so callers can react specifically.
+			terminalErr = fmt.Errorf("terminal subscription error: %s: %s: %w",
+				message.Error.Code, message.Error.Detail, ErrSubscriptionAuthorizationRevoked)
+		default:
+			terminalErr = fmt.Errorf("terminal subscription error: %s: %s", message.Error.Code, message.Error.Detail)
+		}
 	}
 
 	if s.handler != nil {
@@ -781,7 +893,7 @@ func subscriptionCursorGap(current, candidate *ProgressToken, reason string) err
 	if candidate != nil {
 		info.LatestAvailable = *candidate.clone()
 	}
-	return &progressGapError{info: info}
+	return &ProgressGapError{Info: info}
 }
 
 // sendAck sends an rpc.ack message for flow control.
@@ -813,6 +925,20 @@ func (s *Subscription) closeSubscription(conn *websocket.Conn) {
 	defer cancel()
 
 	_ = conn.Write(ctx, websocket.MessageText, data)
+}
+
+// buildSubscribeWireMessage signs the subscribe message for the current
+// connection attempt: a MessagesSubscribe descriptor for Messages feed
+// subscriptions, otherwise a RecordsSubscribe descriptor.
+func (s *Subscription) buildSubscribeWireMessage(cursor *ProgressToken) (*Message, error) {
+	if s.messages != nil {
+		return BuildMessagesSubscribe(s.signer, MessagesSubscribeOptions{
+			Filters:            s.messages.filters,
+			PermissionGrantIDs: s.messages.permissionGrantIDs,
+			Cursor:             cursor,
+		})
+	}
+	return buildSubscribeMessage(s.signer, s.filter, cursor, s.auth)
 }
 
 // buildSubscribeMessage creates a RecordsSubscribe DWN message.

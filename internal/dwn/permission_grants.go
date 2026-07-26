@@ -11,6 +11,7 @@ import (
 const (
 	DwnScopeInterfaceRecords   = "Records"
 	DwnScopeInterfaceProtocols = "Protocols"
+	DwnScopeInterfaceMessages  = "Messages"
 
 	DwnScopeMethodRead      = "Read"
 	DwnScopeMethodWrite     = "Write"
@@ -256,4 +257,158 @@ func signerDIDFromJWS(jws *GeneralJWS) (string, error) {
 		return header.KID[:i], nil
 	}
 	return header.KID, nil
+}
+
+//
+// --- Feed-grant selection (Messages replication-log scopes) ---
+//
+
+// FeedGrantCoverageError reports that no active grant covers part of a
+// requested feed scope. Protocol is empty when the full-tenant scope lacked
+// an unscoped Messages/Read grant, otherwise it names the uncovered
+// protocol.
+type FeedGrantCoverageError struct {
+	Protocol string
+}
+
+func (e *FeedGrantCoverageError) Error() string {
+	if e.Protocol == "" {
+		return "no active unscoped Messages/Read permission grant covers the full feed scope"
+	}
+	return fmt.Sprintf("no active protocol-root Messages/Read permission grant covers protocol %s", e.Protocol)
+}
+
+// SelectFeedGrants returns the permission grants a delegate must invoke for
+// a Messages feed operation over the given scope, porting the enbox agent's
+// resolveMessagesScopes rules:
+//
+//   - Only active Messages/Read grants participate: grantor and grantee
+//     match, and dateGranted <= now < dateExpires (compared as DWN timestamp
+//     strings, like the agent).
+//   - Full scope requires at least one UNSCOPED grant; the invoked set is
+//     every active unscoped grant.
+//   - Protocol-set scope requires EVERY protocol to be covered by a
+//     protocol-root grant (scope.protocol == p with no protocolPath or
+//     contextId) or an unscoped grant; the invoked set is every active grant
+//     participating in that root set.
+//   - Exact protocolPath/contextId grants never authorize feed scopes; they
+//     cover a strict subset of the messages in those scopes.
+//
+// The returned grants are sorted by ID (UTF-16 code-unit order). Missing
+// coverage returns a *FeedGrantCoverageError naming the uncovered protocol.
+// Revoked grants must be excluded by the caller before selection.
+func SelectFeedGrants(grants []*PermissionGrant, grantor, grantee string, now time.Time, scope SyncScope) ([]*PermissionGrant, error) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	nowTimestamp := Timestamp(now)
+
+	active := make([]*PermissionGrant, 0, len(grants))
+	for _, grant := range grants {
+		if isActiveMessagesFeedGrant(grant, grantor, grantee, nowTimestamp) {
+			active = append(active, grant)
+		}
+	}
+
+	var selected []*PermissionGrant
+	switch scope.Kind {
+	case SyncScopeKindFull:
+		for _, grant := range active {
+			if grantScopeIsUnscoped(grant.Scope) {
+				selected = append(selected, grant)
+			}
+		}
+		if len(selected) == 0 {
+			return nil, &FeedGrantCoverageError{}
+		}
+	case SyncScopeKindProtocolSet:
+		protocols, err := NormalizeSyncProtocols(scope.Protocols)
+		if err != nil {
+			return nil, err
+		}
+		for _, protocol := range protocols {
+			if !anyGrantMatchesProtocolRoot(active, protocol) {
+				return nil, &FeedGrantCoverageError{Protocol: protocol}
+			}
+		}
+		for _, grant := range active {
+			if grantParticipatesInProtocolSet(grant, protocols) {
+				selected = append(selected, grant)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("unknown sync scope kind %q", scope.Kind)
+	}
+
+	for i := 1; i < len(selected); i++ {
+		for j := i; j > 0 && compareStringsUTF16(selected[j].ID, selected[j-1].ID) < 0; j-- {
+			selected[j], selected[j-1] = selected[j-1], selected[j]
+		}
+	}
+	return selected, nil
+}
+
+// FeedGrantIDs extracts the canonical invoked ID list from a feed-grant
+// selection, ready for permissionGrantIds invocation.
+func FeedGrantIDs(grants []*PermissionGrant) []string {
+	if len(grants) == 0 {
+		return nil
+	}
+	ids := make([]string, len(grants))
+	for i, grant := range grants {
+		ids[i] = grant.ID
+	}
+	sortStringsUTF16(ids)
+	return ids
+}
+
+// isActiveMessagesFeedGrant mirrors the agent's isActiveMessagesGrant:
+// grantor/grantee match, active window dateGranted <= now < dateExpires by
+// timestamp-string comparison, and a Messages/Read scope.
+func isActiveMessagesFeedGrant(grant *PermissionGrant, grantor, grantee, now string) bool {
+	if grant == nil {
+		return false
+	}
+	if grant.Grantor != grantor || grant.Grantee != grantee {
+		return false
+	}
+	if grant.DateGranted > now || grant.DateExpires <= now {
+		return false
+	}
+	return grant.Scope.Interface == DwnScopeInterfaceMessages && grant.Scope.Method == DwnScopeMethodRead
+}
+
+// grantScopeIsUnscoped reports whether the scope covers the full tenant feed.
+func grantScopeIsUnscoped(scope PermissionScope) bool {
+	return scope.Protocol == "" && scope.ProtocolPath == "" && scope.ContextID == ""
+}
+
+// grantMatchesProtocolRoot reports whether a grant authorizes the root feed
+// of a protocol: unscoped, or scoped to exactly that protocol with no
+// protocolPath or contextId narrowing.
+func grantMatchesProtocolRoot(grant *PermissionGrant, protocol string) bool {
+	if grantScopeIsUnscoped(grant.Scope) {
+		return true
+	}
+	return grant.Scope.Protocol == protocol &&
+		grant.Scope.ProtocolPath == "" &&
+		grant.Scope.ContextID == ""
+}
+
+func anyGrantMatchesProtocolRoot(grants []*PermissionGrant, protocol string) bool {
+	for _, grant := range grants {
+		if grantMatchesProtocolRoot(grant, protocol) {
+			return true
+		}
+	}
+	return false
+}
+
+func grantParticipatesInProtocolSet(grant *PermissionGrant, protocols []string) bool {
+	for _, protocol := range protocols {
+		if grantMatchesProtocolRoot(grant, protocol) {
+			return true
+		}
+	}
+	return false
 }

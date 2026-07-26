@@ -1,0 +1,99 @@
+{
+  "generatedBy": "bun scratchpad/fixtures/generate.ts (enbox@main, dwn-sdk-js src executed directly); fixed Ed25519 seed 0x01..0x20",
+  "vectors": [
+    {
+      "name": "sorted-dedupe-ascii",
+      "input": {
+        "permissionGrantIds": [
+          "b",
+          "a",
+          "b",
+          "c",
+          "a"
+        ]
+      },
+      "canonical": [
+        "a",
+        "b",
+        "c"
+      ]
+    },
+    {
+      "name": "single",
+      "input": {
+        "permissionGrantIds": [
+          "only"
+        ]
+      },
+      "canonical": [
+        "only"
+      ]
+    },
+    {
+      "name": "unicode-bmp",
+      "input": {
+        "permissionGrantIds": [
+          "é",
+          "z",
+          "a",
+          "É"
+        ]
+      },
+      "canonical": [
+        "a",
+        "z",
+        "É",
+        "é"
+      ]
+    },
+    {
+      "name": "unicode-astral-vs-bmp",
+      "input": {
+        "permissionGrantIds": [
+          "�",
+          "😀",
+          "A"
+        ]
+      },
+      "canonical": [
+        "A",
+        "😀",
+        "�"
+      ]
+    },
+    {
+      "name": "unicode-mixed",
+      "input": {
+        "permissionGrantIds": [
+          "😀-grant",
+          "ﬁligature",
+          "ascii",
+          "ﬀ"
+        ]
+      },
+      "canonical": [
+        "ascii",
+        "😀-grant",
+        "ﬀ",
+        "ﬁligature"
+      ]
+    },
+    {
+      "name": "empty-array-error",
+      "input": {
+        "permissionGrantIds": []
+      },
+      "errorCode": "MessagePermissionGrantIdsEmpty"
+    },
+    {
+      "name": "ambiguous-error",
+      "input": {
+        "permissionGrantId": "x",
+        "permissionGrantIds": [
+          "y"
+        ]
+      },
+      "errorCode": "MessagePermissionGrantCreateInvocationAmbiguous"
+    }
+  ]
+}
