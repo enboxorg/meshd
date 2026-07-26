@@ -50,6 +50,13 @@ func (p *ProgressToken) valid() bool {
 	return ok
 }
 
+// Valid reports whether the token carries the stream, epoch, and decimal
+// position required to resume a subscription. Callers restoring persisted
+// cursors should discard invalid tokens instead of failing the subscribe.
+func (p *ProgressToken) Valid() bool {
+	return p.valid()
+}
+
 func shouldReplaceProgressToken(current, candidate *ProgressToken) bool {
 	if !candidate.valid() {
 		return false
