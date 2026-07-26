@@ -20,6 +20,8 @@ import {
 import { toast } from "sonner";
 
 import { useEnbox } from "./enbox/use-enbox";
+import { MESHD_PROTOCOL_URI } from "./enbox/config";
+import { createMeshSyncRefreshScheduler } from "./meshd/topology-refresh";
 import {
   dashboardContextFromSearch,
   ownerMatchesDashboardContext,
@@ -61,7 +63,10 @@ const EXPIRY_OPTIONS: Array<{ value: ExpiryValue; label: string; durationMs?: nu
   { value: "never", label: "Never" }
 ];
 
-const TOPOLOGY_AUTO_REFRESH_MS = 10_000;
+// Topology refreshes are event-driven (sync `delivery:applied` events for the
+// mesh protocol); this slow poll is only the safety net for anything the event
+// stream misses (e.g. a dropped WebSocket the engine is still repairing).
+const TOPOLOGY_SAFETY_POLL_MS = 60_000;
 
 function truncateDid(did: string, head = 18, tail = 10) {
   if (did.length <= head + tail + 3) return did;
@@ -309,7 +314,18 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
       void refreshTopology({ silent: true });
     };
 
-    const interval = window.setInterval(tick, TOPOLOGY_AUTO_REFRESH_MS);
+    // Event-driven refresh: the sync engine emits `delivery:applied` once per
+    // freshly applied remote message; mesh-protocol deliveries (a daemon's
+    // join request, another admin's changes) schedule a debounced topology
+    // refetch. The slow interval below is only a safety net, and the
+    // visibilitychange refresh covers deliveries applied while hidden.
+    const scheduler = createMeshSyncRefreshScheduler({
+      protocol: MESHD_PROTOCOL_URI,
+      onRefresh: tick
+    });
+    const offSyncEvents = enbox?.agent.sync.on(scheduler.listener);
+
+    const interval = window.setInterval(tick, TOPOLOGY_SAFETY_POLL_MS);
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible" && !busyAction) {
         void refreshTopology({ silent: true });
@@ -318,10 +334,12 @@ function Dashboard({ context }: { context: MeshdDashboardURLContext }) {
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
+      offSyncEvents?.();
+      scheduler.dispose();
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [busyAction, context, did, protocolsInitialized, refreshTopology, selectedNetwork, session]);
+  }, [busyAction, context, did, enbox, protocolsInitialized, refreshTopology, selectedNetwork, session]);
 
   useEffect(() => {
     if (!selectedNetwork) return;
