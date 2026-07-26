@@ -51,6 +51,16 @@ type DelegateSession struct {
 	WriteGrant  json.RawMessage
 	DeleteGrant json.RawMessage
 
+	// FeedGrantIDs are the active protocol-root Messages.Read grant IDs
+	// covering the mesh protocol's replication feed, in canonical invocation
+	// order. Empty when the wallet session lacks feed coverage — the engine
+	// then keeps the two Records subscription streams.
+	FeedGrantIDs []string
+
+	// FeedGrants are the {id, dateGranted, dateExpires} tuples of
+	// FeedGrantIDs, hashed into the feed link's authorization epoch.
+	FeedGrants []dwn.SyncAuthorizationGrant
+
 	logger *slog.Logger
 }
 
@@ -99,6 +109,8 @@ func NewDelegateSession(ctx context.Context, params DelegateSessionParams) (*Del
 		return nil, fmt.Errorf("wallet session is missing delegated read/write grants for %s", protocols.MeshProtocolURI)
 	}
 
+	s.FeedGrantIDs, s.FeedGrants = resolveFeedGrants(params.Grants, params.OwnerDID, s.DelegateDID, now, logger)
+
 	client := dwn.NewClient(params.Endpoint, params.DelegateSigner)
 
 	def, err := FetchInstalledProtocolDefinition(ctx, client, params.OwnerDID, protocols.MeshProtocolURI)
@@ -127,6 +139,36 @@ func NewDelegateSession(ctx context.Context, params DelegateSessionParams) (*Del
 	})
 
 	return s, nil
+}
+
+// resolveFeedGrants selects the active protocol-root Messages.Read grants
+// that authorize replication-feed reads (MessagesQuery/Subscribe) of the mesh
+// protocol on the owner tenant. Sessions without feed coverage return empty
+// results and the caller stays on the Records subscription streams; feed mode
+// is an upgrade, never a requirement.
+func resolveFeedGrants(rawGrants []json.RawMessage, ownerDID, delegateDID string, now time.Time, logger *slog.Logger) ([]string, []dwn.SyncAuthorizationGrant) {
+	parsed := make([]*dwn.PermissionGrant, 0, len(rawGrants))
+	for _, raw := range rawGrants {
+		grant, err := dwn.ParsePermissionGrant(raw)
+		if err != nil {
+			// Sessions may carry non-grant records; skip them.
+			continue
+		}
+		parsed = append(parsed, grant)
+	}
+
+	scope, err := dwn.ProtocolSetSyncScope([]string{protocols.MeshProtocolURI})
+	if err != nil {
+		return nil, nil
+	}
+	selected, err := dwn.SelectFeedGrants(parsed, ownerDID, delegateDID, now, scope)
+	if err != nil {
+		logger.Info("wallet session has no Messages.Read feed coverage; keeping Records subscription streams",
+			slog.Any("error", err),
+		)
+		return nil, nil
+	}
+	return dwn.FeedGrantIDs(selected), dwn.SyncAuthorizationGrantsFromPermissionGrants(selected)
 }
 
 // ReadAuth returns the message auth for delegated read/query operations.

@@ -258,6 +258,7 @@ func TestDaemonRefreshHealthMapping(t *testing.T) {
 		InFlight:       true,
 		Mode:           engine.RefreshModeFallback,
 		StreamsHealthy: false,
+		DegradedReason: "wallet session grants expired",
 		Streams: map[engine.RefreshStream]engine.RefreshStreamHealth{
 			engine.RefreshStreamTopology: {Covered: true, Live: true, Repaired: true},
 			engine.RefreshStreamDelivery: {Covered: true, Live: false, Repaired: false},
@@ -297,6 +298,36 @@ func TestDaemonRefreshHealthMapping(t *testing.T) {
 		!got.Streams["topology"].Repaired || !got.Streams["delivery"].Covered || got.Streams["delivery"].Live ||
 		got.Streams["delivery"].Repaired {
 		t.Fatalf("stream status = %+v", got.Streams)
+	}
+	if got.DegradedReason != "wallet session grants expired" {
+		t.Fatalf("degraded reason = %q, want surfaced", got.DegradedReason)
+	}
+}
+
+func TestDaemonRefreshHealthMapsFeedStream(t *testing.T) {
+	health := &engine.RefreshCoordinatorHealth{
+		Running:        true,
+		Mode:           engine.RefreshModeHealthy,
+		StreamsHealthy: true,
+		Streams: map[engine.RefreshStream]engine.RefreshStreamHealth{
+			engine.RefreshStreamFeed: {Covered: true, Live: true, Repaired: true},
+		},
+		LastSuccessAt: time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC),
+	}
+
+	_, _, got := daemonStatusesFromMeshSnapshot(&engine.MeshSnapshot{Generation: 1}, health)
+	if got == nil {
+		t.Fatal("snapshot status = nil")
+	}
+	if len(got.Streams) != 1 {
+		t.Fatalf("streams = %+v, want only feed", got.Streams)
+	}
+	feed, ok := got.Streams["feed"]
+	if !ok || !feed.Covered || !feed.Live || !feed.Repaired {
+		t.Fatalf("feed stream = %+v (present %v), want covered/live/repaired", feed, ok)
+	}
+	if got.DegradedReason != "" {
+		t.Fatalf("degraded reason = %q, want empty", got.DegradedReason)
 	}
 }
 
