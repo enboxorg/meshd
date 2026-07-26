@@ -20,6 +20,7 @@ import (
 	"github.com/enboxorg/meshd/internal/dwn"
 	dwncrypto "github.com/enboxorg/meshd/internal/dwn/crypto"
 	"github.com/enboxorg/meshd/internal/mesh"
+	"github.com/enboxorg/meshd/internal/state"
 
 	"github.com/tailscale/wireguard-go/tun"
 
@@ -74,6 +75,10 @@ type Engine struct {
 
 	snapshots          *meshSnapshotStore
 	refreshCoordinator atomic.Pointer[RefreshCoordinator]
+
+	// feedSync owns the persisted replication-feed checkpoint in feed mode.
+	// nil in Records-stream mode.
+	feedSync *feedSyncRecorder
 }
 
 // Config holds the configuration for creating an Engine.
@@ -154,6 +159,26 @@ type Config struct {
 	// this node's runtime endpoint writes. Takes precedence over
 	// WritePermissionGrantID.
 	WriteDelegatedGrant json.RawMessage
+
+	// FeedGrantIDs are the active protocol-root Messages.Read grant IDs the
+	// engine invokes for replication-feed reads, in canonical (sorted,
+	// deduplicated) order. Non-empty enables feed mode for wallet delegates;
+	// the anchor owner (Signer DID == AnchorTenant) needs none. Empty on a
+	// non-owner keeps the two Records streams.
+	FeedGrantIDs []string
+
+	// FeedGrants are the grant tuples hashed into the feed link's
+	// authorization epoch. Must describe the same grants as FeedGrantIDs.
+	FeedGrants []dwn.SyncAuthorizationGrant
+
+	// FeedSyncLoad loads the persisted feed replication checkpoint (nil when
+	// absent). The engine never learns the storage location; callers close
+	// over it. Nil disables resume across restarts.
+	FeedSyncLoad func() (*state.FeedSyncState, error)
+
+	// FeedSyncSave persists the feed replication checkpoint. Nil disables
+	// persistence (feed mode still works, without cross-restart resume).
+	FeedSyncSave func(state.FeedSyncState) error
 
 	// GrantKeys holds the delegate's grant-key subtree decrypters for
 	// decrypting protocol records (enbox connect sessions).
@@ -305,6 +330,31 @@ func New(cfg Config) (*Engine, error) {
 		cfg.Signer,
 		controlOpts...,
 	)
+
+	// Feed mode: owner/anchor nodes and delegates holding protocol-root
+	// Messages.Read grants converge via the single Messages replication-feed
+	// stream. The persisted checkpoint resumes only under an identical link
+	// key — grant churn or expiry changes the authorization epoch and
+	// discards the stale cursor.
+	feedMode := feedModeEnabled(cfg)
+	var feedRecorder *feedSyncRecorder
+	if feedMode {
+		linkKey, err := feedLinkKey(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("deriving feed link key: %w", err)
+		}
+		feedRecorder = newFeedSyncRecorder(linkKey, cfg.FeedSyncSave, l)
+		if cfg.FeedSyncLoad != nil {
+			loaded, loadErr := cfg.FeedSyncLoad()
+			if loadErr != nil {
+				l.Warn("loading feed sync state failed; starting without a resume cursor",
+					slog.Any("error", loadErr),
+				)
+			} else {
+				feedRecorder.adopt(loaded)
+			}
+		}
+	}
 
 	// Create the converter that bridges meshd types to meshnet types.
 	converter := NewConverter(domain, WithConverterLogger(l))
@@ -470,8 +520,11 @@ func New(cfg Config) (*Engine, error) {
 		SelfDID:         cfg.SelfDID,
 		Signer:          cfg.Signer,
 		ReadAuth:        readAuth,
+		FeedMode:        feedMode,
+		FeedGrantIDs:    cfg.FeedGrantIDs,
 		Logger:          l,
 	})
+	subWatcher.feedSync = feedRecorder
 
 	// Wire the DWN control client into the LocalBackend.
 	// MapResponseFunc closes over our DWNClient and Converter to produce
@@ -499,6 +552,14 @@ func New(cfg Config) (*Engine, error) {
 				engineRef.refreshCoordinator.Store(cc.coordinator)
 			}
 		},
+	}
+	if feedMode {
+		feedGrantIDs := append([]string(nil), cfg.FeedGrantIDs...)
+		dwnControlConfig.Streams = []RefreshStream{RefreshStreamFeed}
+		dwnControlConfig.FeedFingerprintFunc = func(ctx context.Context) (string, error) {
+			return dwnClient.FeedFingerprint(ctx, feedGrantIDs)
+		}
+		dwnControlConfig.FeedSync = feedRecorder
 	}
 
 	// If the caller provided a WireGuard private key (already published to
@@ -535,6 +596,7 @@ func New(cfg Config) (*Engine, error) {
 		osRouter:   osRouter,
 		logger:     l,
 		snapshots:  snapshots,
+		feedSync:   feedRecorder,
 	}
 	engineRef.initializeRoutingStatus(cfg.TUNName != "")
 	return engineRef, nil
@@ -616,6 +678,9 @@ func (e *Engine) Stop() error {
 	if e.subWatcher != nil {
 		e.subWatcher.Stop()
 	}
+
+	// Flush the feed checkpoint after the watcher stops delivering cursors.
+	e.feedSync.close()
 
 	if e.cancel != nil {
 		e.cancel()

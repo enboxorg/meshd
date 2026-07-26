@@ -530,6 +530,77 @@ func TestRefreshCoordinatorExponentialBackoffCaps(t *testing.T) {
 	}
 }
 
+func TestRefreshCoordinatorConfigurableStreamSet(t *testing.T) {
+	clock := newCoordinatorFakeClock()
+	started := make(chan RefreshBatch, 4)
+	coordinator, err := NewRefreshCoordinator(RefreshCoordinatorConfig{
+		Refresh: func(_ context.Context, batch RefreshBatch) error {
+			started <- batch
+			return nil
+		},
+		Streams:          []RefreshStream{RefreshStreamFeed},
+		FallbackInterval: 10 * time.Second,
+		HealthyInterval:  100 * time.Second,
+		Jitter:           identityRefreshJitter,
+		RetryJitter:      identityRefreshJitter,
+		Clock:            clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(coordinator.Stop)
+	receiveBatch(t, started)
+	waitCoordinator(t, func() bool { return !coordinator.Health().InFlight })
+
+	health := coordinator.Health()
+	if len(health.Streams) != 1 {
+		t.Fatalf("streams = %v, want only feed", health.Streams)
+	}
+	if _, ok := health.Streams[RefreshStreamFeed]; !ok {
+		t.Fatalf("streams = %v, missing feed", health.Streams)
+	}
+	if health.Mode != RefreshModeFallback {
+		t.Fatalf("mode = %v, want fallback before coverage", health.Mode)
+	}
+
+	// Operations on streams outside the configured set are ignored and can
+	// never affect health or scheduling.
+	coordinator.SetStreamCovered(RefreshStreamTopology, true)
+	coordinator.SetStreamLive(RefreshStreamTopology, true, true)
+	coordinator.InvalidateStream(RefreshStreamTopology, RefreshReasonTopology)
+	assertNoBatch(t, started)
+	if got := coordinator.Health().Streams; len(got) != 1 {
+		t.Fatalf("streams after unknown-stream ops = %v, want only feed", got)
+	}
+
+	// The single feed stream alone drives healthy mode.
+	coordinator.SetStreamCovered(RefreshStreamFeed, true)
+	coordinator.SetStreamLive(RefreshStreamFeed, true, true)
+	batch := receiveBatch(t, started)
+	assertReasons(t, batch, RefreshReasonFeed)
+	waitCoordinator(t, func() bool { return coordinator.Health().StreamsHealthy })
+	if got := coordinator.Health().Mode; got != RefreshModeHealthy {
+		t.Fatalf("mode = %v, want healthy with the feed stream repaired", got)
+	}
+}
+
+func TestRefreshCoordinatorDegradedReason(t *testing.T) {
+	clock := newCoordinatorFakeClock()
+	coordinator := newTestRefreshCoordinator(t, clock, func(context.Context, RefreshBatch) error { return nil })
+
+	coordinator.SetDegradedReason("grants expired")
+	if got := coordinator.Health().DegradedReason; got != "grants expired" {
+		t.Fatalf("degraded reason = %q, want set", got)
+	}
+	coordinator.SetDegradedReason("")
+	if got := coordinator.Health().DegradedReason; got != "" {
+		t.Fatalf("degraded reason = %q, want cleared", got)
+	}
+}
+
 func newTestRefreshCoordinator(t *testing.T, clock RefreshClock, refresh RefreshFunc) *RefreshCoordinator {
 	t.Helper()
 	coordinator, err := NewRefreshCoordinator(RefreshCoordinatorConfig{
