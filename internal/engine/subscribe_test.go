@@ -46,6 +46,11 @@ type recordingSubscriptionManager struct {
 	failCall      int
 	closeHook     func()
 	closeCall     atomic.Int32
+	healthChecks  atomic.Int32
+}
+
+func (m *recordingSubscriptionManager) CheckHealth(context.Context) {
+	m.healthChecks.Add(1)
 }
 
 func (m *recordingSubscriptionManager) SubscribeWithAuthAndLifecycle(

@@ -67,6 +67,10 @@ type Engine struct {
 	running bool
 	cancel  context.CancelFunc
 
+	// netmonUnregister removes the wake-probe link-change callback; set
+	// while running, nil otherwise.
+	netmonUnregister func()
+
 	routeApplyMu sync.Mutex
 	routeConfig  *router.Config
 
@@ -653,6 +657,13 @@ func (e *Engine) Start(ctx context.Context) error {
 				slog.Any("error", err),
 			)
 		}
+		// Wake probes: a major link change or resume from sleep forces an
+		// immediate liveness verdict on the subscription sockets instead of
+		// waiting out heartbeat timers that never fired while asleep.
+		if e.netMon != nil {
+			prober := newWakeProber(wakeProbeDebounce, e.subWatcher.CheckHealth)
+			e.netmonUnregister = e.netMon.RegisterChangeCallback(prober.OnNetworkChange)
+		}
 	}
 
 	e.waitForInitialTUNRoutes(runCtx, 5*time.Second)
@@ -673,6 +684,13 @@ func (e *Engine) Stop() error {
 	}
 
 	e.logger.Info("stopping meshd engine")
+
+	// Deregister the wake-probe callback before stopping the watcher; a
+	// late callback still in flight hits the watcher's stopped no-op path.
+	if e.netmonUnregister != nil {
+		e.netmonUnregister()
+		e.netmonUnregister = nil
+	}
 
 	// Stop subscription watcher first (stops WebSocket connections).
 	if e.subWatcher != nil {

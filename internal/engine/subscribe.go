@@ -39,6 +39,7 @@ type subscriptionManager interface {
 		dwn.EventHandler,
 		dwn.SubscriptionLifecycleHandler,
 	) (*dwn.Subscription, error)
+	CheckHealth(context.Context)
 	CloseAll()
 }
 
@@ -563,6 +564,24 @@ func (w *SubscriptionWatcher) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+// CheckHealth forces an immediate liveness probe on every active
+// subscription stream (feed, or topology+delivery) — the daemon analog of
+// the browser online/visibility wake listeners. Dead sockets are detected
+// and force-closed right away, triggering cursor-resumed resubscription,
+// and streams parked in reconnect backoff have that wait fast-forwarded.
+// Safe no-op while the watcher is not running.
+func (w *SubscriptionWatcher) CheckHealth() {
+	w.mu.Lock()
+	manager := w.manager
+	w.mu.Unlock()
+	if manager == nil {
+		return
+	}
+	// Each probe is bounded by its own pong deadline, so an unbounded
+	// context cannot hang the caller.
+	manager.CheckHealth(context.Background())
 }
 
 // Stop cancels all subscriptions and waits for cleanup.
