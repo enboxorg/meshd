@@ -129,27 +129,23 @@ func (l *connLiveness) heartbeatTick(ctx context.Context) {
 	}
 	pingID := livenessHeartbeatIDPrefix + uuid.New().String()
 	l.activePingID = pingID
+	// Arm the deadline before writing, mirroring probe: a write stalled on a
+	// dead-but-unclosed socket would otherwise wedge this goroutine with no
+	// deadline armed — the silent-death class the heartbeat exists to catch.
+	// On expiry the connection is force-closed, which also unblocks the write.
+	l.deadline = time.AfterFunc(l.heartbeatTimeout, func() {
+		l.heartbeatDeadlineExpired(pingID)
+	})
 	l.mu.Unlock()
 
 	if err := l.writePing(ctx, pingID); err != nil {
 		// The socket is closing or dead; the read loop owns that failure.
 		l.mu.Lock()
 		if l.activePingID == pingID {
-			l.activePingID = ""
+			l.clearHeartbeatDeadlineLocked()
 		}
 		l.mu.Unlock()
-		return
 	}
-
-	// The pong may already have been consumed between the write and here;
-	// arm the deadline only while this generation is still active.
-	l.mu.Lock()
-	if !l.closed && l.activePingID == pingID {
-		l.deadline = time.AfterFunc(l.heartbeatTimeout, func() {
-			l.heartbeatDeadlineExpired(pingID)
-		})
-	}
-	l.mu.Unlock()
 }
 
 // heartbeatDeadlineExpired force-closes the connection when the ACTIVE
@@ -260,7 +256,7 @@ func (l *connLiveness) failProbe(probeID, reason string) {
 	if closed {
 		return
 	}
-	l.logger.Warn("subscription "+reason+"; closing dead connection")
+	l.logger.Warn("subscription " + reason + "; closing dead connection")
 	l.conn.CloseNow()
 }
 
