@@ -227,10 +227,18 @@ type Subscription struct {
 	cursor           *ProgressToken // last known cursor for reconnection
 	logger           *slog.Logger
 
-	mu     sync.Mutex
-	conn   *websocket.Conn
-	cancel context.CancelFunc
-	done   chan struct{}
+	// Liveness settings; zero values select the package defaults and a
+	// negative heartbeatInterval disables the periodic heartbeat.
+	heartbeatInterval  time.Duration
+	heartbeatTimeout   time.Duration
+	healthProbeTimeout time.Duration
+
+	mu          sync.Mutex
+	conn        *websocket.Conn
+	liveness    *connLiveness // per-connection; nil between connections
+	backoffWake chan struct{} // fast-forwards the run loop's backoff wait
+	cancel      context.CancelFunc
+	done        chan struct{}
 }
 
 // SubscriptionManager manages multiple DWN WebSocket subscriptions
@@ -242,18 +250,49 @@ type SubscriptionManager struct {
 	endpoint  string
 	closed    bool
 	closeDone chan struct{}
+
+	heartbeatInterval  time.Duration
+	heartbeatTimeout   time.Duration
+	healthProbeTimeout time.Duration
+}
+
+// SubscriptionManagerOption configures a SubscriptionManager.
+type SubscriptionManagerOption func(*SubscriptionManager)
+
+// WithHeartbeat overrides the per-connection heartbeat: the interval
+// between rpc.ping frames and the deadline a ping's pong must meet before
+// the connection is declared dead. A negative interval disables the
+// periodic heartbeat; zero values keep the defaults (30s interval, 10s
+// timeout).
+func WithHeartbeat(interval, timeout time.Duration) SubscriptionManagerOption {
+	return func(m *SubscriptionManager) {
+		m.heartbeatInterval = interval
+		m.heartbeatTimeout = timeout
+	}
+}
+
+// WithHealthProbeTimeout overrides the pong deadline of on-demand
+// CheckHealth probes. Zero keeps the default (5s).
+func WithHealthProbeTimeout(timeout time.Duration) SubscriptionManagerOption {
+	return func(m *SubscriptionManager) {
+		m.healthProbeTimeout = timeout
+	}
 }
 
 // NewSubscriptionManager creates a new subscription manager for the given endpoint.
-func NewSubscriptionManager(endpoint string, logger *slog.Logger) *SubscriptionManager {
+func NewSubscriptionManager(endpoint string, logger *slog.Logger, opts ...SubscriptionManagerOption) *SubscriptionManager {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &SubscriptionManager{
+	m := &SubscriptionManager{
 		subs:     make(map[string]*Subscription),
 		logger:   logger,
 		endpoint: endpoint,
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 func cloneSubscriptionFilter(filter RecordsFilter) RecordsFilter {
@@ -440,6 +479,9 @@ func (m *SubscriptionManager) start(ctx context.Context, sub *Subscription) (*Su
 		slog.String("subscription_id", subscriptionID),
 		slog.String("target", sub.target),
 	)
+	sub.heartbeatInterval = m.heartbeatInterval
+	sub.heartbeatTimeout = m.heartbeatTimeout
+	sub.healthProbeTimeout = m.healthProbeTimeout
 	sub.cancel = cancel
 	sub.done = make(chan struct{})
 
@@ -516,6 +558,30 @@ func (s *Subscription) clearCursor() {
 	s.mu.Lock()
 	s.cursor = nil
 	s.mu.Unlock()
+}
+
+// CheckHealth forces an immediate liveness verdict on every active
+// subscription: connected sockets are probed with an out-of-band rpc.ping
+// (dead ones are force-closed and reconnect with their last cursor), and
+// subscriptions parked in reconnect backoff have that wait fast-forwarded.
+// Blocks until every probe resolves; ctx bounds the wait.
+func (m *SubscriptionManager) CheckHealth(ctx context.Context) {
+	m.mu.Lock()
+	subs := make([]*Subscription, 0, len(m.subs))
+	for _, sub := range m.subs {
+		subs = append(subs, sub)
+	}
+	m.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for _, sub := range subs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sub.CheckHealth(ctx)
+		}()
+	}
+	wg.Wait()
 }
 
 // CloseAll stops all active subscriptions.
@@ -603,9 +669,80 @@ func (s *Subscription) run(ctx context.Context, endpoint string) {
 		case <-ctx.Done():
 			return
 		case <-time.After(backoff):
+		case <-s.backoffWakeCh():
+			// CheckHealth fast-forwarded the wait (wake signal): the next
+			// attempt starts now instead of after the full backoff.
 		}
 		backoff = min(backoff*2, maxBackoff)
 	}
+}
+
+// backoffWakeCh returns the channel CheckHealth uses to fast-forward a
+// pending reconnect backoff wait. Buffered so a wake posted just before the
+// wait starts is not lost; a rare stale token merely shortens one backoff.
+func (s *Subscription) backoffWakeCh() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.backoffWake == nil {
+		s.backoffWake = make(chan struct{}, 1)
+	}
+	return s.backoffWake
+}
+
+// CheckHealth verifies the subscription's transport is actually alive right
+// now. The periodic heartbeat cannot fire across a system sleep — a
+// connection can be dead long before the next tick — so callers invoke this
+// on wake signals (link change, resume) to force the verdict immediately:
+//
+//   - Ended (user Close, manager CloseAll, or terminal error): returns
+//     false without side effects.
+//   - Reconnecting: fast-forwards the pending backoff wait so the next
+//     attempt starts now; returns false.
+//   - Connected: sends an out-of-band rpc.ping bounded by the health probe
+//     deadline. A pong returns true; a miss force-closes the connection —
+//     the run loop then reconnects with the last cursor — and returns false.
+//
+// Concurrent probes coalesce onto a single in-flight ping. A successful
+// probe clears any pending heartbeat deadline, so a deadline armed before a
+// sleep cannot kill the connection the probe just verified.
+func (s *Subscription) CheckHealth(ctx context.Context) bool {
+	select {
+	case <-s.done:
+		return false
+	default:
+	}
+
+	s.mu.Lock()
+	liveness := s.liveness
+	s.mu.Unlock()
+	if liveness == nil {
+		// Between connections: the run loop is dialing or waiting out its
+		// backoff. Waking the wait is cheap and idempotent either way.
+		select {
+		case s.backoffWakeCh() <- struct{}{}:
+		default:
+		}
+		return false
+	}
+
+	timeout := s.healthProbeTimeout
+	if timeout <= 0 {
+		timeout = defaultHealthProbeTimeout
+	}
+	return liveness.probe(ctx, timeout)
+}
+
+// consumeLivenessPong routes a response frame to the current connection's
+// liveness state, reporting whether it was the pong of the active heartbeat
+// ping or the in-flight health probe.
+func (s *Subscription) consumeLivenessPong(id string, rpcErr *JsonRpcError) bool {
+	s.mu.Lock()
+	liveness := s.liveness
+	s.mu.Unlock()
+	if liveness == nil {
+		return false
+	}
+	return liveness.consumePong(id, rpcErr)
 }
 
 // connect establishes a WebSocket connection and reports whether the handshake completed.
@@ -617,15 +754,27 @@ func (s *Subscription) connect(ctx context.Context, endpoint string) (bool, erro
 		return false, fmt.Errorf("dialing websocket: %w", err)
 	}
 
+	// Liveness state is per-connection: every (re)connect starts a fresh
+	// heartbeat generation and drops any stale probe.
+	liveness := newConnLiveness(conn, s.logger, s.heartbeatTimeout)
 	s.mu.Lock()
 	s.conn = conn
+	s.liveness = liveness
 	s.mu.Unlock()
 
+	heartbeatCtx, stopHeartbeat := context.WithCancel(ctx)
+	if interval := heartbeatIntervalOrDefault(s.heartbeatInterval); interval > 0 {
+		go liveness.heartbeatLoop(heartbeatCtx, interval)
+	}
+
 	defer func() {
+		stopHeartbeat()
+		liveness.shutdown()
 		s.closeSubscription(conn)
 		conn.CloseNow()
 		s.mu.Lock()
 		s.conn = nil
+		s.liveness = nil
 		s.mu.Unlock()
 	}()
 
@@ -684,6 +833,11 @@ func (s *Subscription) readSubscribeResponse(ctx context.Context, conn *websocke
 			if err := s.handleSubscriptionFrame(ctx, conn, data); err != nil {
 				return err
 			}
+			continue
+		}
+		// A response whose id matches the outstanding liveness ping or probe
+		// is a pong; any other unrecognized id keeps being skipped.
+		if s.consumeLivenessPong(rpcResp.ID, rpcResp.Error) {
 			continue
 		}
 		if rpcResp.ID != requestID {
@@ -782,6 +936,10 @@ func (s *Subscription) handleSubscriptionFrame(ctx context.Context, conn *websoc
 		return fmt.Errorf("parsing subscription event: %w", err)
 	}
 	if response.ID != s.SubscriptionID {
+		// Liveness pongs share the socket with event frames; route them by
+		// the outstanding ping/probe id. A pong for a superseded ping — and
+		// anything else that is not a subscription frame — stays ignored.
+		s.consumeLivenessPong(response.ID, response.Error)
 		return nil
 	}
 	if response.Error != nil {

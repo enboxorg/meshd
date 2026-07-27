@@ -145,6 +145,7 @@ const (
 	MethodSubscribe      = "rpc.subscribe.dwn.processMessage"
 	MethodAck            = "rpc.ack"
 	MethodCloseSubscribe = "rpc.subscribe.close"
+	MethodPing           = "rpc.ping"
 )
 
 //
@@ -193,6 +194,17 @@ func newJsonRpcAck(subscriptionID string, cursor ProgressToken) *JsonRpcRequest 
 		Subscription: &JsonRpcSubscription{
 			ID: subscriptionID,
 		},
+	}
+}
+
+// newJsonRpcPing creates an rpc.ping request — the application-level
+// WebSocket heartbeat. The server pongs with a success response echoing the
+// request id; the id doubles as the liveness generation.
+func newJsonRpcPing(id string) *JsonRpcRequest {
+	return &JsonRpcRequest{
+		JSONRPC: "2.0",
+		ID:      id,
+		Method:  MethodPing,
 	}
 }
 
